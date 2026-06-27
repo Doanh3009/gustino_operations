@@ -1,0 +1,187 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1500" viewBox="0 0 1800 1500">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f9fbef"/>
+      <stop offset="48%" stop-color="#f3f7e7"/>
+      <stop offset="100%" stop-color="#eaf1dd"/>
+    </linearGradient>
+    <linearGradient id="navy" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f1f33"/>
+      <stop offset="100%" stop-color="#1d3b52"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#d9f47d"/>
+      <stop offset="100%" stop-color="#8bb31a"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#0f1f33" flood-opacity=".14"/>
+    </filter>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="7" stdDeviation="8" flood-color="#0f1f33" flood-opacity=".08"/>
+    </filter>
+    <style>
+      .title { font: 900 42px "Plus Jakarta Sans", Arial, sans-serif; fill: #0f1f33; letter-spacing: -.02em; }
+      .subtitle { font: 700 18px "Plus Jakarta Sans", Arial, sans-serif; fill: #607189; }
+      .center-title { font: 950 44px "Plus Jakarta Sans", Arial, sans-serif; fill: white; letter-spacing: .08em; }
+      .center-sub { font: 800 18px "Plus Jakarta Sans", Arial, sans-serif; fill: #d9f47d; letter-spacing: .12em; }
+      .section-title { font: 900 25px "Plus Jakarta Sans", Arial, sans-serif; fill: #102238; }
+      .section-sub { font: 800 13px "Plus Jakarta Sans", Arial, sans-serif; fill: #718094; letter-spacing: .07em; }
+      .node-title { font: 900 18px "Plus Jakarta Sans", Arial, sans-serif; fill: #102238; }
+      .node-text { font: 700 13px "Plus Jakarta Sans", Arial, sans-serif; fill: #536477; }
+      .small { font: 800 12px "Plus Jakarta Sans", Arial, sans-serif; fill: #64748b; }
+      .badge { font: 950 13px "Plus Jakarta Sans", Arial, sans-serif; fill: #102238; }
+      .white { fill: white; }
+      .muted { fill: #8b98a8; }
+      .line { stroke: #9eba30; stroke-width: 4; fill: none; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
+      .thin { stroke: #c8d998; stroke-width: 2.3; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .card { fill: #ffffff; stroke: #dde6ed; stroke-width: 1.5; filter: url(#soft); }
+      .soft-card { fill: #fbfdf5; stroke: #dae8ad; stroke-width: 1.5; filter: url(#soft); }
+      .warn-card { fill: #fff8e7; stroke: #efd79e; stroke-width: 1.5; filter: url(#soft); }
+      .danger-card { fill: #fff1f4; stroke: #f0bdca; stroke-width: 1.5; filter: url(#soft); }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1500" fill="url(#bg)"/>
+  <circle cx="1520" cy="120" r="210" fill="#d9f47d" opacity=".18"/>
+  <circle cx="180" cy="1130" r="230" fill="#9eba30" opacity=".12"/>
+
+  <text x="90" y="86" class="title">Sơ đồ tư duy tổng hợp hệ thống GUSTINO</text>
+  <text x="92" y="122" class="subtitle">Vai trò · Luồng vận hành 2 ca · Chức năng chính · Dữ liệu báo cáo</text>
+
+  <!-- Center -->
+  <rect x="665" y="505" width="470" height="230" rx="38" fill="url(#navy)" filter="url(#shadow)"/>
+  <circle cx="725" cy="572" r="34" fill="url(#green)"/>
+  <text x="725" y="584" text-anchor="middle" class="badge">G</text>
+  <text x="900" y="590" text-anchor="middle" class="center-title">GUSTINO</text>
+  <text x="900" y="628" text-anchor="middle" class="center-sub">MASTER CONTROL</text>
+  <text x="900" y="674" text-anchor="middle" class="white" style="font:800 20px Arial">Một web cho vận hành, chấm công, kho, bàn giao và báo cáo</text>
+
+  <!-- Main connector lines -->
+  <path class="line" d="M665 585 C505 500 425 380 335 250"/>
+  <path class="line" d="M1135 585 C1300 495 1395 350 1490 220"/>
+  <path class="line" d="M665 675 C500 760 400 900 290 1070"/>
+  <path class="line" d="M1135 675 C1300 755 1420 900 1530 1065"/>
+  <path class="line" d="M900 505 C900 400 900 285 900 170"/>
+  <path class="line" d="M900 735 C900 860 900 1000 900 1165"/>
+
+  <!-- Roles -->
+  <rect x="80" y="175" width="515" height="355" rx="28" class="card"/>
+  <text x="115" y="222" class="section-sub">ROLE MAP</text>
+  <text x="115" y="258" class="section-title">Ai làm gì?</text>
+  <g>
+    <rect x="115" y="288" width="215" height="92" rx="18" class="soft-card"/>
+    <text x="140" y="323" class="node-title">Quản lý</text>
+    <text x="140" y="350" class="node-text">Dashboard · nhân sự · báo cáo</text>
+    <text x="140" y="372" class="small">Không trực tiếp chốt ca bán</text>
+    <rect x="350" y="288" width="210" height="92" rx="18" class="card"/>
+    <text x="375" y="323" class="node-title">Ca trưởng</text>
+    <text x="375" y="350" class="node-text">Kho · sổ túi · bàn giao</text>
+    <text x="375" y="372" class="small">Ca 2 chốt báo cáo ngày</text>
+    <rect x="115" y="400" width="215" height="92" rx="18" class="card"/>
+    <text x="140" y="435" class="node-title">Nhân viên</text>
+    <text x="140" y="462" class="node-text">Lịch làm · selfie check-in/out</text>
+    <text x="140" y="484" class="small">Nhận túi, trả túi cuối ca</text>
+    <rect x="350" y="400" width="210" height="92" rx="18" class="warn-card"/>
+    <text x="375" y="435" class="node-title">Bếp</text>
+    <text x="375" y="462" class="node-text">Nhận đơn đặt hàng</text>
+    <text x="375" y="484" class="small">Bật chuông · hoàn thành đơn</text>
+  </g>
+
+  <!-- Functions -->
+  <rect x="1205" y="155" width="515" height="415" rx="28" class="card"/>
+  <text x="1240" y="202" class="section-sub">FUNCTION MAP</text>
+  <text x="1240" y="238" class="section-title">Các module chính</text>
+  <g>
+    <rect x="1240" y="268" width="205" height="76" rx="16" class="soft-card"/>
+    <text x="1262" y="300" class="node-title">Hôm nay</text>
+    <text x="1262" y="325" class="node-text">Điều hướng 6 bước</text>
+    <rect x="1470" y="268" width="210" height="76" rx="16" class="card"/>
+    <text x="1492" y="300" class="node-title">Kho &amp; làm hàng</text>
+    <text x="1492" y="325" class="node-text">Nhập · chế biến · đóng túi</text>
+    <rect x="1240" y="364" width="205" height="76" rx="16" class="card"/>
+    <text x="1262" y="396" class="node-title">Bàn giao ca</text>
+    <text x="1262" y="421" class="node-text">Nhận · phát · thu · chốt</text>
+    <rect x="1470" y="364" width="210" height="76" rx="16" class="warn-card"/>
+    <text x="1492" y="396" class="node-title">Chấm công</text>
+    <text x="1492" y="421" class="node-text">Selfie · GPS · Excel</text>
+    <rect x="1240" y="460" width="205" height="76" rx="16" class="card"/>
+    <text x="1262" y="492" class="node-title">Báo cáo</text>
+    <text x="1262" y="517" class="node-text">Chốt ngày · infographic</text>
+    <rect x="1470" y="460" width="210" height="76" rx="16" class="soft-card"/>
+    <text x="1492" y="492" class="node-title">Quản lý &amp; Bếp</text>
+    <text x="1492" y="517" class="node-text">Dashboard · đơn hàng</text>
+  </g>
+
+  <!-- Daily flow -->
+  <rect x="310" y="1165" width="1180" height="230" rx="30" class="card"/>
+  <text x="350" y="1212" class="section-sub">DAILY FLOW</text>
+  <text x="350" y="1248" class="section-title">Một ngày vận hành 2 ca trưởng</text>
+  <g>
+    <rect x="350" y="1282" width="130" height="76" rx="18" class="soft-card"/>
+    <text x="415" y="1314" text-anchor="middle" class="node-title">1</text>
+    <text x="415" y="1338" text-anchor="middle" class="node-text">Nhập hàng</text>
+    <rect x="505" y="1282" width="130" height="76" rx="18" class="card"/>
+    <text x="570" y="1314" text-anchor="middle" class="node-title">2</text>
+    <text x="570" y="1338" text-anchor="middle" class="node-text">Chế biến</text>
+    <rect x="660" y="1282" width="130" height="76" rx="18" class="card"/>
+    <text x="725" y="1314" text-anchor="middle" class="node-title">3</text>
+    <text x="725" y="1338" text-anchor="middle" class="node-text">Đóng túi</text>
+    <rect x="815" y="1282" width="130" height="76" rx="18" class="warn-card"/>
+    <text x="880" y="1314" text-anchor="middle" class="node-title">Ca 1</text>
+    <text x="880" y="1338" text-anchor="middle" class="node-text">Bàn giao</text>
+    <rect x="970" y="1282" width="130" height="76" rx="18" class="warn-card"/>
+    <text x="1035" y="1314" text-anchor="middle" class="node-title">Ca 2</text>
+    <text x="1035" y="1338" text-anchor="middle" class="node-text">Bán tiếp</text>
+    <rect x="1125" y="1282" width="150" height="76" rx="18" class="soft-card"/>
+    <text x="1200" y="1314" text-anchor="middle" class="node-title">Báo cáo</text>
+    <text x="1200" y="1338" text-anchor="middle" class="node-text">Chốt ngày</text>
+    <rect x="1300" y="1282" width="150" height="76" rx="18" class="card"/>
+    <text x="1375" y="1314" text-anchor="middle" class="node-title">Xuất file</text>
+    <text x="1375" y="1338" text-anchor="middle" class="node-text">Ảnh + Excel</text>
+    <path class="thin" d="M480 1320 H505 M635 1320 H660 M790 1320 H815 M945 1320 H970 M1100 1320 H1125 M1275 1320 H1300"/>
+    <text x="900" y="1378" text-anchor="middle" class="small">Ca 1 không chốt báo cáo cuối ngày. Ca 2 chốt khi đủ 2 ca đã bàn giao.</text>
+  </g>
+
+  <!-- Data/report -->
+  <rect x="1180" y="830" width="540" height="330" rx="28" class="card"/>
+  <text x="1215" y="877" class="section-sub">DATA &amp; REPORT</text>
+  <text x="1215" y="913" class="section-title">Dữ liệu đi về đâu?</text>
+  <g>
+    <rect x="1215" y="945" width="220" height="72" rx="16" class="card"/>
+    <text x="1238" y="976" class="node-title">Sổ túi</text>
+    <text x="1238" y="999" class="node-text">Số nhận · bán · trả · hỏng</text>
+    <rect x="1460" y="945" width="220" height="72" rx="16" class="card"/>
+    <text x="1483" y="976" class="node-title">Kho</text>
+    <text x="1483" y="999" class="node-text">Tồn · nhập · chế biến</text>
+    <rect x="1215" y="1038" width="220" height="72" rx="16" class="warn-card"/>
+    <text x="1238" y="1069" class="node-title">Chấm công</text>
+    <text x="1238" y="1092" class="node-text">Giờ công · selfie minh chứng</text>
+    <rect x="1460" y="1038" width="220" height="72" rx="16" class="soft-card"/>
+    <text x="1483" y="1069" class="node-title">Báo cáo ngày</text>
+    <text x="1483" y="1092" class="node-text">1 chi nhánh/ngày = 1 bản</text>
+  </g>
+
+  <!-- Controls/realtime -->
+  <rect x="90" y="780" width="490" height="315" rx="28" class="card"/>
+  <text x="125" y="827" class="section-sub">REALTIME &amp; SAFETY</text>
+  <text x="125" y="863" class="section-title">Đồng bộ và chống lỗi</text>
+  <g>
+    <rect x="125" y="898" width="420" height="62" rx="16" class="soft-card"/>
+    <text x="150" y="933" class="node-title">Realtime sổ túi</text>
+    <text x="332" y="933" class="node-text">Supabase realtime · LAN polling 5s</text>
+    <rect x="125" y="975" width="420" height="62" rx="16" class="warn-card"/>
+    <text x="150" y="1010" class="node-title">Chống trùng báo cáo</text>
+    <text x="360" y="1010" class="node-text">Upsert theo chi nhánh + ngày</text>
+    <rect x="125" y="1052" width="420" height="62" rx="16" class="danger-card"/>
+    <text x="150" y="1087" class="node-title">Nhắc chấm công</text>
+    <text x="330" y="1087" class="node-text">Sắp vào ca · trễ · sắp check-out</text>
+  </g>
+
+  <!-- Legend -->
+  <rect x="1320" y="70" width="400" height="52" rx="18" fill="#ffffff" stroke="#dde6ed" filter="url(#soft)"/>
+  <circle cx="1350" cy="96" r="9" fill="#d9f47d"/><text x="1370" y="101" class="small">đã ổn định</text>
+  <circle cx="1480" cy="96" r="9" fill="#ffe0a3"/><text x="1500" y="101" class="small">cần chú ý</text>
+  <circle cx="1620" cy="96" r="9" fill="#ffd5df"/><text x="1640" y="101" class="small">cảnh báo</text>
+
+  <text x="90" y="1460" class="small">GUSTINO · Sơ đồ tổng hợp để lưu hình/in · Phiên bản web hiện tại</text>
+</svg>

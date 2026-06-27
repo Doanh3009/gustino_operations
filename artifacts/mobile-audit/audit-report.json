@@ -1,0 +1,807 @@
+{
+  "shift_launcher": {
+    "title": "GUSTINO Operations",
+    "hash": "#launcher",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 844,
+    "overflowX": 0,
+    "bodyText": "G\nGUSTINO\nHẠT DẺ ÔNG LÝ\nEN\nĐăng xuất\nCHỌN ỨNG DỤNG\nHôm nay bạn muốn làm gì?\n\nChạm vào một biểu tượng để bắt đầu.\n\n▤\n✓\nVận hành cửa hàng\nKho · Bán hàng · Báo cáo ca\n◎\n✓\nChấm công\nThêm ca · Check-in selfie · Bảng công\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững",
+    "wide": [],
+    "tinyControls": []
+  },
+  "shift-01-today": {
+    "title": "GUSTINO Operations",
+    "hash": "#today",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 2195,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Ca trưởng Demo\nChúc bạn một ngày năng lượng.\nCA LÀM VIỆC HÔM NAY\nChào Ca trưởng Demo, mình bắt đầu nhé\n\nGold Coast Nha Trang · Thứ Năm, 25/06/2026\n\nChưa bắt đầu\n1\nVIỆC NÊN LÀM TIẾP\nNhập hàng đầu ngày\n\nGhi số nguyên liệu và hàng hóa vừa nhận vào kho.\n\nNhập kho →\nLÀM LẦN LƯỢT TỪ TRÊN XUỐNG\n6 bước của một ngày vận hành\n0/6\nđã hoàn tất\n1\nBƯỚC 1\nNhập hàng đầu ngày\nGhi số nguyên liệu và hàng hóa vừa nhận vào kho.\nLàm ngay\n→\n2\nBƯỚC 2\nLấy hàng ra chế biến\nGhi lượng lấy từ kho và lượng thành phẩm sau chế biến.\nMở\n→\n3\nBƯỚC 3\nĐóng thành phẩm vào túi\nNhập số túi theo từng quy cách ngay trong mẻ chế biến.\nMở\n→\n4\nBƯỚC 4\nChia hàng cho nhân viên bán\nPhát túi theo nhân viên, thu túi và tự tính số bán.\nMở\n→\n5\nBƯỚC 5\nChốt và bàn giao ca\nĐếm túi còn tại quầy, chuyển túi đang giữ sang ca sau.\nMở\n→\n6\nBƯỚC 6\nBáo cáo cuối ngày\nBáo cáo chỉ mở sau khi đã bàn giao đủ 2 ca trong ngày.\nMở\n→\n▦\nTồn kho hiện tại\n28 mặt hàng cần chú ý\n◷\nPhiếu đã ghi\n0 dòng phát sinh hôm nay\n≡\nKiểm kê cuối ca\nĐối chiếu tồn thực tế\n◇\nQuản lý cửa hàng\nDoanh thu và cảnh báo\n↑\nBáo đặt hàng\nGửi yêu cầu nhập hàng lên quản lý\n⚠ Có 28 mặt hàng sắp hết\nHạt dẻ rang · Hạt dẻ tuyết · Hạt dẻ sơ chế\nXem tồn kho\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững\n⌂\nHôm nay\n▦\nLàm hàng\n⇄\nBàn giao\n✓\nCuối ca\n◷\nLịch sử\n◇\nQuản lý",
+    "wide": [],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      },
+      {
+        "text": "Xem tồn kho",
+        "w": 75,
+        "h": 16,
+        "x": 284,
+        "y": 1868
+      }
+    ]
+  },
+  "shift-02-inventory": {
+    "title": "GUSTINO Operations",
+    "hash": "#inventory",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 2918,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Ca trưởng Demo\nChúc bạn một ngày năng lượng.\nLÀM HÀNG TRONG NGÀY\nKho và chế biến\n\nNhập kho, chế biến và đóng túi tại đây. Phát túi cho nhân viên được quản lý riêng theo từng ca.\n\nChưa mở ngày vận hành\nNgày sẽ tự mở khi lưu giao dịch đầu tiên, hoặc bạn có thể mở ngay.\nMở ngày\nTồn kho\nNhập đầu ngày\nChế biến & đóng túi\nPhát túi nhân viên\nKiểm kê cuối ca\nTỒN KHO THEO NGÀY\nTồn kho hôm nay\nChọn ngày\n⚠ Kho gần hết 14 mặt hàng\nHạt dẻ rang: 4 kg · Hạt dẻ tuyết: 2 kg · Hạt dẻ rang 330g: 3 túi · Hạt dẻ rang 500g: 8 túi · Hạt dẻ rang 1kg: 0 túi · Hạt dẻ tuyết 110g: 4 túi · Hạt dẻ tuyết 330g: 4 túi · Hạt dẻ tuyết 500g: 0 túi · Hạt dẻ nướng 110g: 0 túi · Hạt dẻ nướng 330g: 0 túi · Hạt dẻ nướng 500g: 0 túi · Hạt dẻ nướng 1kg: 0 túi · Khoai lang mật 500g: 0 túi · Khoai lang mật 1kg: 0 túi\nPHIẾU NHẬP HÔM NAY\n0\nTính theo chứng từ, không theo dòng\nPHIẾU XUẤT HÔM NAY\n0\nTính theo chứng từ, không theo dòng\nSẮP HẾT HÀNG\n14\nDưới ngưỡng cảnh báo\nLỆCH KIỂM KÊ\n0\nCần giải trình\nTỒN CUỐI NGÀY\nDanh sách hàng hóa · 25/6/2026\nLập phiếu kiểm kê →\nSẢN PHẨM\tSKU\tTỒN DỰ KIẾN\tTHỰC TẾ\tCHÊNH LỆCH\n\nHạt dẻ rang\nNguyên liệu\n\tNL-HD-RANG\t\n4 kg\n\t—\tChưa kiểm\n\nHạt dẻ tuyết\nNguyên liệu\n\tNL-HD-TUYET\t\n2 kg\n\t—\tChưa kiểm\n\nHạt dẻ tươi\nNguyên liệu\n\tNL-HD-TUOI\t\n55 kg\n\t—\tChưa kiểm\n\nThành phẩm hạt dẻ rang\nThành phẩm\n\tBC-HD-CHIN\t\n0.08 kg\n\t—\tChưa kiểm\n\nThành phẩm hạt dẻ tuyết\nThành phẩm\n\tBC-HD-TUYET\t\n0.24 kg\n\t—\tChưa kiểm\n\nHạt dẻ rang 110g\nThành phẩm\n\tTP-HD-110\t\n81 túi\n\t21 túi\t0\n\nHạt dẻ rang 330g\nThà",
+    "wide": [
+      {
+        "tag": "button",
+        "cls": "",
+        "text": "3Phát túi nhân viên",
+        "x": 302,
+        "w": 102,
+        "right": 404,
+        "display": "flex",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "strong",
+        "cls": "",
+        "text": "Phát túi nhân viên",
+        "x": 310,
+        "w": 86,
+        "right": 396,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "button",
+        "cls": "",
+        "text": "4Kiểm kê cuối ca",
+        "x": 404,
+        "w": 89,
+        "right": 493,
+        "display": "flex",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "strong",
+        "cls": "",
+        "text": "Kiểm kê cuối ca",
+        "x": 412,
+        "w": 73,
+        "right": 485,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "table",
+        "cls": "data-table",
+        "text": "Sản phẩmSKUTồn dự kiếnThực tếChênh lệchHạt dẻ rangNguyên liệuNL-HD-RAN",
+        "x": 33,
+        "w": 680,
+        "right": 713,
+        "display": "table",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "thead",
+        "cls": "",
+        "text": "Sản phẩmSKUTồn dự kiếnThực tếChênh lệch",
+        "x": 33,
+        "w": 680,
+        "right": 713,
+        "display": "table-header-group",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "tr",
+        "cls": "",
+        "text": "Sản phẩmSKUTồn dự kiếnThực tếChênh lệch",
+        "x": 33,
+        "w": 680,
+        "right": 713,
+        "display": "table-row",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "th",
+        "cls": "",
+        "text": "Tồn dự kiến",
+        "x": 375,
+        "w": 124,
+        "right": 499,
+        "display": "table-cell",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "th",
+        "cls": "",
+        "text": "Thực tế",
+        "x": 499,
+        "w": 95,
+        "right": 593,
+        "display": "table-cell",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "th",
+        "cls": "",
+        "text": "Chênh lệch",
+        "x": 593,
+        "w": 120,
+        "right": 713,
+        "display": "table-cell",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "tbody",
+        "cls": "",
+        "text": "Hạt dẻ rangNguyên liệuNL-HD-RANG4 kg—Chưa kiểmHạt dẻ tuyếtNguyên liệuN",
+        "x": 33,
+        "w": 680,
+        "right": 713,
+        "display": "table-row-group",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "tr",
+        "cls": "",
+        "text": "Hạt dẻ rangNguyên liệuNL-HD-RANG4 kg—Chưa kiểm",
+        "x": 33,
+        "w": 680,
+        "right": 713,
+        "display": "table-row",
+        "overflowX": "visible"
+      }
+    ],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      }
+    ]
+  },
+  "shift-03-handover": {
+    "title": "GUSTINO Operations",
+    "hash": "#handover",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 3329,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Ca trưởng Demo\nChúc bạn một ngày năng lượng.\n←\nTrở lại\nThoát chức năng\n×\nLàm hàng\nTồn kho / Chế biến\nChấm công\nLịch sử\nTồn kho\nNhập đầu ngày\nChế biến & đóng túi\nPhát túi nhân viên\nKiểm kê cuối ca\nSỔ TÚI THEO CA\nNhận ca, phát túi, bàn giao\n\nChỉ cần ghi túi phát cho nhân viên và đếm số còn tại quầy khi hết ca.\n\nCa 3 đang mở\nHạt dẻ rang 110g\n81\ncòn tại quầy\nHạt dẻ rang 330g\n3\ncòn tại quầy\nHạt dẻ rang 500g\n8\ncòn tại quầy\nHạt dẻ tuyết 110g\n4\ncòn tại quầy\nHạt dẻ tuyết 330g\n4\ncòn tại quầy\nHạt dẻ tuyết 1kg\n4\ncòn tại quầy\nPHÁT TÚI\nGiao cho nhân viên\n2\n\nChỉ hiện nhân viên đã đăng ký ca hôm nay tại chi nhánh này.\n\nNhân viên #1\nNhân viên\nChưa có nhân viên đăng ký ca hôm nay\nLoại túi\nHạt dẻ rang 110g\nHạt dẻ rang 330g\nHạt dẻ rang 500g\nHạt dẻ rang 1kg\nHạt dẻ tuyết 110g\nHạt dẻ tuyết 330g\nHạt dẻ tuyết 500g\nHạt dẻ tuyết 1kg\nHạt dẻ nướng 110g\nHạt dẻ nướng 330g\nHạt dẻ nướng 500g\nHạt dẻ nướng 1kg\nKhoai lang mật 500g\nKhoai lang mật 1kg\nSố lượng\nCòn tại quầy: 81 túi\n+ Loại túi\n+ Nhân viên\nVào Chấm công để đăng ký ca cho nhân viên trước, sau đó quay lại phát túi.\nXác nhận phát túi\nNHÂN VIÊN\nĐang giữ và đã đối soát\n0\n\nChưa phát túi cho nhân viên trong ca này.\n\nCHỐT & BÀN GIAO\nĐếm số còn tại quầy\n3\n\nSố dự kiến đã tự tính. Bạn chỉ sửa nếu số đếm thực tế khác.\n\nHạt dẻ rang 110g\nDự kiến 81\nHạt dẻ rang 330g\nDự kiến 3\nHạt dẻ rang 500g\nDự kiến 8\nHạt dẻ tuyết 110g\nDự kiến 4\nHạt dẻ tuyết 330g\nDự kiến 4\nHạt dẻ tuyết 1kg\nDự kiến 4\nGhi chú khi có chênh lệch\n📷 Chụp ảnh quầy cu",
+    "wide": [
+      {
+        "tag": "button",
+        "cls": "active",
+        "text": "4Phát túi nhân viên",
+        "x": 302,
+        "w": 102,
+        "right": 404,
+        "display": "flex",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "strong",
+        "cls": "",
+        "text": "Phát túi nhân viên",
+        "x": 310,
+        "w": 86,
+        "right": 396,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "button",
+        "cls": "",
+        "text": "5Kiểm kê cuối ca",
+        "x": 404,
+        "w": 89,
+        "right": 493,
+        "display": "flex",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "strong",
+        "cls": "",
+        "text": "Kiểm kê cuối ca",
+        "x": 412,
+        "w": 73,
+        "right": 485,
+        "display": "block",
+        "overflowX": "visible"
+      }
+    ],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      }
+    ]
+  },
+  "shift-04-report": {
+    "title": "GUSTINO Operations",
+    "hash": "#report",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 1019,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Ca trưởng Demo\nChúc bạn một ngày năng lượng.\n↯ Lấy dữ liệu hôm nay\n↻ Mở bản gần nhất\n⬇ Tải infographic\n✓ Chốt báo cáo\nHẠT DẺ ÔNG LÝ\nGOLD COAST NHA TRANG\n\nINFOGRAPHIC BÁO CÁO CHỐT CA\n\nChi nhánh\nGold Coast Nha Trang\nCa trưởng\nCa trưởng Demo\nCa phó\n---\nNgày & ca\n25/06/2026\nXếp loại\nCẦN CẢI THIỆN\nTỔNG DOANH THU\n0đ\nCẦN CẢI THIỆN\nTỔNG NHẬN\n0 SP\nHàng đã phát\nĐÃ BÁN\n0 SP\n0% hiệu suất\nKPI ĐỘI\n0%\nTrung bình PG\nHAO HỤT\n0 SP\nBếp sống → chín\nNGUYÊN LIỆU & TỒN KHO\nTỒN SP: 0\nNguyên liệu sống\t0,0 kg\nThành phẩm chín\t0,0 kg\nHạt dẻ chín để chia túi\t0,0 kg chín\nKhoai lang chín để chia túi\t0,0 kg chín\nDư hạt dẻ sau chia túi\tDư / Remain: 0,0 kg\nDư khoai sau chia túi\tDư / Remain: 0,0 kg\nHủy hàng cuối ca\t0 SP\nBÁN HÀNG THEO SẢN PHẨM\nNHẬN - BÁN - TỒN\nSẢN PHẨM\tNHẬN\tBÁN\tHỦY\tTỒN\tTIỀN\nChưa có dữ liệu phát túi.\nBẢNG KPI PG\nTOP THEO KPI\n\nChưa có dữ liệu PG.\n\nHÌNH ẢNH ĐẦU CA\nChưa có ảnh đầu ca.\nHÌNH ẢNH CUỐI CA\nChưa có ảnh cuối ca.\nHỦY HÀNG CUỐI CA\nKhông có ghi chú hủy hàng.\nSỰ CỐ TRONG CA\nKhông có ghi chú sự cố.\nGUSTINO MASTER CONTROL\nXUẤT LÚC: 13:51:31 25/06/2026\nSỔ TÚI HÔM NAY\n0 ca đã bàn giao\nTÚI ĐÃ BÁN\n0\nHỎNG / MẤT\n0\nCHƯA ĐỐI SOÁT\n0\nHOA HỒNG TỰ ĐỘNG\n0đ\nChưa đến bước chốt báo cáo cuối ngày\nBáo cáo này sẽ tổng hợp dữ liệu cả ngày sau khi ca 2 bàn giao xong. Hiện có 0/2 ca đã bàn giao.\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững\n⌂\nHôm nay\n▦\nLàm hàng\n⇄\nBàn giao\n✓\nCuối ca\n◷\nLịch sử\n◇\nQuản lý",
+    "wide": [
+      {
+        "tag": "div",
+        "cls": "report-infographic-export",
+        "text": "HẠT DẺ ÔNG LÝGold Coast Nha TrangINFOGRAPHIC BÁO CÁO CHỐT CAChi nhánhG",
+        "x": -12000,
+        "w": 1600,
+        "right": -10400,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "div",
+        "cls": "",
+        "text": "HẠT DẺ ÔNG LÝGold Coast Nha TrangINFOGRAPHIC BÁO CÁO CHỐT CAChi nhánhG",
+        "x": -12000,
+        "w": 1600,
+        "right": -10400,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "article",
+        "cls": "report-infographic-card",
+        "text": "HẠT DẺ ÔNG LÝGold Coast Nha TrangINFOGRAPHIC BÁO CÁO CHỐT CAChi nhánhG",
+        "x": -12000,
+        "w": 1600,
+        "right": -10400,
+        "display": "block",
+        "overflowX": "hidden"
+      },
+      {
+        "tag": "header",
+        "cls": "report-info-header",
+        "text": "HẠT DẺ ÔNG LÝGold Coast Nha TrangINFOGRAPHIC BÁO CÁO CHỐT CAChi nhánhG",
+        "x": -11997,
+        "w": 1594,
+        "right": -10403,
+        "display": "flex",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "div",
+        "cls": "",
+        "text": "HẠT DẺ ÔNG LÝGold Coast Nha TrangINFOGRAPHIC BÁO CÁO CHỐT CA",
+        "x": -11925,
+        "w": 702,
+        "right": -11223,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "span",
+        "cls": "",
+        "text": "HẠT DẺ ÔNG LÝ",
+        "x": -11925,
+        "w": 702,
+        "right": -11223,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "h1",
+        "cls": "",
+        "text": "Gold Coast Nha Trang",
+        "x": -11925,
+        "w": 702,
+        "right": -11223,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "p",
+        "cls": "",
+        "text": "INFOGRAPHIC BÁO CÁO CHỐT CA",
+        "x": -11925,
+        "w": 702,
+        "right": -11223,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "dl",
+        "cls": "",
+        "text": "Chi nhánhGold Coast Nha TrangCa trưởngCa trưởng DemoCa phó---Ngày & ca",
+        "x": -10995,
+        "w": 520,
+        "right": -10475,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "div",
+        "cls": "",
+        "text": "Chi nhánhGold Coast Nha Trang",
+        "x": -10964,
+        "w": 458,
+        "right": -10506,
+        "display": "grid",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "dt",
+        "cls": "",
+        "text": "Chi nhánh",
+        "x": -10964,
+        "w": 200,
+        "right": -10764,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "dd",
+        "cls": "",
+        "text": "Gold Coast Nha Trang",
+        "x": -10746,
+        "w": 240,
+        "right": -10506,
+        "display": "block",
+        "overflowX": "visible"
+      }
+    ],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      }
+    ]
+  },
+  "shift-05-history": {
+    "title": "GUSTINO Operations",
+    "hash": "#history",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 2242,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Ca trưởng Demo\nChúc bạn một ngày năng lượng.\nNHẬT KÝ HỆ THỐNG\nLịch sử kho theo chứng từ\n\nMỗi phiếu nhập, xuất hoặc mẻ chế biến được gom thành một mục để dễ kiểm soát.\n\nNGÀY VẬN HÀNH\n22/06/2026\n3 chứng từ\n•\nĐiều chỉnh\n16:41 · 1 dòng · Mã 499fe985\n⌄\n＋\nPhiếu nhập kho\n14:55 · 1 dòng · Mã d7cbdd57\nHạt dẻ tươi: 20 kg\n⌄\n＋\nPhiếu nhập kho\n14:55 · 1 dòng · Mã cf6b7c66\nHạt dẻ tươi: 15 kg\n⌄\nNGÀY VẬN HÀNH\n20/06/2026\n1 chứng từ\n•\nĐiều chỉnh\n14:17 · 1 dòng · Mã c9c86c5b\n⌄\nNGÀY VẬN HÀNH\n19/06/2026\n6 chứng từ\n−\nPhiếu xuất bán\n11:26 · 15 dòng · Mã 63d11875\nHạt dẻ rang 110g: 4 túi · Hạt dẻ rang 110g: 21 túi\n+13 sản phẩm\n⌄\n−\nPhiếu xuất bán\n11:26 · 16 dòng · Mã c3f4ec6b\nHạt dẻ rang 110g: 7 túi · Hạt dẻ rang 110g: 25 túi\n+13 sản phẩm\n⌄\n•\nĐiều chỉnh\n11:26 · 1 dòng · Mã b84abbb9\n⌄\n−\nMẻ chế biến và đóng gói\n11:06 · 6 dòng · Mã 4fe9c9b6\nHạt dẻ tuyết: 6 kg · Thành phẩm hạt dẻ tuyết: 6 kg\n⌄\n＋\nPhiếu nhập kho\n11:05 · 1 dòng · Mã 7d6968f8\nHạt dẻ tươi: 10 kg\n⌄\n＋\nPhiếu nhập kho\n11:05 · 1 dòng · Mã e9df7862\nHạt dẻ tuyết: 8 kg\n⌄\nNGÀY VẬN HÀNH\n18/06/2026\n2 chứng từ\n−\nMẻ chế biến và đóng gói\n15:25 · 7 dòng · Mã aa26497a\nHạt dẻ rang: 6 kg · Thành phẩm hạt dẻ rang: 5,4 kg\n⌄\n＋\nPhiếu nhập kho\n15:24 · 2 dòng · Mã e05d54f5\nHạt dẻ rang: 10 kg · Hạt dẻ tươi: 10 kg\n⌄\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững\n⌂\nHôm nay\n▦\nLàm hàng\n⇄\nBàn giao\n✓\nCuối ca\n◷\nLịch sử\n◇\nQuản lý",
+    "wide": [],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      }
+    ]
+  },
+  "shift-06-restaurant": {
+    "title": "GUSTINO Operations",
+    "hash": "#restaurant",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 2726,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Ca trưởng Demo\nChúc bạn một ngày năng lượng.\nNHÀ HÀNG / CHI NHÁNH\nTổng quan hoạt động\n\nDoanh thu từ báo cáo ca kết hợp với dữ liệu nhập – xuất – tồn kho.\n\nGold Coast Nha Trang\nLotte Mart 23/10\nLotte Mart Vũng Tàu\nCHI NHÁNH ĐANG XEM\nGold Coast Nha Trang\n\nDữ liệu 7 ngày gần nhất · 0 ca có dữ liệu\n\nXẾP LOẠI GẦN NHẤT\nCHƯA CÓ DỮ LIỆU\nDOANH THU 7 NGÀY\n0đ\nNguồn: báo cáo ca đã lưu\nSẢN PHẨM ĐÃ BÁN\n0\nTổng theo báo cáo ca\nHIỆU SUẤT BÁN TB\n0%\n7 ngày gần nhất\nHAO HỤT KHO\n1.6\nTổng lượng ghi nhận\nDOANH THU\n7 ngày gần nhất\n0\nThứ 6\n0\nThứ 7\n0\nCN\n0\nThứ 2\n0\nThứ 3\n0\nThứ 4\n0\nThứ 5\nCẢNH BÁO KHO\nCần xử lý\n28\nHạt dẻ rang\nNgưỡng tối thiểu 10 kg\n4.0 kg\nHạt dẻ tuyết\nNgưỡng tối thiểu 10 kg\n2.0 kg\nHạt dẻ sơ chế\nNgưỡng tối thiểu 8 kg\n0.0 kg\nKhoai lang mật\nNgưỡng tối thiểu 10 kg\n0.0 kg\nĐường\nNgưỡng tối thiểu 5 kg\n0.0 kg\nBao bì 110g\nNgưỡng tối thiểu 100 cái\n0.0 cái\nHOẠT ĐỘNG GẦN ĐÂY\nNhập – xuất – kiểm kê\n↕\nĐiều chỉnh · Hạt dẻ rang 110g\n16:41:46 22/6/2026 · [QA] Tạo tồn kiểm thử bàn giao\n30 túi\n↕\nNhập kho · Hạt dẻ tươi\n14:55:54 22/6/2026 · 4 túi × 5 kg = 20 kg\n20 kg\n↕\nNhập kho · Hạt dẻ tươi\n14:55:47 22/6/2026 · 3 túi × 5 kg = 15 kg\n15 kg\n↕\nĐiều chỉnh · Hạt dẻ rang 110g\n14:17:41 20/6/2026 · [QA] Tạo tồn kiểm thử bàn giao\n30 túi\n↕\nXuất bán · Hạt dẻ rang 110g\n11:26:16 19/6/2026 · [Ca 2] Nhân viên B bán 4 túi\n4 túi\n↕\nKiểm kê thực tế · Hạt dẻ rang 110g\n11:26:16 19/6/2026 · [Ca 2] Kiểm đếm bàn giao: tại quầy 21, nhân viên đang giữ 0\n21 túi\n↕\nKiểm kê thực tế · Hạt dẻ rang 330g\n11:",
+    "wide": [],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      }
+    ]
+  },
+  "shift-07-attendance": {
+    "title": "GUSTINO Operations",
+    "hash": "#attendance",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 1199,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Ca trưởng Demo\nChúc bạn một ngày năng lượng.\n←\nTrở lại\nThoát chức năng\n×\nCHẤM CÔNG\nĐăng ký lịch và chấm công\n\nChọn ca ngay trên bảng tuần; đến ngày làm, mở Chấm công hôm nay để check-in/out.\n\nCa trưởng\nChấm công hôm nay\nĐăng ký lịch làm\nCA CỦA TÔI\nLịch làm việc\n3 ca\n20-06\nThứ 7\nĐã đăng ký\n09:00 – 16:00\n\nGold Coast Nha Trang\n\nVào: 09:08\nRa: 09:08\n19-06\nThứ 6\nĐã đăng ký\n10:22 – 16:00\n\nGold Coast Nha Trang\n\nCheck-in vào đúng ngày đã đăng ký.\n18-06\nThứ 5\nĐã đăng ký\n08:00 – 16:00\n\nGold Coast Nha Trang\n\nCheck-in vào đúng ngày đã đăng ký.\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững\n◉\nChấm công",
+    "wide": [],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      }
+    ]
+  },
+  "shift_logs": [
+    "error: Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED",
+    "error: Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED",
+    "error: Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED"
+  ],
+  "manager_launcher": {
+    "title": "GUSTINO Operations",
+    "hash": "#launcher",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 1013,
+    "overflowX": 0,
+    "bodyText": "G\nGUSTINO\nHẠT DẺ ÔNG LÝ\nEN\nĐăng xuất\nCHỌN ỨNG DỤNG\nHôm nay bạn muốn làm gì?\n\nChạm vào một biểu tượng để bắt đầu.\n\n◎\n✓\nChấm công\nThêm ca · Check-in selfie · Bảng công\n▤\n✓\nTổng hợp quản lý\nCông làm · Tồn kho · Kiểm kê · Cảnh báo\nK\nOK\nĐặt bếp\nNhận đơn từ ca trưởng, bật chuông và xác nhận đã xử lý.\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững",
+    "wide": [],
+    "tinyControls": []
+  },
+  "manager-01-management": {
+    "title": "GUSTINO Operations",
+    "hash": "#management",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 1569,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Quản lý Demo\nChúc bạn một ngày năng lượng.\nChi nhánh\nTất cả chi nhánh\nGold Coast Nha Trang\nLotte Mart 23/10\nLotte Mart Vũng Tàu\nNhân viên\nTất cả nhân viên\ndemo-manager\nCa trưởng Demo\nNhân viên Demo\nBếp Demo\nNhân viên QA\nTừ ngày\nĐến ngày\nHôm nay\nTháng này\nTháng trước\n₫\nDoanh thu\n▤\nTổng quan\n◉\nChấm công\n★\nKPI & Hoa hồng\n▦\nBáo cáo kho\n↑\nĐặt hàng\n⊕\nNhân sự\nCA ĐÃ LÀM\n8\nTổng số ca có chấm công trong kỳ\nGIỜ CÔNG\n0\n3 nhân viên có dữ liệu\nCẢNH BÁO TỒN KHO\n92\n0 nhân viên đang làm việc\nYÊU CẦU ĐẶT HÀNG\n0\n0 yêu cầu trong kỳ\nLƯU TRỮ\nLịch sử báo cáo đã lưu\n0 hồ sơ\n\nChưa có báo cáo được lưu trong khoảng thời gian này.\n\nHAO HỤT\nSản phẩm hao hụt\n2 mặt hàng\nHạt dẻ rang 110g\nGold Coast Nha Trang · 1 lượt ghi nhận\n1 túi\nHạt dẻ rang\nGold Coast Nha Trang · 1 lượt ghi nhận\n0,6 kg\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững\n▤\nTổng hợp\nK\nBếp",
+    "wide": [
+      {
+        "tag": "nav",
+        "cls": "admin-section-nav",
+        "text": "CHỨC NĂNG₫Doanh thu▤Tổng quan◉Chấm công★KPI & Hoa hồng▦Báo cáo kho↑Đặt",
+        "x": -6,
+        "w": 402,
+        "right": 396,
+        "display": "flex",
+        "overflowX": "auto"
+      },
+      {
+        "tag": "button",
+        "cls": "admin-section-nav-item",
+        "text": "★KPI & Hoa hồng",
+        "x": 372,
+        "w": 139,
+        "right": 510,
+        "display": "flex",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "span",
+        "cls": "admin-section-nav-icon",
+        "text": "★",
+        "x": 384,
+        "w": 24,
+        "right": 408,
+        "display": "grid",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "button",
+        "cls": "admin-section-nav-item",
+        "text": "▦Báo cáo kho",
+        "x": 518,
+        "w": 118,
+        "right": 636,
+        "display": "flex",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "span",
+        "cls": "admin-section-nav-icon",
+        "text": "▦",
+        "x": 530,
+        "w": 24,
+        "right": 554,
+        "display": "grid",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "button",
+        "cls": "admin-section-nav-item",
+        "text": "↑Đặt hàng",
+        "x": 644,
+        "w": 102,
+        "right": 747,
+        "display": "flex",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "span",
+        "cls": "admin-section-nav-icon",
+        "text": "↑",
+        "x": 656,
+        "w": 24,
+        "right": 680,
+        "display": "grid",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "button",
+        "cls": "admin-section-nav-item",
+        "text": "⊕Nhân sự",
+        "x": 755,
+        "w": 98,
+        "right": 853,
+        "display": "flex",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "span",
+        "cls": "admin-section-nav-icon",
+        "text": "⊕",
+        "x": 767,
+        "w": 24,
+        "right": 791,
+        "display": "grid",
+        "overflowX": "visible"
+      }
+    ],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      }
+    ]
+  },
+  "manager-02-kitchen": {
+    "title": "GUSTINO Operations",
+    "hash": "#kitchen",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 1557,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Quản lý Demo\nChúc bạn một ngày năng lượng.\nMÀN HÌNH BẾP\nĐơn đặt bếp từ ca trưởng\n\nGiữ màn hình này mở. Khi có đơn mới, bếp sẽ thấy thẻ màu vàng và nghe chuông sau khi bật âm thanh.\n\nCHỜ BẾP NHẬN\n0\nĐANG XỬ LÝ\n0\nĐÃ XONG\n0\nĐơn mới\n0\n\nChưa có đơn mới.\n\nĐang làm\n0\n\nChưa có đơn đang xử lý.\n\nĐã hoàn thành\n0\n\nChưa có đơn hoàn thành.\n\nĐã hủy\n0\n\nChưa có đơn bị hủy.\n\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững\n▤\nTổng hợp\nK\nBếp",
+    "wide": [],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      }
+    ]
+  },
+  "manager-03-attendance": {
+    "title": "GUSTINO Operations",
+    "hash": "#attendance",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 1395,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Quản lý Demo\nChúc bạn một ngày năng lượng.\n←\nTrở lại\nThoát chức năng\n×\nCHẤM CÔNG\nLập lịch và xuất bảng công\n\nQuản lý lập lịch cho nhân sự, theo dõi chấm công và xuất Excel cuối tháng.\n\nQuản lý\nBảng lịch nhân sự\nXuất bảng công\nLỊCH CHUNG THEO CHI NHÁNH\nAi đã đăng ký ca nào?\nLịch tự đồng bộ khi có người đăng ký\n⚙ Thiết lập nhân sự & ca\nChi nhánh\nGold Coast Nha Trang\nLotte Mart 23/10\nLotte Mart Vũng Tàu\nTuần bắt đầu\nHọ Và Tên\nVị Trí\nThứ 2, 22/06\nThứ 3, 23/06\nThứ 4, 24/06\nThứ 5, 25/06\nThứ 6, 26/06\nThứ 7, 27/06\nCN, 28/06\ndemo-manager · Tôi\nNhân viên\nOFF\n07:30-15:30\n10:00-18:00\n10:00-15:00\n13:00-19:00\n14:00-22:00\n15:00-21:00\n16:30-21:30\nOFF\n07:30-15:30\n10:00-18:00\n10:00-15:00\n13:00-19:00\n14:00-22:00\n15:00-21:00\n16:30-21:30\nOFF\n07:30-15:30\n10:00-18:00\n10:00-15:00\n13:00-19:00\n14:00-22:00\n15:00-21:00\n16:30-21:30\nOFF\n07:30-15:30\n10:00-18:00\n10:00-15:00\n13:00-19:00\n14:00-22:00\n15:00-21:00\n16:30-21:30\nOFF\n07:30-15:30\n10:00-18:00\n10:00-15:00\n13:00-19:00\n14:00-22:00\n15:00-21:00\n16:30-21:30\nOFF\n07:30-15:30\n10:00-18:00\n10:00-15:00\n13:00-19:00\n14:00-22:00\n15:00-21:00\n16:30-21:30\nOFF\n07:30-15:30\n10:00-18:00\n10:00-15:00\n13:00-19:00\n14:00-22:00\n15:00-21:00\n16:30-21:30\nCa trưởng Demo\nNhân viên\n×\nOFF\n07:30-15:30\n10:00-18:00\n10:00-15:00\n13:00-19:00\n14:00-22:00\n15:00-21:00\n16:30-21:30\nOFF\n07:30-15:30\n10:00-18:00\n10:00-15:00\n13:00-19:00\n14:00-22:00\n15:00-21:00\n16:30-21:30\nOFF\n07:30-15:30\n10:00-18:00\n10:00-15:00\n13:00-19:00\n14:00-22:00\n15:00-21:00\n16:30-21:30\nOFF\n07",
+    "wide": [
+      {
+        "tag": "div",
+        "cls": "schedule-sheet-scroll",
+        "text": "Họ và tênVị tríThứ 2, 22/06Thứ 3, 23/06Thứ 4, 24/06Thứ 5, 25/06Thứ 6, ",
+        "x": -6,
+        "w": 402,
+        "right": 396,
+        "display": "block",
+        "overflowX": "auto"
+      },
+      {
+        "tag": "section",
+        "cls": "weekly-schedule-matrix",
+        "text": "Họ và tênVị tríThứ 2, 22/06Thứ 3, 23/06Thứ 4, 24/06Thứ 5, 25/06Thứ 6, ",
+        "x": -6,
+        "w": 900,
+        "right": 894,
+        "display": "block",
+        "overflowX": "hidden"
+      },
+      {
+        "tag": "div",
+        "cls": "weekly-schedule-row header",
+        "text": "Họ và tênVị tríThứ 2, 22/06Thứ 3, 23/06Thứ 4, 24/06Thứ 5, 25/06Thứ 6, ",
+        "x": -6,
+        "w": 900,
+        "right": 894,
+        "display": "grid",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "strong",
+        "cls": "",
+        "text": "Họ và tên",
+        "x": -6,
+        "w": 128,
+        "right": 122,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "strong",
+        "cls": "",
+        "text": "Thứ 4, 24/06",
+        "x": 388,
+        "w": 92,
+        "right": 480,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "strong",
+        "cls": "",
+        "text": "Thứ 5, 25/06",
+        "x": 480,
+        "w": 92,
+        "right": 572,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "strong",
+        "cls": "",
+        "text": "Thứ 6, 26/06",
+        "x": 572,
+        "w": 92,
+        "right": 664,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "strong",
+        "cls": "",
+        "text": "Thứ 7, 27/06",
+        "x": 664,
+        "w": 92,
+        "right": 756,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "strong",
+        "cls": "",
+        "text": "CN, 28/06",
+        "x": 756,
+        "w": 92,
+        "right": 848,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "div",
+        "cls": "weekly-schedule-row selected",
+        "text": "demo-manager · TôiNhân viênOFF07:30-15:3010:00-18:0010:00-15:0013:00-1",
+        "x": -6,
+        "w": 900,
+        "right": 894,
+        "display": "grid",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "button",
+        "cls": "schedule-person-button",
+        "text": "demo-manager · Tôi",
+        "x": -6,
+        "w": 128,
+        "right": 122,
+        "display": "block",
+        "overflowX": "visible"
+      },
+      {
+        "tag": "select",
+        "cls": "schedule-cell off",
+        "text": "OFF07:30-15:3010:00-18:0010:00-15:0013:00-19:0014:00-22:0015:00-21:001",
+        "x": 391,
+        "w": 86,
+        "right": 477,
+        "display": "flex",
+        "overflowX": "visible"
+      }
+    ],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      },
+      {
+        "text": "×",
+        "w": 18,
+        "h": 14,
+        "x": 177,
+        "y": 891
+      },
+      {
+        "text": "×",
+        "w": 18,
+        "h": 14,
+        "x": 177,
+        "y": 948
+      },
+      {
+        "text": "×",
+        "w": 18,
+        "h": 14,
+        "x": 164,
+        "y": 1005
+      },
+      {
+        "text": "×",
+        "w": 18,
+        "h": 14,
+        "x": 177,
+        "y": 1062
+      }
+    ]
+  },
+  "manager_logs": [
+    "error: Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED"
+  ],
+  "staff_launcher": {
+    "title": "GUSTINO Operations",
+    "hash": "#launcher",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 844,
+    "overflowX": 0,
+    "bodyText": "G\nGUSTINO\nHẠT DẺ ÔNG LÝ\nEN\nĐăng xuất\nCHỌN ỨNG DỤNG\nHôm nay bạn muốn làm gì?\n\nChạm vào một biểu tượng để bắt đầu.\n\n◎\n✓\nChấm công\nThêm ca · Check-in selfie · Bảng công\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững",
+    "wide": [],
+    "tinyControls": []
+  },
+  "staff_attendance": {
+    "title": "GUSTINO Operations",
+    "hash": "#attendance",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 918,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Nhân viên Demo\nChúc bạn một ngày năng lượng.\n←\nTrở lại\nThoát chức năng\n×\nCHẤM CÔNG\nĐăng ký lịch và chấm công\n\nChọn ca ngay trên bảng tuần; đến ngày làm, mở Chấm công hôm nay để check-in/out.\n\nNhân viên bán hàng\nChấm công hôm nay\nĐăng ký lịch làm\nCA CỦA TÔI\nLịch làm việc\n1 ca\n22-06\nThứ 2\nĐã đăng ký\n10:00 – 15:00\n\nGold Coast Nha Trang\n\nCheck-in vào đúng ngày đã đăng ký.\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững\n◉\nChấm công",
+    "wide": [],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      }
+    ]
+  },
+  "staff_logs": [
+    "error: Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED"
+  ],
+  "kitchen_page": {
+    "title": "GUSTINO Operations",
+    "hash": "#kitchen",
+    "viewport": "390x844",
+    "scrollWidth": 390,
+    "scrollHeight": 1557,
+    "overflowX": 0,
+    "bodyText": "G\nEN\nĐăng xuất\n← Hạt dẻ ông Lý\nChào Bếp Demo\nChúc bạn một ngày năng lượng.\nMÀN HÌNH BẾP\nĐơn đặt bếp từ ca trưởng\n\nGiữ màn hình này mở. Khi có đơn mới, bếp sẽ thấy thẻ màu vàng và nghe chuông sau khi bật âm thanh.\n\nCHỜ BẾP NHẬN\n0\nĐANG XỬ LÝ\n0\nĐÃ XONG\n0\nĐơn mới\n0\n\nChưa có đơn mới.\n\nĐang làm\n0\n\nChưa có đơn đang xử lý.\n\nĐã hoàn thành\n0\n\nChưa có đơn hoàn thành.\n\nĐã hủy\n0\n\nChưa có đơn bị hủy.\n\n© 2026 Bản quyền thuộc về GUSTINO\nThống Đạt Group — Kiến Tạo Giá Trị Bền Vững\nK\nBếp",
+    "wide": [],
+    "tinyControls": [
+      {
+        "text": "EN",
+        "w": 33,
+        "h": 34,
+        "x": 156,
+        "y": 12
+      }
+    ]
+  },
+  "kitchen_logs": [
+    "error: Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED"
+  ]
+}

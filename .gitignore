@@ -1,0 +1,12 @@
+node_modules
+dist
+data/*.json
+.qa-account-data*/
+.env
+.env.local
+*.log
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+.vercel

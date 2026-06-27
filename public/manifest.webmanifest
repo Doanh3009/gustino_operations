@@ -1,0 +1,17 @@
+{
+  "name": "GUSTINO Operations",
+  "short_name": "GUSTINO",
+  "description": "Báo cáo cuối ngày và quản lý kho GUSTINO",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fffdf5",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
