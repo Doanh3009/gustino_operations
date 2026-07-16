@@ -1,13 +1,11 @@
-import { readLocalJson } from './browser'
-import { supabase } from './supabase'
+import { userHeaders } from './core'
+import { shouldUseLanApi, supabase } from './supabase'
 import type { AppUser } from '../types'
-
-const RECEIPT_KEY = 'gustino_pos_receipts_v1'
 
 export type PaymentMethod = 'cash' | 'qr' | 'card'
 
 export interface SalesReceiptLine {
-  allocationId: string
+  allocationId?: string
   productId: string
   productName: string
   quantity: number
@@ -33,39 +31,90 @@ export interface SalesReceipt {
 }
 
 export function loadLocalReceipts(): SalesReceipt[] {
-  return readLocalJson<SalesReceipt[]>(RECEIPT_KEY, [])
+  return []
 }
 
 export function saveLocalReceipts(receipts: SalesReceipt[]) {
-  localStorage.setItem(RECEIPT_KEY, JSON.stringify(receipts))
+  void receipts
+}
+
+const SALES_RECEIPT_PAGE_SIZE = 500
+
+async function fetchAllSalesReceiptRows(
+  loadPage: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }>,
+): Promise<any[]> {
+  const rows: any[] = []
+  for (let from = 0; ; from += SALES_RECEIPT_PAGE_SIZE) {
+    const { data, error } = await loadPage(from, from + SALES_RECEIPT_PAGE_SIZE - 1)
+    if (error) throw new Error(error.message)
+    const page = data || []
+    rows.push(...page)
+    if (page.length < SALES_RECEIPT_PAGE_SIZE) return rows
+  }
+}
+
+async function salesApi<T>(user: AppUser, path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`/api/sales-receipts${path}`, {
+    ...init,
+    headers: { ...userHeaders(user), ...(init?.headers || {}) },
+  })
+  const payload = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(payload?.error || 'Khong the xu ly hoa don POS.')
+  return payload as T
 }
 
 export async function fetchSalesReceipts(
   user: AppUser,
   filters: { branchId: string; date: string },
 ): Promise<SalesReceipt[]> {
-  if (!supabase) {
-    return loadLocalReceipts().filter((receipt) =>
-      receipt.branchId === filters.branchId && receipt.createdAt.slice(0, 10) === filters.date,
-    )
+  if (shouldUseLanApi(user)) {
+    const query = new URLSearchParams({ branchId: filters.branchId, date: filters.date })
+    return salesApi<SalesReceipt[]>(user, `?${query}`)
   }
-  const { data, error } = await supabase
+  const rows = await fetchAllSalesReceiptRows((from, to) => supabase!
     .from('sales_receipts')
     .select('*, sales_receipt_items(*)')
     .eq('branch_id', filters.branchId)
     .eq('business_date', filters.date)
     .order('created_at', { ascending: false })
-    .limit(120)
-  if (error) throw new Error(error.message)
-  return (data || []).map(mapReceipt)
+    .order('id', { ascending: false })
+    .range(from, to))
+  return rows.map(mapReceipt)
+}
+
+export async function fetchSalesReceiptsRange(
+  user: AppUser,
+  filters: { branchIds: string[]; from: string; to: string },
+): Promise<SalesReceipt[]> {
+  const branchIds = Array.from(new Set(filters.branchIds.filter(Boolean)))
+  if (!branchIds.length) return []
+  if (shouldUseLanApi(user)) {
+    const query = new URLSearchParams({
+      branchIds: branchIds.join(','),
+      from: filters.from,
+      to: filters.to,
+    })
+    return salesApi<SalesReceipt[]>(user, `/range?${query}`)
+  }
+  const rows = await fetchAllSalesReceiptRows((from, to) => supabase!
+    .from('sales_receipts')
+    .select('*, sales_receipt_items(*)')
+    .in('branch_id', branchIds)
+    .gte('business_date', filters.from)
+    .lte('business_date', filters.to)
+    .order('business_date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, to))
+  return rows.map(mapReceipt)
 }
 
 export async function saveSalesReceipt(user: AppUser, receipt: SalesReceipt): Promise<void> {
-  if (!supabase) {
-    saveLocalReceipts([receipt, ...loadLocalReceipts()].slice(0, 200))
+  if (shouldUseLanApi(user)) {
+    await salesApi(user, '', { method: 'POST', body: JSON.stringify(receipt) })
     return
   }
-  const { error: receiptError } = await supabase.from('sales_receipts').insert({
+  const { error: receiptError } = await supabase!.from('sales_receipts').insert({
     id: receipt.id,
     code: receipt.code,
     branch_id: receipt.branchId,
@@ -79,9 +128,9 @@ export async function saveSalesReceipt(user: AppUser, receipt: SalesReceipt): Pr
     created_at: receipt.createdAt,
   })
   if (receiptError) throw new Error(receiptError.message)
-  const { error: itemError } = await supabase.from('sales_receipt_items').insert(receipt.lines.map((line) => ({
+  const { error: itemError } = await supabase!.from('sales_receipt_items').insert(receipt.lines.map((line) => ({
     receipt_id: receipt.id,
-    allocation_id: line.allocationId,
+    allocation_id: line.allocationId || null,
     product_id: line.productId,
     product_name: line.productName,
     quantity: line.quantity,
@@ -92,9 +141,18 @@ export async function saveSalesReceipt(user: AppUser, receipt: SalesReceipt): Pr
   if (itemError) throw new Error(itemError.message)
 }
 
+export async function deleteSalesReceipt(user: AppUser, receipt: SalesReceipt): Promise<void> {
+  if (shouldUseLanApi(user)) {
+    await salesApi(user, `/${encodeURIComponent(receipt.id)}`, { method: 'DELETE' })
+    return
+  }
+  const { error } = await supabase!.rpc('delete_pos_receipt', { p_receipt_id: receipt.id })
+  if (error) throw new Error(error.message)
+}
+
 function mapReceipt(row: any): SalesReceipt {
   const lines = (row.sales_receipt_items || []).map((line: any) => ({
-    allocationId: line.allocation_id,
+    allocationId: line.allocation_id || undefined,
     productId: line.product_id,
     productName: line.product_name,
     quantity: Number(line.quantity),

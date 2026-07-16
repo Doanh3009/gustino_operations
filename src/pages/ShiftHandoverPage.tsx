@@ -1,55 +1,27 @@
-import { useEffect, useMemo, useState } from 'react'
-import { PRODUCTS } from '../lib/constants'
-import { createId } from '../lib/browser'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ShiftPhotoButton } from '../components/ShiftPhotoButton'
+import { getFinishedBulkProducts, getSaleProducts, productById, type ConfiguredProduct } from '../lib/constants'
+import { createId, imageFileToDataUrl } from '../lib/browser'
 import { calculateStock, ensureOperationDay, getOperationDay } from '../lib/store'
-import { fetchShiftRegistrations } from '../lib/attendance'
-import { supabase } from '../lib/supabase'
-import { localDateKey } from '../lib/dates'
+import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
+import { supabase, uniqueChannelName } from '../lib/supabase'
+import { formatLocalDate, localDateKey } from '../lib/dates'
+import { fetchConfiguredProducts } from '../lib/products'
 import type { Page } from '../components/AppShell'
 import {
   closeBagShift,
-  fetchBagAllocations,
   fetchBagShiftSessions,
-  issueBags,
-  settleBagAllocation,
   startBagShift,
   uploadBagShiftPhoto,
 } from '../lib/shiftLedger'
-import type { AppUser, BagAllocation, BagShiftSession, OperationDay, ShiftRegistration, StockMovement } from '../types'
-
-const BAG_PRODUCTS = PRODUCTS.filter((product) => product.category === 'finished' && product.unit === 'túi')
+import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
+import type { AppUser, AttendanceRecord, BagShiftSession, OperationDay, ShiftRegistration, StockMovement } from '../types'
 
 function shiftLabel(sequence: number) {
   if (sequence === 1) return 'Ca sáng'
   if (sequence === 2) return 'Ca tối'
   return `Ca ${sequence}`
 }
-
-interface IssueLineDraft {
-  id: string
-  productId: string
-  quantity: string
-}
-
-interface IssueEmployeeDraft {
-  id: string
-  employeeId: string
-  employeeName: string
-  lines: IssueLineDraft[]
-}
-
-const newIssueLine = (): IssueLineDraft => ({
-  id: createId(),
-  productId: BAG_PRODUCTS[0]?.id || '',
-  quantity: '',
-})
-
-const newIssueDraft = (): IssueEmployeeDraft => ({
-  id: createId(),
-  employeeId: '',
-  employeeName: '',
-  lines: [newIssueLine()],
-})
 
 export function ShiftHandoverPage({
   user,
@@ -64,68 +36,87 @@ export function ShiftHandoverPage({
 }) {
   const today = localDateKey()
   const [sessions, setSessions] = useState<BagShiftSession[]>([])
-  const [allocations, setAllocations] = useState<BagAllocation[]>([])
+  const [receipts, setReceipts] = useState<SalesReceipt[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [registrations, setRegistrations] = useState<ShiftRegistration[]>([])
-  const [issueDrafts, setIssueDrafts] = useState<IssueEmployeeDraft[]>([newIssueDraft()])
-  const [settlements, setSettlements] = useState<Record<string, { sold: string; returned: string; damaged: string }>>({})
+  const [myAttendance, setMyAttendance] = useState<AttendanceRecord[]>([])
   const [closingBalances, setClosingBalances] = useState<Record<string, string>>({})
   const [discrepancyNote, setDiscrepancyNote] = useState('')
   const [openingPhoto, setOpeningPhoto] = useState('')
   const [closingPhoto, setClosingPhoto] = useState('')
   const [operationDay, setOperationDay] = useState<OperationDay | null>(null)
+  const [productTick, setProductTick] = useState(0)
+  const autoStartAttemptRef = useRef('')
 
-  const openSession = sessions.find((item) => item.status === 'open')
+  const saleProducts = useMemo(() => getSaleProducts(), [productTick])
+  const countProducts = useMemo(() => {
+    const finishedProducts = getFinishedBulkProducts()
+    return finishedProducts.length ? finishedProducts : saleProducts
+  }, [productTick, saleProducts])
+  const openSession = sessions.find((item) => item.status === 'open' && item.businessDate === today)
+  const staleOpenSessions = sessions.filter((item) => item.status === 'open' && item.businessDate < today)
   const todaySessions = sessions.filter((item) => item.businessDate === today)
   const dayClosed = operationDay?.status === 'closed'
+  const dayLocked = dayClosed
   const maxShiftsReached = !openSession && todaySessions.length >= 2
+  const activeAttendance = myAttendance.find((record) => !record.checkOutTime)
   const stock = useMemo(() => calculateStock(movements), [movements])
-  const openAllocations = allocations.filter((item) => !item.settledAt)
-  const currentShiftAllocations = openSession
-    ? allocations.filter((item) =>
-        !item.settledAt || item.shiftId === openSession.id || item.settlementShiftId === openSession.id,
-      )
-    : []
   const availableBalances = useMemo(
-    () => calculateAvailableBalances(stock, allocations),
-    [stock, allocations],
+    () => Object.fromEntries(countProducts.map((product) => [
+      product.id,
+      Math.max(0, stock.find((line) => line.product.id === product.id)?.expected || 0),
+    ])),
+    [stock, countProducts],
   )
-  const registeredEmployees = useMemo(() => {
-    const unique = new Map<string, ShiftRegistration>()
-    registrations
-      .filter((registration) =>
-        registration.branchId === user.branchId
-        && registration.workDate === today
-        && registration.status !== 'rejected'
-      )
-      .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.userName.localeCompare(b.userName, 'vi'))
-      .forEach((registration) => {
-        if (!unique.has(registration.userId)) unique.set(registration.userId, registration)
-      })
-    return Array.from(unique.values())
-  }, [registrations, today, user.branchId])
-  const allocationGroups = useMemo(() => groupAllocationsByEmployee(currentShiftAllocations), [currentShiftAllocations])
+  const exactShiftReceipts = useMemo(
+    () => openSession ? receiptsInSession(receipts, openSession) : [],
+    [receipts, openSession?.id, openSession?.startedAt, openSession?.endedAt],
+  )
+  const currentShiftReceipts = useMemo(
+    () => openSession ? (exactShiftReceipts.length ? exactShiftReceipts : receipts) : [],
+    [receipts, openSession?.id, exactShiftReceipts],
+  )
+  const usingDaySalesFallback = Boolean(openSession && receipts.length && !exactShiftReceipts.length)
+  const receiptGroups = useMemo(() => groupReceiptsBySeller(currentShiftReceipts), [currentShiftReceipts])
+  const shiftSalesTotal = currentShiftReceipts.reduce((sum, receipt) => ({
+    quantity: sum.quantity + receipt.totalQuantity,
+    revenue: sum.revenue + receipt.totalAmount,
+    receipts: sum.receipts + 1,
+  }), { quantity: 0, revenue: 0, receipts: 0 })
 
   async function refresh(showLoading = false) {
     if (showLoading) setLoading(true)
     try {
-      const [nextSessions, nextAllocations, nextRegistrations] = await Promise.all([
+      const [nextSessions, nextRegistrations, nextAttendance, nextReceipts] = await Promise.all([
         fetchBagShiftSessions(user, { branchId: user.branchId }),
-        fetchBagAllocations(user, { branchId: user.branchId }),
         fetchShiftRegistrations(user, { branchId: user.branchId, from: today, to: today }),
+        fetchAttendanceRecords(user, { branchId: user.branchId, userId: user.id, from: today, to: today }),
+        fetchSalesReceipts(user, { branchId: user.branchId, date: today }),
       ])
       setSessions(nextSessions)
-      setAllocations(nextAllocations)
       setRegistrations(nextRegistrations)
-      void getOperationDay(user.branchId, today).then(setOperationDay).catch(() => {})
+      setMyAttendance(nextAttendance)
+      setReceipts(nextReceipts)
+      void getOperationDay(user.branchId, today, user).then(setOperationDay).catch(() => {})
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Không thể tải sổ túi theo ca.')
+      setFeedback(error instanceof Error ? error.message : 'Không thể tải bàn giao ca.')
     } finally {
       if (showLoading) setLoading(false)
     }
   }
+
+  useEffect(() => {
+    const update = () => setProductTick((tick) => tick + 1)
+    window.addEventListener('gustino-products-updated', update)
+    window.addEventListener('storage', update)
+    void fetchConfiguredProducts(user).then(update).catch(() => {})
+    return () => {
+      window.removeEventListener('gustino-products-updated', update)
+      window.removeEventListener('storage', update)
+    }
+  }, [user.id])
 
   useEffect(() => { void refresh(true) }, [user.id, user.branchId])
   useEffect(() => {
@@ -134,57 +125,68 @@ export function ShiftHandoverPage({
       const timer = window.setInterval(() => void refresh(), 5000)
       return () => window.clearInterval(timer)
     }
-    const channel = client.channel(`bag-ledger:${user.branchId}`)
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'bag_shift_sessions',
-        filter: `branch_id=eq.${user.branchId}`,
-      }, () => void refresh())
-      .on('postgres_changes', {
-        event: '*',
-        schema: 'public',
-        table: 'bag_allocations',
-        filter: `branch_id=eq.${user.branchId}`,
-      }, () => void refresh())
+    const channel = client.channel(uniqueChannelName(`shift-handover:${user.branchId}`))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_shift_sessions', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, () => void refresh())
       .subscribe()
     return () => {
       void client.removeChannel(channel)
     }
   }, [user.branchId, user.id])
+
   useEffect(() => {
-    const openingUrl = openSession?.openingPhotoUrl
-    const closingUrl = openSession?.closingPhotoUrl
-    setOpeningPhoto(openingUrl || localStorage.getItem(shiftPhotoKey(user.branchId, today, 'opening')) || '')
-    setClosingPhoto(closingUrl || localStorage.getItem(shiftPhotoKey(user.branchId, today, 'closing')) || '')
+    setOpeningPhoto(openSession?.openingPhotoUrl || '')
+    setClosingPhoto(openSession?.closingPhotoUrl || '')
   }, [today, user.branchId, openSession?.id, openSession?.openingPhotoUrl, openSession?.closingPhotoUrl])
+
   useEffect(() => {
     if (!openSession) return
     setClosingBalances(Object.fromEntries(
-      BAG_PRODUCTS.map((product) => [product.id, String(availableBalances[product.id] || 0)]),
+      visibleProducts(openSession, movements, countProducts, availableBalances)
+        .map((product) => [product.id, String(availableBalances[product.id] || 0)]),
     ))
-  }, [openSession?.id, JSON.stringify(availableBalances)])
+  }, [openSession?.id, JSON.stringify(availableBalances), countProducts])
+
   async function handleStartShift() {
-    if (dayClosed) {
-      setFeedback('Ngày vận hành đã kết thúc. Sang ngày mới hệ thống sẽ cho nhận ca mới.')
+    if (dayLocked) {
+      setFeedback('Ngày vận hành đã kết thúc sau đủ 2 ca. Sang ngày mới hệ thống sẽ cho nhận ca mới.')
       return
     }
     if (todaySessions.length >= 2) {
-      setFeedback('Hôm nay đã đủ 2 ca (Ca sáng và Ca tối). Không thể nhận thêm ca mới.')
+      setFeedback('Hôm nay đã đủ 2 ca. Không thể nhận thêm ca mới.')
+      return
+    }
+    const myRegistrations = registrations.filter((item) =>
+      item.userId === user.id && item.workDate === today && item.status === 'approved',
+    )
+    if (!myRegistrations.length) {
+      setFeedback('Bạn không có ca làm hôm nay nên chưa thể nhận ca. Hãy đăng ký/được xếp ca trong Chấm công trước.')
+      return
+    }
+    const activeAttendance = myRegistrations
+      .map((registration) => findAttendanceRecordForRegistration(myAttendance, registration))
+      .find((record) => record && !record.checkOutTime)
+    if (!activeAttendance) {
+      const hasCheckedOut = myRegistrations.some((registration) => findAttendanceRecordForRegistration(myAttendance, registration)?.checkOutTime)
+      setFeedback(hasCheckedOut
+        ? 'Bạn đã check-out ca hôm nay. Không thể nhận/mở ca vận hành sau khi đã kết ca cá nhân.'
+        : 'Bạn chưa chấm công hôm nay. Hãy check-in trong Chấm công rồi quay lại nhận ca.')
       return
     }
     setBusy(true)
     try {
       const day = await ensureOperationDay(user, today)
       setOperationDay(day)
-      const openingBalances = Object.fromEntries(BAG_PRODUCTS.map((product) => {
-        return [product.id, Math.max(0, availableBalances[product.id] || 0)]
-      }))
+      const openingBalances = Object.fromEntries(countProducts.map((product) => [
+        product.id,
+        Math.max(0, availableBalances[product.id] || 0),
+      ]))
       let session = await startBagShift(user, today, openingBalances)
       if (openingPhoto && !session.openingPhotoUrl) {
         session = await uploadBagShiftPhoto(user, session, 'opening', openingPhoto).catch(() => session)
       }
-      setFeedback(`Đã nhận ${shiftLabel(session.sequence)}. Tồn đầu ca đã được lấy tự động.`)
+      setFeedback(`Đã nhận ${shiftLabel(session.sequence)}. Tồn đầu ca đã lấy từ kho thành phẩm hiện tại.`)
       await refresh()
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'Không thể nhận ca.')
@@ -193,21 +195,30 @@ export function ShiftHandoverPage({
     }
   }
 
-  async function saveShiftPhoto(kind: 'opening' | 'closing', file: File | undefined) {
+  useEffect(() => {
+    if (loading || dayLocked || openSession || maxShiftsReached || !activeAttendance) return
+    const key = `${today}:${activeAttendance.id}:${todaySessions.length}`
+    if (autoStartAttemptRef.current === key) return
+    autoStartAttemptRef.current = key
+    void handleStartShift()
+  }, [loading, dayLocked, openSession?.id, maxShiftsReached, activeAttendance?.id, todaySessions.length])
+
+  async function saveShiftPhoto(kind: 'opening' | 'closing', file: File | undefined, targetSession = openSession) {
     if (!file) return
-    if (dayClosed) {
-      setFeedback('Ngày vận hành đã kết thúc, không thể thêm ảnh bàn giao cho ngày này.')
+    if (dayLocked && !targetSession) {
+      setFeedback('Ngày vận hành đã kết thúc, chỉ có thể bổ sung ảnh cho ca đã có trong lịch sử.')
       return
     }
-    const dataUrl = await fileToDataUrl(file)
-    localStorage.setItem(shiftPhotoKey(user.branchId, today, kind), dataUrl)
-    if (kind === 'opening') setOpeningPhoto(dataUrl)
-    else setClosingPhoto(dataUrl)
-    if (openSession) {
+    const dataUrl = await imageFileToDataUrl(file)
+    if (!targetSession || targetSession.id === openSession?.id) {
+      if (kind === 'opening') setOpeningPhoto(dataUrl)
+      else setClosingPhoto(dataUrl)
+    }
+    if (targetSession) {
       try {
-        await uploadBagShiftPhoto(user, openSession, kind, dataUrl)
+        await uploadBagShiftPhoto(user, targetSession, kind, dataUrl)
         await refresh()
-        setFeedback(kind === 'opening' ? 'Đã đồng bộ ảnh quầy đầu ca vào sổ ca.' : 'Đã đồng bộ ảnh quầy cuối ca vào sổ ca.')
+        setFeedback(kind === 'opening' ? 'Đã đồng bộ ảnh đầu ca vào sổ ca.' : 'Đã đồng bộ ảnh cuối ca vào sổ ca.')
         return
       } catch (error) {
         setFeedback(error instanceof Error ? error.message : 'Không thể đồng bộ ảnh bàn giao.')
@@ -217,194 +228,47 @@ export function ShiftHandoverPage({
     setFeedback(kind === 'opening' ? 'Đã giữ ảnh đầu ca. Ảnh sẽ đồng bộ khi nhận ca.' : 'Đã giữ ảnh cuối ca. Ảnh sẽ đồng bộ khi ca đang mở.')
   }
 
-  function updateIssueDraft(id: string, patch: Partial<IssueEmployeeDraft>) {
-    setIssueDrafts((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item))
-  }
-
-  function setIssueProductQuantity(draftId: string, productId: string, quantity: string) {
-    setIssueDrafts((items) => items.map((draft) => draft.id === draftId
-      ? {
-          ...draft,
-          lines: draft.lines.some((line) => line.productId === productId)
-            ? draft.lines.map((line) => line.productId === productId ? { ...line, quantity } : line)
-            : [...draft.lines, { id: createId(), productId, quantity }],
-        }
-      : draft))
-  }
-
-  async function handleIssue(event: React.FormEvent) {
-    event.preventDefault()
+  async function handleCloseShift(options: { afterClose?: () => void } = {}) {
     if (!openSession) return
-    if (dayClosed) {
-      setFeedback('Ngày vận hành đã kết thúc, không thể phát thêm túi.')
-      return
-    }
-    const rows = issueDrafts.flatMap((draft) => draft.lines
-      .map((line) => ({
-        employeeId: draft.employeeId,
-        employeeName: draft.employeeName.trim(),
-        productId: line.productId,
-        issuedQuantity: Number(line.quantity),
-      }))
-      .filter((line) => line.issuedQuantity > 0))
-    if (!rows.length) {
-      setFeedback('Hãy nhập ít nhất một dòng túi cần phát.')
-      return
-    }
-    if (rows.some((row) => !row.employeeId || !row.employeeName)) {
-      setFeedback('Mỗi nhóm phát túi phải chọn nhân viên đã đăng ký ca hôm nay.')
-      return
-    }
-    if (rows.some((row) => !Number.isFinite(row.issuedQuantity) || row.issuedQuantity <= 0 || !Number.isInteger(row.issuedQuantity))) {
-      setFeedback('Số túi phát phải là số nguyên lớn hơn 0.')
-      return
-    }
-    const requestedByProduct = rows.reduce<Record<string, number>>((map, row) => {
-      map[row.productId] = (map[row.productId] || 0) + row.issuedQuantity
-      return map
-    }, {})
-    const overIssued = Object.entries(requestedByProduct).find(([nextProductId, quantity]) => quantity > (availableBalances[nextProductId] || 0))
-    if (overIssued) {
-      const product = PRODUCTS.find((item) => item.id === overIssued[0])
-      setFeedback(`${product?.name || 'Loại túi này'} chỉ còn ${formatNumber(availableBalances[overIssued[0]] || 0)} túi tại quầy.`)
-      return
-    }
-    setBusy(true)
-    try {
-      await Promise.all(rows.map((row) => issueBags(user, openSession, row)))
-      setIssueDrafts([newIssueDraft()])
-      setFeedback(`Đã ghi nhận ${rows.length} dòng phát túi cho nhân viên.`)
-      await refresh()
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Không thể phát túi.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function handleSettle(allocation: BagAllocation) {
-    if (!openSession) return
-    if (dayClosed) {
-      setFeedback('Ngày vận hành đã kết thúc, không thể đối soát thêm.')
-      return
-    }
-    const recordedSold = soldQuantity(allocation)
-    const values = settlements[allocation.id] || { sold: '', returned: '', damaged: '' }
-    const damaged = Math.max(0, Number(values.damaged || 0))
-    const maxDamaged = Math.max(0, allocation.issuedQuantity - recordedSold)
-    if (damaged > maxDamaged) {
-      setFeedback(`Hỏng/mất không thể vượt quá ${formatNumber(maxDamaged)} túi còn lại sau khi bán.`)
-      return
-    }
-    const returned = Math.max(0, allocation.issuedQuantity - recordedSold - damaged)
-    setBusy(true)
-    try {
-      await settleBagAllocation(
-        user,
-        openSession,
-        allocation,
-        recordedSold,
-        returned,
-        damaged,
-      )
-      setSettlements((current) => {
-        const next = { ...current }
-        delete next[allocation.id]
-        return next
-      })
-      setFeedback('Đã thu túi. Số bán lấy từ hóa đơn POS, số trả lại được tự tính.')
-      await refresh()
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Không thể đối soát túi.')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function handleCloseShift() {
-    if (!openSession) return
-    if (dayClosed) {
+    if (dayLocked) {
       setFeedback('Ngày vận hành đã kết thúc, không thể chốt thêm ca.')
       return
     }
-    const soldButNotSettled = openAllocations.filter((item) => soldQuantity(item) > 0)
-    if (soldButNotSettled.length) {
-      setFeedback(`Có ${soldButNotSettled.length} dòng PG đã ghi bán nhưng chưa đối soát. Hãy thu/trả/hỏng cho các dòng này trước khi chốt ca.`)
-      return
-    }
-    const actual = Object.fromEntries(BAG_PRODUCTS.map((product) => [
+    const productsToCount = visibleProducts(openSession, movements, countProducts, availableBalances)
+    const actual = Object.fromEntries(productsToCount.map((product) => [
       product.id,
       Math.max(0, Number(closingBalances[product.id] ?? availableBalances[product.id] ?? 0)),
     ]))
-    const hasDiscrepancy = BAG_PRODUCTS.some((product) =>
+    const hasDiscrepancy = productsToCount.some((product) =>
       Math.abs((actual[product.id] || 0) - (availableBalances[product.id] || 0)) > 0.001,
     )
     if (hasDiscrepancy && !discrepancyNote.trim()) {
-      setFeedback('Có lệch túi. Hãy nhập lý do ngắn trước khi bàn giao.')
+      setFeedback('Có lệch tồn thành phẩm. Hãy nhập lý do ngắn trước khi bàn giao.')
       return
     }
     setBusy(true)
     try {
-      const unposted = allocations.filter((item) =>
-        item.settlementShiftId === openSession.id && item.settledAt && !item.postedAt,
-      )
-      if (closingPhoto && !openSession.closingPhotoUrl) {
-        await uploadBagShiftPhoto(user, openSession, 'closing', closingPhoto).catch(() => null)
-      }
+      const openingPhotoSynced = Boolean(openSession.openingPhotoUrl || !openingPhoto)
+      const closingPhotoSynced = Boolean(openSession.closingPhotoUrl || !closingPhoto)
       const now = new Date()
-      const movementRows: StockMovement[] = []
-      for (const allocation of unposted) {
-        const sold = soldQuantity(allocation)
-        if (sold > 0) {
-          movementRows.push({
-            id: createId(),
-            documentId: openSession.id,
-            branchId: user.branchId,
-            productId: allocation.productId,
-            type: 'sale_out',
-            quantity: sold,
-            shiftDate: today,
-            note: `[${shiftLabel(openSession.sequence)}] ${allocation.employeeName} bán ${formatNumber(sold)} túi`,
-            createdBy: user.id,
-            createdAt: now.toISOString(),
-          })
-        }
-        if (allocation.damagedQuantity > 0) {
-          movementRows.push({
-            id: createId(),
-            documentId: openSession.id,
-            branchId: user.branchId,
-            productId: allocation.productId,
-            type: 'waste',
-            quantity: allocation.damagedQuantity,
-            shiftDate: today,
-            note: `[${shiftLabel(openSession.sequence)}] ${allocation.employeeName} báo hỏng/mất`,
-            createdBy: user.id,
-            createdAt: now.toISOString(),
-          })
-        }
-      }
-      const stillHeld = outstandingByProduct(openAllocations)
-      BAG_PRODUCTS.forEach((product) => {
-        movementRows.push({
-          id: createId(),
-          documentId: openSession.id,
-          branchId: user.branchId,
-          productId: product.id,
-          type: 'count',
-          quantity: (actual[product.id] || 0) + (stillHeld[product.id] || 0),
-          shiftDate: today,
-          note: `[${shiftLabel(openSession.sequence)}] Kiểm đếm bàn giao: tại quầy ${actual[product.id] || 0}, nhân viên đang giữ ${stillHeld[product.id] || 0}`,
-          createdBy: user.id,
-          createdAt: new Date(now.getTime() + 5).toISOString(),
-        })
-      })
+      const movementRows: StockMovement[] = productsToCount.map((product, index) => ({
+        id: createId(),
+        documentId: openSession.id,
+        branchId: user.branchId,
+        productId: product.id,
+        type: 'count',
+        quantity: actual[product.id] || 0,
+        shiftDate: today,
+        note: `[${shiftLabel(openSession.sequence)}] Kiểm đếm tồn thành phẩm cuối ca: ${formatNumber(actual[product.id] || 0)} ${product.unit}`,
+        createdBy: user.id,
+        createdAt: new Date(now.getTime() + index + 1).toISOString(),
+      }))
       await closeBagShift(
         user,
         openSession,
         actual,
         discrepancyNote,
-        unposted.map((item) => item.id),
+        [],
         movementRows.map((row) => ({
           id: row.id,
           product_id: row.productId,
@@ -420,68 +284,71 @@ export function ShiftHandoverPage({
         })),
       )
       setDiscrepancyNote('')
-      localStorage.removeItem(shiftPhotoKey(user.branchId, today, 'opening'))
-      localStorage.removeItem(shiftPhotoKey(user.branchId, today, 'closing'))
-      setOpeningPhoto('')
-      setClosingPhoto('')
-      setFeedback(`Đã chốt ${shiftLabel(openSession.sequence)}. Ca sau sẽ nhận đúng số thực tế vừa đếm.`)
+      if (openingPhotoSynced) setOpeningPhoto('')
+      if (closingPhotoSynced) setClosingPhoto('')
+      setFeedback(openSession.sequence >= 2
+        ? `Đã chốt ${shiftLabel(openSession.sequence)}. Chuyển sang báo cáo cuối ngày để chốt doanh thu và đóng ngày.`
+        : `Đã chốt ${shiftLabel(openSession.sequence)}. Tồn thành phẩm sẽ thành tồn đầu ca 2.`)
       await Promise.all([refresh(), onChanged()])
+      options.afterClose?.()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Không thể chốt bàn giao ca.'
-      setFeedback(`Không thể chốt bàn giao ca: ${message}`)
+      setFeedback(message.includes('Không thể chốt bàn giao ca') ? message : `Không thể chốt bàn giao ca: ${message}`)
     } finally {
       setBusy(false)
     }
   }
 
-  if (loading) return <div className="page"><section className="section-card">Đang tải sổ túi theo ca…</section></div>
+  if (loading) return <div className="page"><section className="section-card">Đang tải bàn giao ca...</section></div>
 
   return (
     <div className="page handover-page">
       <div className="page-heading">
         <div>
-          <span className="eyebrow dark">SỔ TÚI THEO CA</span>
-          <h1>Nhận ca · Phát túi · Bàn giao</h1>
-          <p>Ghi túi phát cho nhân viên và đếm số còn tại quầy khi hết ca.</p>
+          <span className="eyebrow dark">BÀN GIAO CA</span>
+          <h1>Nhận ca - xem bán hàng - chốt tồn</h1>
+          <p>Ca trưởng ghi nhận tồn thành phẩm cuối ca. Nhân viên bán hàng bán trực tiếp theo menu POS.</p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <span className={`handover-shift-chip ${openSession ? 'open' : ''}`}>
             {openSession ? `${shiftLabel(openSession.sequence)} đang mở` : 'Chưa nhận ca'}
           </span>
-          <button className="handover-link-sales" onClick={() => onNavigate('sales')}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 14, height: 14 }}><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" /><line x1="3" y1="6" x2="21" y2="6" /><path d="M16 10a4 4 0 01-8 0" /></svg>
-            Xem sổ bán hàng
-          </button>
+          <button className="handover-link-sales" onClick={() => onNavigate('sales')}>Xem sổ bán hàng</button>
         </div>
       </div>
 
       {feedback && <div className="feedback-bar">{feedback}<button onClick={() => setFeedback('')}>×</button></div>}
+
+      {/* Ảnh đầu ca đã chuyển lên trang Hôm nay (thống nhất 1 nơi). Vẫn có thể bổ sung ở lịch sử ca bên dưới. */}
+
+      {staleOpenSessions.length > 0 && (
+        <div className="feedback-bar">
+          Còn {staleOpenSessions.length} ca ngày trước ({staleOpenSessions.map((item) => formatLocalDate(item.businessDate)).join(', ')}) chưa chốt.
+          Ca hôm nay vẫn nhận bình thường; nhờ quản lý chốt ngày cũ để đóng ca treo.
+        </div>
+      )}
 
       {!openSession && !maxShiftsReached && (
         <section className="handover-start-card">
           <span>1</span>
           <div>
             <small>{todaySessions.length === 0 ? 'CA SÁNG' : 'CA TỐI'}</small>
-            <h2>Nhận {todaySessions.length === 0 ? 'Ca sáng' : 'Ca tối'}</h2>
-            <p>Hệ thống tự lấy tồn quầy từ lần bàn giao trước và tách riêng số túi nhân viên còn giữ.</p>
-            {openAllocations.length > 0 && <strong>{openAllocations.length} lượt túi từ ca trước chưa đối soát</strong>}
-            <label className="shift-photo-button">
-              <input type="file" accept="image/*" capture="environment" onChange={(event) => void saveShiftPhoto('opening', event.target.files?.[0])} />
-              📷 Chụp ảnh quầy đầu ca
-            </label>
-            {openingPhoto && <img className="shift-photo-preview" src={openingPhoto} alt="Ảnh quầy đầu ca" />}
+            <h2>{activeAttendance ? 'Đang tự mở ca sau check-in' : 'Check-in để ca tự mở'}</h2>
+            <p>{activeAttendance
+              ? 'Hệ thống đang đồng bộ tồn thành phẩm hiện tại làm tồn đầu ca; bạn không cần bấm nút nhận ca.'
+              : 'Ca vận hành sẽ tự mở ngay khi ca trưởng check-in thành công. Phần Bàn giao vẫn giữ để kiểm tồn và chốt ca.'}</p>
           </div>
-          <button className="primary-button" disabled={busy} onClick={handleStartShift}>Nhận ca</button>
+          {busy && <small className="attendance-busy-hint">Đang đồng bộ ca…</small>}
         </section>
       )}
 
       {maxShiftsReached && !dayClosed && (
         <section className="handover-start-card">
-          <span>✓</span>
+          <span>OK</span>
           <div>
             <small>ĐÃ ĐỦ CA HÔM NAY</small>
             <h2>Ca sáng và Ca tối đã bàn giao</h2>
-            <p>Hôm nay đã hoàn thành 2 ca. Vào <strong>Cuối ca</strong> để chốt báo cáo ngày.</p>
+            <p>Hôm nay đã hoàn thành 2 ca. Vào Báo cáo để chốt báo cáo ngày.</p>
           </div>
         </section>
       )}
@@ -489,196 +356,91 @@ export function ShiftHandoverPage({
       {openSession && (
         <>
           <section className="handover-balance-grid">
-            {visibleProducts(openSession, movements, currentShiftAllocations).map((product) => {
-              const held = outstandingByProduct(openAllocations)[product.id] || 0
-              return (
-                <article key={product.id}>
-                  <small>{product.name}</small>
-                  <strong>{formatNumber(availableBalances[product.id] || 0)}</strong>
-                  <span>còn tại quầy</span>
-                  {held > 0 && <em>{formatNumber(held)} túi nhân viên đang giữ</em>}
-                </article>
-              )
-            })}
+            {visibleProducts(openSession, movements, countProducts, availableBalances).map((product) => (
+              <article key={product.id}>
+                <small>{product.name}</small>
+                <strong>{formatNumber(availableBalances[product.id] || 0)}</strong>
+                <span>tồn thành phẩm</span>
+              </article>
+            ))}
+            <article>
+              <small>Tổng sản phẩm đã bán</small>
+              <strong>{formatNumber(shiftSalesTotal.quantity)}</strong>
+              <span>{formatMoney(shiftSalesTotal.revenue)} - {shiftSalesTotal.receipts} hóa đơn</span>
+            </article>
           </section>
 
           <div className="handover-columns">
-            <form className="entry-card handover-issue-form" onSubmit={handleIssue}>
-              <div className="section-title"><div><span className="eyebrow dark">PHÁT TÚI</span><h2>Một nhân viên · nhiều sản phẩm</h2></div><b>2</b></div>
-              <p className="handover-step-help">Chọn nhân viên, nhập số lượng ở nhiều loại túi cần giao, rồi bấm một lần để phát tất cả.</p>
-              <div className="issue-draft-list compact">
-                {issueDrafts.slice(0, 1).map((draft) => {
-                  const selectedLines = draft.lines.filter((line) => Number(line.quantity) > 0)
-                  const selectedTotal = selectedLines.reduce((sum, line) => sum + Number(line.quantity || 0), 0)
-                  return (
-                  <div className="issue-draft-card issue-matrix-card" key={draft.id}>
-                    <label className="issue-employee-select">Nhân viên nhận túi
-                      <select value={draft.employeeId} onChange={(event) => {
-                        const employee = registeredEmployees.find((item) => item.userId === event.target.value)
-                        updateIssueDraft(draft.id, {
-                          employeeId: event.target.value,
-                          employeeName: employee?.userName || '',
-                        })
-                      }} required disabled={!registeredEmployees.length}>
-                        <option value="">{registeredEmployees.length ? 'Chọn nhân viên trong ca' : 'Chưa có nhân viên đăng ký ca hôm nay'}</option>
-                        {registeredEmployees.map((employee) => (
-                          <option key={employee.userId} value={employee.userId}>
-                            {employee.userName} · {employee.startTime}-{employee.endTime}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className="issue-product-matrix" aria-label="Chọn nhiều sản phẩm để phát trong một lần">
-                      {BAG_PRODUCTS.map((product) => {
-                      const line = draft.lines.find((item) => item.productId === product.id)
-                      const selectedAvailable = availableBalances[product.id] || 0
-                      const quantity = line?.quantity || ''
-                      return (
-                        <label className={selectedAvailable <= 0 ? 'issue-product-cell empty' : Number(quantity) > 0 ? 'issue-product-cell active' : 'issue-product-cell'} key={product.id}>
-                          <span>
-                            <strong>{product.name}</strong>
-                            <small>Còn {formatNumber(selectedAvailable)}</small>
-                          </span>
-                            <input
-                              type="number"
-                              min="1"
-                              max={selectedAvailable}
-                              step="1"
-                              value={quantity}
-                              disabled={selectedAvailable <= 0}
-                              onChange={(event) => setIssueProductQuantity(draft.id, product.id, event.target.value)}
-                              placeholder="0"
-                            />
-                        </label>
-                      )
-                    })}
-                    </div>
-                    <div className="issue-submit-bar">
-                      <span>{selectedLines.length ? `${selectedLines.length} loại · ${formatNumber(selectedTotal)} túi` : 'Chưa nhập số lượng'}</span>
-                      <button className="primary-button" disabled={busy || !registeredEmployees.length || selectedLines.length === 0}>
-                        Phát tất cả
-                      </button>
-                    </div>
-                  </div>
-                  )
-                })}
-              </div>
-              {!registeredEmployees.length && (
-                <div className="issue-availability empty">
-                  Vào Chấm công để đăng ký ca cho nhân viên trước, sau đó quay lại phát túi.
-                </div>
-              )}
-            </form>
-
             <section className="section-card handover-employee-list">
-              <div className="section-title"><div><span className="eyebrow dark">THU TÚI</span><h2>Nhân viên đang giữ</h2></div><span className="date-chip">{currentShiftAllocations.length}</span></div>
-              <p className="handover-step-help">Không nhập số bán ở đây. Mỗi đơn bán tạo hóa đơn trong màn Bán hàng; khi thu túi, hệ thống tự lấy số đã bán và tính số trả lại.</p>
-              {!currentShiftAllocations.length && <p className="empty-copy">Chưa phát túi cho nhân viên trong ca này.</p>}
-              {allocationGroups.map((group) => (
+              <div className="section-title">
+                <div><span className="eyebrow dark">BÁN TRONG CA</span><h2>Nhân viên đã bán</h2></div>
+                <span className="date-chip">{formatNumber(shiftSalesTotal.quantity)} sản phẩm</span>
+              </div>
+              <p className="handover-step-help">
+                {usingDaySalesFallback
+                  ? 'Chưa khớp được mốc giờ nhận ca, nên đang hiển thị toàn bộ hóa đơn POS hôm nay để ca trưởng vẫn thấy lượng nhân viên bán được.'
+                  : 'Danh sách này lấy từ hóa đơn POS trong thời gian ca đang mở. Không còn bước phân bổ hay thu lại.'}
+              </p>
+              {!receiptGroups.length && <p className="empty-copy">Chưa có hóa đơn nào trong ca này.</p>}
+              {receiptGroups.map((group) => (
                 <article className="allocation-group" key={group.key}>
                   <div className="allocation-group-head">
                     <strong>{group.employeeName}</strong>
-                    <small>{group.items.length} dòng túi</small>
+                    <small>{group.receiptCount} hóa đơn</small>
                   </div>
-                  {group.items.map((allocation) => {
-                    const product = PRODUCTS.find((item) => item.id === allocation.productId)
-                    const recordedSold = soldQuantity(allocation)
-                    const values = settlements[allocation.id] || { sold: '', returned: '', damaged: '' }
-                    const damagedValue = Number(values.damaged || 0)
-                    const maxDamaged = Math.max(0, allocation.issuedQuantity - recordedSold)
-                    const returnedValue = Math.max(0, allocation.issuedQuantity - recordedSold - damagedValue)
-                    const remainingValue = Math.max(0, allocation.issuedQuantity - recordedSold)
-                    const setDamage = (nextValue: number) => {
-                      setSettlements((current) => ({
-                        ...current,
-                        [allocation.id]: {
-                          ...values,
-                          damaged: nextValue > 0 ? String(Math.min(Math.max(0, nextValue), maxDamaged)) : '',
-                        },
-                      }))
-                    }
-                    return (
-                      <div className={allocation.settledAt ? 'allocation-row settled' : 'allocation-row'} key={allocation.id}>
-                        <div className="allocation-main">
-                          <span><strong>{product?.name}</strong><small>{allocation.shiftId !== openSession.id && !allocation.settledAt ? 'Chuyển từ ca trước' : 'Phát trong ca'}</small></span>
-                          <b>{allocation.issuedQuantity} túi</b>
-                        </div>
-                        {allocation.settledAt ? (
-                          <div className="allocation-result">
-                            <span>Bán <strong>{soldQuantity(allocation)}</strong></span>
-                            <span>Trả <strong>{allocation.returnedQuantity}</strong></span>
-                            <span>Hỏng <strong>{allocation.damagedQuantity}</strong></span>
-                          </div>
-                        ) : (
-                          <div className="settle-smart-card">
-                            <div className="settle-smart-grid">
-                              <span>
-                                <small>Đã bán POS</small>
-                                <strong>{formatNumber(recordedSold)}</strong>
-                              </span>
-                              <span>
-                                <small>Còn cần thu</small>
-                                <strong>{formatNumber(remainingValue)}</strong>
-                              </span>
-                              <span>
-                                <small>Tự trả lại</small>
-                                <strong>{formatNumber(returnedValue)}</strong>
-                              </span>
-                            </div>
-                            <div className="damage-stepper">
-                              <span>Hỏng/mất</span>
-                              <button type="button" disabled={damagedValue <= 0} onClick={() => setDamage(damagedValue - 1)} aria-label="Giảm hỏng mất">−</button>
-                              <input
-                                inputMode="numeric"
-                                value={values.damaged}
-                                max={maxDamaged}
-                                onChange={(event) => setSettlements((current) => ({ ...current, [allocation.id]: { ...values, damaged: clampIntegerText(event.target.value, maxDamaged) } }))}
-                                placeholder="0"
-                              />
-                              <button type="button" disabled={damagedValue >= maxDamaged} onClick={() => setDamage(damagedValue + 1)} aria-label="Tăng hỏng mất">+</button>
-                            </div>
-                            <button className="settle-action-button" type="button" disabled={busy || recordedSold > allocation.issuedQuantity} onClick={() => handleSettle(allocation)}>
-                              Xác nhận thu
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
+                  <div className="allocation-row settled">
+                    <div className="allocation-main">
+                      <span><strong>{formatNumber(group.quantity)} sản phẩm</strong><small>{formatMoney(group.revenue)}</small></span>
+                      <b>{formatNumber(group.productCount)} món</b>
+                    </div>
+                    <div className="allocation-result">
+                      {group.products.slice(0, 4).map((item) => (
+                        <span key={item.productId}>{item.name} <strong>{formatNumber(item.quantity)}</strong></span>
+                      ))}
+                    </div>
+                  </div>
                 </article>
               ))}
             </section>
-          </div>
 
-          <section className="section-card handover-close-card">
-            <div className="section-title"><div><span className="eyebrow dark">CHỐT & BÀN GIAO</span><h2>{openSession ? `Bàn giao ${shiftLabel(openSession.sequence)}` : 'Đếm số còn tại quầy'}</h2></div><b>3</b></div>
-            <p className="handover-hint">Số dự kiến đã tự tính. Bạn chỉ sửa nếu số đếm thực tế khác.</p>
-            <div className="handover-count-grid">
-              {visibleProducts(openSession, movements, currentShiftAllocations).map((product) => {
-                const expected = availableBalances[product.id] || 0
-                const actual = Number(closingBalances[product.id] ?? expected)
-                return (
-                  <label className={actual !== expected ? 'different' : ''} key={product.id}>
-                    <span>{product.name}</span>
-                    <small>Dự kiến {formatNumber(expected)}</small>
-                    <input type="number" min="0" step="1" value={closingBalances[product.id] ?? String(expected)} onChange={(event) => setClosingBalances((current) => ({ ...current, [product.id]: event.target.value }))} />
-                  </label>
-                )
-              })}
-            </div>
-            <label className="handover-note">Ghi chú khi có chênh lệch
-              <textarea value={discrepancyNote} onChange={(event) => setDiscrepancyNote(event.target.value)} placeholder="Ví dụ: thiếu 1 túi 330g do rách bao bì" />
-            </label>
-            <div className="shift-photo-row">
-              <label className="shift-photo-button">
-                <input type="file" accept="image/*" capture="environment" onChange={(event) => void saveShiftPhoto('closing', event.target.files?.[0])} />
-                📷 Chụp ảnh quầy cuối ca
+            <section className="section-card handover-close-card">
+              <div className="section-title"><div><span className="eyebrow dark">CHỐT TỒN</span><h2>{`Bàn giao ${shiftLabel(openSession.sequence)}`}</h2></div><b>2</b></div>
+              <p className="handover-hint">Đếm tồn thành phẩm thực tế cuối ca. Số này sẽ kế thừa cho ca sau và còn trong kho để ngày mai bán tiếp.</p>
+              <div className="handover-count-grid">
+                {visibleProducts(openSession, movements, countProducts, availableBalances).map((product) => {
+                  const expected = availableBalances[product.id] || 0
+                  const actual = Number(closingBalances[product.id] ?? expected)
+                  return (
+                    <label className={actual !== expected ? 'different' : ''} key={product.id}>
+                      <span>{product.name}</span>
+                      <small>Dự kiến {formatNumber(expected)}</small>
+                      <input type="number" min="0" step="0.0001" inputMode="decimal" value={closingBalances[product.id] ?? String(expected)} onChange={(event) => setClosingBalances((current) => ({ ...current, [product.id]: event.target.value }))} />
+                    </label>
+                  )
+                })}
+              </div>
+              <label className="handover-note">Ghi chú khi có chênh lệch
+                <textarea value={discrepancyNote} onChange={(event) => setDiscrepancyNote(event.target.value)} placeholder="Ví dụ: thiếu 1 túi do rách bao bì" />
               </label>
-              {closingPhoto && <img className="shift-photo-preview" src={closingPhoto} alt="Ảnh quầy cuối ca" />}
-            </div>
-            {openAllocations.length > 0 && <div className="handover-warning">Có {openAllocations.length} lượt túi nhân viên vẫn đang giữ. Hệ thống sẽ chuyển nguyên trạng sang ca sau.</div>}
-            <button className="primary-button wide" disabled={busy} onClick={handleCloseShift}>Chốt & bàn giao ca</button>
-          </section>
+              <div className="shift-photo-row">
+                <PhotoPickers
+                  kind="closing"
+                  prefix={closingPhoto || openSession.closingPhotoUrl ? 'Đổi ảnh cuối ca' : 'Ảnh cuối ca'}
+                  onPick={(file) => void saveShiftPhoto('closing', file)}
+                />
+                {closingPhoto && <img className="shift-photo-preview" src={closingPhoto} alt="Ảnh quầy cuối ca" />}
+              </div>
+              <button
+                className="primary-button wide"
+                disabled={busy}
+                onClick={() => openSession.sequence >= 2
+                  ? void handleCloseShift({ afterClose: () => onNavigate('report') })
+                  : void handleCloseShift()}
+              >
+                {openSession.sequence >= 2 ? 'Báo cáo cuối ngày' : 'Chốt & bàn giao ca'}
+              </button>
+            </section>
+          </div>
         </>
       )}
 
@@ -688,8 +450,16 @@ export function ShiftHandoverPage({
           {todaySessions.filter((item) => item.status === 'closed').map((session) => (
             <div key={session.id}>
               <span>
-                <strong>{shiftLabel(session.sequence)} · {session.leaderName}</strong>
-                <small>{formatTime(session.startedAt)} – {session.endedAt ? formatTime(session.endedAt) : ''} · {session.openingPhotoUrl ? 'có ảnh đầu ca' : 'thiếu ảnh đầu ca'} · {session.closingPhotoUrl ? 'có ảnh cuối ca' : 'thiếu ảnh cuối ca'}</small>
+                <strong>{shiftLabel(session.sequence)} - {session.leaderName}</strong>
+                <small>{formatTime(session.startedAt)} - {session.endedAt ? formatTime(session.endedAt) : ''}</small>
+                <span className="handover-history-photos">
+                  {session.openingPhotoUrl ? <img src={session.openingPhotoUrl} alt={`${shiftLabel(session.sequence)} đầu ca`} /> : <em>Thiếu đầu ca</em>}
+                  {session.closingPhotoUrl ? <img src={session.closingPhotoUrl} alt={`${shiftLabel(session.sequence)} cuối ca`} /> : <em>Thiếu cuối ca</em>}
+                </span>
+                <span className="handover-history-photo-actions">
+                  <PhotoPickers kind="opening" prefix={session.openingPhotoUrl ? 'Sửa đầu ca' : 'Bổ sung đầu ca'} compact onPick={(file) => void saveShiftPhoto('opening', file, session)} />
+                  <PhotoPickers kind="closing" prefix={session.closingPhotoUrl ? 'Sửa cuối ca' : 'Bổ sung cuối ca'} compact onPick={(file) => void saveShiftPhoto('closing', file, session)} />
+                </span>
               </span>
               <b>Đã bàn giao</b>
             </div>
@@ -700,109 +470,94 @@ export function ShiftHandoverPage({
   )
 }
 
-function groupAllocationsByEmployee(allocations: BagAllocation[]) {
-  const groups = new Map<string, { key: string; employeeName: string; items: BagAllocation[] }>()
-  allocations.forEach((allocation) => {
-    const key = allocation.employeeId || allocation.employeeName.trim().toLocaleLowerCase('vi')
-    const current = groups.get(key) || { key, employeeName: allocation.employeeName, items: [] }
-    current.items.push(allocation)
+function PhotoPickers({
+  prefix,
+  compact = false,
+  onPick,
+}: {
+  kind: 'opening' | 'closing'
+  prefix: string
+  compact?: boolean
+  onPick: (file: File | undefined) => void
+}) {
+  // Gộp còn 1 nút: bấm vào chọn Chụp ảnh hoặc Tải ảnh lên.
+  return <ShiftPhotoButton prefix={prefix} compact={compact} onPick={onPick} />
+}
+
+function receiptsInSession(receipts: SalesReceipt[], session: BagShiftSession) {
+  return receipts.filter((receipt) => {
+    if (receipt.branchId !== session.branchId || receipt.businessDate !== session.businessDate) return false
+    if (receipt.createdAt < session.startedAt) return false
+    if (session.endedAt && receipt.createdAt > session.endedAt) return false
+    return true
+  })
+}
+
+function groupReceiptsBySeller(receipts: SalesReceipt[]) {
+  const groups = new Map<string, {
+    key: string
+    employeeName: string
+    quantity: number
+    revenue: number
+    receiptCount: number
+    productCount: number
+    products: Array<{ productId: string; name: string; quantity: number }>
+    productMap: Map<string, { productId: string; name: string; quantity: number }>
+  }>()
+  receipts.forEach((receipt) => {
+    const key = receipt.sellerId || receipt.sellerKey || normalizeName(receipt.sellerName)
+    const current = groups.get(key) || {
+      key,
+      employeeName: receipt.sellerName,
+      quantity: 0,
+      revenue: 0,
+      receiptCount: 0,
+      productCount: 0,
+      products: [],
+      productMap: new Map<string, { productId: string; name: string; quantity: number }>(),
+    }
+    current.quantity += receipt.totalQuantity
+    current.revenue += receipt.totalAmount
+    current.receiptCount += 1
+    receipt.lines.forEach((line) => {
+      const product = productById(line.productId)
+      const row = current.productMap.get(line.productId) || {
+        productId: line.productId,
+        name: product?.name || line.productName || line.productId,
+        quantity: 0,
+      }
+      row.quantity += line.quantity
+      current.productMap.set(line.productId, row)
+    })
+    current.products = Array.from(current.productMap.values()).sort((a, b) => b.quantity - a.quantity)
+    current.productCount = current.products.length
     groups.set(key, current)
   })
-  return Array.from(groups.values()).map((group) => ({
-    ...group,
-    items: group.items.sort((a, b) => a.productId.localeCompare(b.productId) || a.issuedAt.localeCompare(b.issuedAt)),
-  }))
+  return Array.from(groups.values()).sort((a, b) => b.quantity - a.quantity || a.employeeName.localeCompare(b.employeeName, 'vi'))
 }
 
-function clampIntegerText(value: string, max: number) {
-  const numeric = Number(value.replace(/\D/g, ''))
-  if (!Number.isFinite(numeric) || numeric <= 0) return ''
-  return String(Math.min(numeric, max))
-}
-
-async function fileToDataUrl(file: File) {
-  try {
-    const bitmap = await createImageBitmap(file)
-    const maxSize = 1280
-    const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height))
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale))
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale))
-    const context = canvas.getContext('2d')
-    if (!context) throw new Error('Không thể xử lý ảnh bàn giao.')
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
-    bitmap.close?.()
-    return canvas.toDataURL('image/jpeg', 0.78)
-  } catch {
-    return readFileAsDataUrl(file)
-  }
-}
-
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(reader.error)
-    reader.readAsDataURL(file)
-  })
-}
-
-function shiftPhotoKey(branchId: string, date: string, kind: 'opening' | 'closing') {
-  return `gustino_shift_${branchId}_${date}_${kind}_photo`
-}
-
-function calculateAvailableBalances(
-  stock: ReturnType<typeof calculateStock>,
-  allocations: BagAllocation[],
+function visibleProducts(
+  session: BagShiftSession,
+  movements: StockMovement[],
+  countProducts: ConfiguredProduct[],
+  availableBalances: Record<string, number>,
 ) {
-  const outstanding = outstandingByProduct(allocations.filter((item) => !item.settledAt))
-  const consumedNotPosted: Record<string, number> = {}
-  allocations.filter((item) => !item.postedAt).forEach((item) => {
-    consumedNotPosted[item.productId] = (consumedNotPosted[item.productId] || 0)
-      + soldQuantity(item)
-      + item.damagedQuantity
-  })
-  return Object.fromEntries(BAG_PRODUCTS.map((product) => {
-    const totalStock = stock.find((line) => line.product.id === product.id)?.expected || 0
-    return [product.id, Math.max(0,
-      totalStock
-      - (outstanding[product.id] || 0)
-      - (consumedNotPosted[product.id] || 0),
-    )]
-  }))
-}
-
-function outstandingByProduct(allocations: BagAllocation[]) {
-  const result: Record<string, number> = {}
-  allocations.forEach((item) => {
-    const stillHeld = Math.max(0,
-      item.issuedQuantity
-      - soldQuantity(item)
-      - item.returnedQuantity
-      - item.damagedQuantity,
-    )
-    result[item.productId] = (result[item.productId] || 0) + stillHeld
-  })
-  return result
-}
-
-function visibleProducts(session: BagShiftSession, movements: StockMovement[], allocations: BagAllocation[]) {
   const ids = new Set<string>()
-  BAG_PRODUCTS.forEach((product) => {
+  countProducts.forEach((product) => {
     if ((session.openingBalances[product.id] || 0) > 0) ids.add(product.id)
+    if ((availableBalances[product.id] || 0) > 0) ids.add(product.id)
   })
-  movements.filter((item) => item.type === 'packing_in' && item.createdAt >= session.startedAt).forEach((item) => ids.add(item.productId))
-  allocations.forEach((item) => ids.add(item.productId))
-  if (!ids.size) BAG_PRODUCTS.slice(0, 4).forEach((product) => ids.add(product.id))
-  return BAG_PRODUCTS.filter((product) => ids.has(product.id))
+  movements
+    .filter((item) => item.type === 'processing_in' && item.createdAt >= session.startedAt)
+    .forEach((item) => ids.add(item.productId))
+  if (!ids.size) countProducts.slice(0, 4).forEach((product) => ids.add(product.id))
+  return countProducts.filter((product) => ids.has(product.id))
 }
 
-function soldQuantity(allocation: BagAllocation) {
-  if (typeof allocation.soldQuantity === 'number') return Math.max(0, allocation.soldQuantity)
-  return allocation.settledAt
-    ? Math.max(0, allocation.issuedQuantity - allocation.returnedQuantity - allocation.damagedQuantity)
-    : 0
-}
-
-function formatNumber(value: number) { return Number(value.toFixed(2)).toLocaleString('vi-VN') }
+// Thành phẩm bàn giao theo kg, cho tới 4 số lẻ; số nguyên (vd số lượng bán) vẫn hiển thị nguyên.
+function formatNumber(value: number) { return Number(value.toFixed(4)).toLocaleString('vi-VN', { maximumFractionDigits: 4 }) }
+function formatMoney(value: number) { return `${Math.round(value).toLocaleString('vi-VN')}d` }
 function formatTime(value: string) { return new Date(value).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) }
+function normalizeName(value: string) {
+  return value.trim().toLocaleLowerCase('vi').normalize('NFD').replace(/\p{Diacritic}/gu, '')
+}

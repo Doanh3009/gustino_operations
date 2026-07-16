@@ -15,36 +15,44 @@ try {
     geolocation: { latitude: 10.7769, longitude: 106.7009 },
     permissions: ['geolocation'],
   })
-  await context.addInitScript(() => {
-    localStorage.setItem('gustino_demo_user_v1', JSON.stringify({
-      id: 'qa-attendance-user',
+  // ID duy nhất mỗi lần chạy để không đụng record chấm công của lần chạy trước (LAN lưu bền).
+  const qaUserId = `qa-attendance-user-${Date.now()}`
+  await context.addInitScript((userId) => {
+    // authToken bắt buộc để app chạy chế độ LAN; thiếu thì app coi là phiên
+    // Supabase và tự sign-out vì profile demo không tồn tại trên DB thật.
+    localStorage.setItem('gustino_user_v1', JSON.stringify({
+      id: userId,
       name: 'Nhân viên QA',
       email: 'qa-attendance@gustino.local',
       role: 'staff',
       branchId: 'gold-coast',
       branchIds: ['gold-coast'],
+      authToken: 'qa-staff-token',
     }))
-  })
+    localStorage.removeItem('gustino_demo_user_v1')
+  }, qaUserId)
 
   const page = await context.newPage()
   await page.goto(`${baseUrl}/#attendance`, { waitUntil: 'networkidle' })
   const marker = `QA ${Date.now()}`
-  const minute = String(Math.floor(Date.now() / 1000) % 60).padStart(2, '0')
+  // Check-in chỉ mở 30' trước giờ vào; check-out chỉ mở 30' trước giờ ra.
+  // Tạo ca ôm thời điểm hiện tại: vào = now-15', ra = now+25' để cả hai nút hoạt động.
+  const hhmm = (date) => `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
   const registration = {
     id: crypto.randomUUID(),
-    userId: 'qa-attendance-user',
+    userId: qaUserId,
     userName: 'Nhân viên QA',
     branchId: 'gold-coast',
     workDate: businessDate(),
-    startTime: `03:${minute}`,
-    endTime: `04:${minute}`,
+    startTime: hhmm(new Date(Date.now() - 15 * 60000)),
+    endTime: hhmm(new Date(Date.now() + 25 * 60000)),
     status: 'approved',
     note: marker,
     createdAt: new Date().toISOString(),
   }
   const response = await page.request.post(`${baseUrl}/api/attendance/registrations`, {
     headers: {
-      'X-User-Id': 'qa-attendance-user',
+      'X-User-Id': qaUserId,
       'X-User-Role': 'staff',
       'X-User-Branch': 'gold-coast',
       'X-User-Branches': 'gold-coast',
@@ -69,6 +77,8 @@ try {
   }
 
   const checkedInCard = page.locator('.shift-card').filter({ hasText: marker })
+  // §24: check-out bắt buộc chụp ảnh bàn giao trước, nút mới bật.
+  await checkedInCard.locator('.checkout-selfie-button input[type="file"]').setInputFiles(join('data/attendance-selfies', selfieName))
   await checkedInCard.getByRole('button', { name: 'Check-out' }).click()
   await page.getByText(/Check-out thành công/).waitFor()
   await checkedInCard.getByText(/Ra:/).waitFor()

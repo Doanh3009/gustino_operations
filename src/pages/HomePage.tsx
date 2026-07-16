@@ -1,4 +1,4 @@
-import { BRANCHES } from '../lib/constants'
+import { branchName } from '../lib/branches'
 import { calculateStock } from '../lib/store'
 import type { StockMovement, AppUser } from '../types'
 import type { Page } from '../components/AppShell'
@@ -10,7 +10,7 @@ interface Props {
 }
 
 export function HomePage({ user, movements, onNavigate }: Props) {
-  const branch = BRANCHES.find((item) => item.id === user.branchId)
+  const currentBranchName = branchName(user.branchId)
   const stock = calculateStock(movements)
   const lowStock = stock.filter((line) => line.expected <= line.product.lowStock)
   const today = new Date().toLocaleDateString('vi-VN', {
@@ -23,7 +23,7 @@ export function HomePage({ user, movements, onNavigate }: Props) {
         <div>
           <span className="eyebrow dark">TRUNG TÂM VẬN HÀNH</span>
           <h1>Xin chào, {user.name}</h1>
-          <p>{branch?.name} · {today}</p>
+          <p>{currentBranchName} · {today}</p>
         </div>
         <span className="sync-pill"><i /> Dữ liệu đã đồng bộ</span>
       </div>
@@ -34,7 +34,7 @@ export function HomePage({ user, movements, onNavigate }: Props) {
           <h2>Sẵn sàng bắt đầu?</h2>
           <p>Chọn công việc cần thực hiện. Dữ liệu kho và báo cáo ca sẽ tự động liên kết.</p>
         </div>
-        <div className="banner-orbit"><span>G</span></div>
+        <div className="banner-orbit"><span><img src="/gustino-logo.jpg" alt="GUSTINO" /></span></div>
       </section>
 
       <div className="feature-grid">

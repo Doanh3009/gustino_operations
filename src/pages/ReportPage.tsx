@@ -1,13 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { buildOperationalReportPatch, mergeBagSalesIntoReportState } from '../lib/reportSync'
-import { COMMISSION_MIN_BAGS, productSaleValues, summarizeEmployeeBagSales } from '../lib/commission'
-import { BRANCHES, PRODUCTS } from '../lib/constants'
-import { calculateStock, closeOperationDay, ensureOperationDay, getOperationDay, saveReportSnapshot } from '../lib/store'
+import { DEFAULT_REVENUE_TARGET, dailyKpiBonus, employeeKpiKey, employeePeriodRevenueTarget, employeeRevenueTarget, fetchEmployeeKpiTargets, kpiRank, productSaleValues, summarizeEmployeeBagSales } from '../lib/commission'
+import { PRODUCTS, productById as catalogProductById } from '../lib/constants'
+import { branchName as configuredBranchName } from '../lib/branches'
+import { calculateStock, ensureOperationDay, fetchReportSnapshots, finalizeDailyReport, getOperationDay, saveShiftReportSnapshot } from '../lib/store'
+import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { fetchBagAllocations, fetchBagShiftSessions } from '../lib/shiftLedger'
-import { supabase } from '../lib/supabase'
+import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
+import { supabase, uniqueChannelName } from '../lib/supabase'
 import { localDateKey } from '../lib/dates'
+import { canvasToBlob, shareOrDownloadBlob } from '../lib/browser'
+import { sendZaloShiftReports, type ZaloReportKind } from '../lib/zaloReports'
+import { queueN8nReportImages, type N8nQueueResult, type N8nReportKind } from '../lib/n8nReports'
 import type { InventoryTab, Page } from '../components/AppShell'
-import type { AppUser, BagAllocation, BagShiftSession, StockMovement } from '../types'
+import type { AppUser, AttendanceRecord, BagAllocation, BagShiftSession, ReportSnapshot, ShiftRegistration, StockMovement } from '../types'
 
 interface Props {
   user: AppUser
@@ -16,6 +22,8 @@ interface Props {
   onOpenInventory: (tab: InventoryTab) => void
   onRefresh: () => Promise<void>
 }
+
+type ReportScope = 'day' | 'shift-1' | 'shift-2'
 
 interface ProductQuantityRow {
   productId: string
@@ -75,6 +83,11 @@ interface EmployeeReportRow {
   commission: number
   achievedCommission: boolean
   kpi: number
+  rank: string
+  targetRevenue: number
+  workHours: number
+  checkedIn: boolean
+  checkedOut: boolean
   products: EmployeeProductRow[]
 }
 
@@ -116,6 +129,12 @@ interface StockReportRow {
   variance?: number
 }
 
+interface ProofImage {
+  key: string
+  label: string
+  url: string
+}
+
 interface DailyReportModel {
   branchName: string
   businessDate: string
@@ -153,6 +172,7 @@ interface DailyReportModel {
     commission: number
     salesRate: number
     teamKpi: number
+    averageEmployeeKpi: number
     processingRawKg: number
     processingCookedKg: number
     processingLossKg: number
@@ -167,35 +187,94 @@ interface DailyReportModel {
   wasteRows: WasteReportRow[]
   stockRows: StockReportRow[]
   bagShiftSummary: ReturnType<typeof buildBagShiftSummary>
+  proofImages: ProofImage[]
 }
 
-export function ReportPage({ user, movements, onNavigate, onOpenInventory, onRefresh }: Props) {
+interface ReportLedgerData {
+  sessions: BagShiftSession[]
+  allocations: BagAllocation[]
+  registrations: ShiftRegistration[]
+  records: AttendanceRecord[]
+  receipts: SalesReceipt[]
+  snapshots: ReportSnapshot[]
+}
+
+export function ReportPage({ user, movements, onRefresh }: Props) {
   const infographicRef = useRef<HTMLDivElement>(null)
+  const n8nDayPosterRef = useRef<HTMLDivElement>(null)
+  const n8nShiftOnePosterRef = useRef<HTMLDivElement>(null)
+  const n8nShiftTwoPosterRef = useRef<HTMLDivElement>(null)
+  const n8nPosterRefs: Record<ReportScope, RefObject<HTMLDivElement | null>> = {
+    day: n8nDayPosterRef,
+    'shift-1': n8nShiftOnePosterRef,
+    'shift-2': n8nShiftTwoPosterRef,
+  }
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [finalized, setFinalized] = useState(false)
   const [bagSessions, setBagSessions] = useState<BagShiftSession[]>([])
   const [bagAllocations, setBagAllocations] = useState<BagAllocation[]>([])
+  const [shiftRegistrations, setShiftRegistrations] = useState<ShiftRegistration[]>([])
+  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([])
+  const [salesReceipts, setSalesReceipts] = useState<SalesReceipt[]>([])
+  const [employeeKpiTargets, setEmployeeKpiTargets] = useState<Record<string, number>>({})
+  const [reportScope, setReportScope] = useState<ReportScope>('day')
+  const [reportSnapshot, setReportSnapshot] = useState<ReportSnapshot | null>(null)
   const businessDate = localDateKey()
 
-  async function refreshLedger() {
-    const [sessions, allocations] = await Promise.all([
+  async function loadReportLedger(): Promise<ReportLedgerData> {
+    const [sessions, allocations, registrations, records, receipts, snapshots] = await Promise.all([
       fetchBagShiftSessions(user, { branchId: user.branchId, date: businessDate }),
-      fetchBagAllocations(user, { branchId: user.branchId }),
+      fetchBagAllocations(user, { branchId: user.branchId, date: businessDate }),
+      fetchShiftRegistrations(user, { branchId: user.branchId, from: businessDate, to: businessDate }),
+      fetchAttendanceRecords(user, { branchId: user.branchId, from: businessDate, to: businessDate }),
+      fetchSalesReceipts(user, { branchId: user.branchId, date: businessDate }),
+      fetchReportSnapshots(user.branchId, user),
     ])
-    setBagSessions(sessions)
-    setBagAllocations(allocations)
+    return { sessions, allocations, registrations, records, receipts, snapshots }
+  }
+
+  function applyReportLedger(ledger: ReportLedgerData) {
+    setBagSessions(ledger.sessions)
+    setBagAllocations(ledger.allocations)
+    setShiftRegistrations(ledger.registrations)
+    setAttendanceRecords(ledger.records)
+    setSalesReceipts(ledger.receipts)
+    setReportSnapshot(ledger.snapshots.find((item) => item.reportDate === businessDate) || null)
+  }
+
+  async function refreshLedger() {
+    const ledger = await loadReportLedger()
+    applyReportLedger(ledger)
+    return ledger
+  }
+
+  async function refreshFinalizationState() {
+    const day = await getOperationDay(user.branchId, businessDate, user)
+    setFinalized(day?.status === 'closed')
   }
 
   useEffect(() => {
     void refreshLedger().catch((error) => {
-      setMessage(error instanceof Error ? error.message : 'Không thể tải sổ túi hôm nay.')
+      setMessage(error instanceof Error ? error.message : 'Không thể tải dữ liệu báo cáo hôm nay.')
     })
   }, [businessDate, user.id, user.branchId])
 
   useEffect(() => {
+    let active = true
+    void fetchEmployeeKpiTargets(user, [user.branchId]).then((targets) => {
+      if (!active) return
+      setEmployeeKpiTargets(Object.fromEntries(targets.map((target) => [
+        employeeKpiKey(target.branchId, target.employeeKey),
+        target.targetRevenue,
+      ])))
+    }).catch(() => undefined)
+    return () => { active = false }
+  }, [user.id, user.branchId])
+
+  useEffect(() => {
     let ignore = false
-    void getOperationDay(user.branchId, businessDate).then((day) => {
+    void getOperationDay(user.branchId, businessDate, user).then((day) => {
       if (!ignore) setFinalized(day?.status === 'closed')
     }).catch(() => {})
     return () => {
@@ -204,12 +283,17 @@ export function ReportPage({ user, movements, onNavigate, onOpenInventory, onRef
   }, [businessDate, user.branchId])
 
   useEffect(() => {
-    const client = supabase
+    const client = user.authToken ? null : supabase
     if (!client) {
-      const timer = window.setInterval(() => void refreshLedger().catch(() => null), 5000)
+      const timer = window.setInterval(() => {
+        void Promise.all([
+          refreshLedger(),
+          refreshFinalizationState(),
+        ]).catch(() => null)
+      }, 5000)
       return () => window.clearInterval(timer)
     }
-    const channel = client.channel(`report-ledger:${user.branchId}:${businessDate}`)
+    const channel = client.channel(uniqueChannelName(`report-ledger:${user.branchId}:${businessDate}`))
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
@@ -222,25 +306,162 @@ export function ReportPage({ user, movements, onNavigate, onOpenInventory, onRef
         table: 'bag_allocations',
         filter: `branch_id=eq.${user.branchId}`,
       }, () => void refreshLedger().catch(() => null))
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'sales_receipts',
+        filter: `branch_id=eq.${user.branchId}`,
+      }, () => void refreshLedger().catch(() => null))
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'attendance_records',
+        filter: `branch_id=eq.${user.branchId}`,
+      }, () => void refreshLedger().catch(() => null))
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'report_snapshots',
+        filter: `branch_id=eq.${user.branchId}`,
+      }, () => void refreshLedger().catch(() => null))
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'operation_days',
+        filter: `branch_id=eq.${user.branchId}`,
+      }, () => void refreshFinalizationState().catch(() => null))
       .subscribe()
     return () => {
       void client.removeChannel(channel)
     }
   }, [businessDate, user.branchId, user.id])
 
-  const report = useMemo(
-    () => buildDailyReport(user, movements, bagSessions, bagAllocations, businessDate),
-    [user, movements, bagSessions, bagAllocations, businessDate],
+  const dailyReport = useMemo(
+    () => buildDailyReport(user, movements, bagSessions, bagAllocations, shiftRegistrations, attendanceRecords, salesReceipts, businessDate, employeeKpiTargets),
+    [user, movements, bagSessions, bagAllocations, shiftRegistrations, attendanceRecords, salesReceipts, businessDate, employeeKpiTargets],
   )
-  const canFinalize = report.blockingIssues.length === 0 && !finalized
+  const leaderShiftSession = useMemo(() => {
+    const own = bagSessions.filter((item) => item.leaderId === user.id || normalizeName(item.leaderName) === normalizeName(user.name))
+    return [...own].sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'closed' ? -1 : 1
+      return b.sequence - a.sequence || b.startedAt.localeCompare(a.startedAt)
+    })[0]
+  }, [bagSessions, user.id, user.name])
 
-  async function reloadTodayData() {
+  useEffect(() => {
+    if (!leaderShiftSession) return
+    setReportScope(defaultReportScopeForLeader(leaderShiftSession))
+  }, [leaderShiftSession?.id, leaderShiftSession?.sequence])
+
+  const selectedShift = reportScope === 'day'
+    ? undefined
+    : bagSessions.find((item) => item.sequence === (reportScope === 'shift-1' ? 1 : 2))
+  const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
+  const hasShiftTwo = bagSessions.some((item) => item.sequence === 2)
+  const report = useMemo(() => {
+    if (reportScope === 'day' || !selectedShift) return dailyReport
+    const scopedMovements = movements.filter((item) => isTimestampInShift(item.createdAt, selectedShift))
+    const scopedAllocations = bagAllocations.filter((item) => item.shiftId === selectedShift.id)
+    const scopedReceipts = salesReceipts.filter((item) => isTimestampInShift(item.createdAt, selectedShift))
+    return buildDailyReport(
+      user,
+      scopedMovements,
+      [selectedShift],
+      scopedAllocations,
+      shiftRegistrations,
+      attendanceRecords,
+      scopedReceipts,
+      businessDate,
+      employeeKpiTargets,
+    )
+  }, [reportScope, selectedShift, dailyReport, user, movements, bagAllocations, shiftRegistrations, attendanceRecords, salesReceipts, businessDate, employeeKpiTargets])
+  function reportModelForScope(scope: ReportScope) {
+    if (scope === 'day') return dailyReport
+    const session = bagSessions.find((item) => item.sequence === (scope === 'shift-1' ? 1 : 2))
+    if (!session) return dailyReport
+    return buildDailyReport(
+      user,
+      movements.filter((item) => isTimestampInShift(item.createdAt, session)),
+      [session],
+      bagAllocations.filter((item) => item.shiftId === session.id),
+      shiftRegistrations,
+      attendanceRecords,
+      salesReceipts.filter((item) => isTimestampInShift(item.createdAt, session)),
+      businessDate,
+      employeeKpiTargets,
+    )
+  }
+  const reportScopeLabel = reportScope === 'day' ? 'Tổng ngày' : reportScope === 'shift-1' ? 'Ca 1' : 'Ca 2'
+  const shiftReportEntry = leaderShiftSession ? reportSnapshot?.payload.shiftReports?.[leaderShiftSession.id] : undefined
+  const isSecondShiftFinalization = leaderShiftSession?.sequence === 2
+  const canResumeSecondShiftFinalization = Boolean(isSecondShiftFinalization && shiftReportEntry && !finalized)
+  const finalizeBlockedReason = finalized
+    ? 'Ca 2 và Tổng ngày đã được chốt.'
+    : !leaderShiftSession
+      ? 'Không tìm thấy ca do bạn phụ trách trong ngày hôm nay.'
+      : leaderShiftSession.status !== 'closed'
+        ? `Ca ${leaderShiftSession.sequence} chưa bàn giao xong. Hãy chụp ảnh cuối ca và chốt Bàn giao trước.`
+        : shiftReportEntry && !canResumeSecondShiftFinalization
+          ? `Báo cáo Ca ${leaderShiftSession.sequence} đã được chốt trước đó.`
+          : isSecondShiftFinalization && dailyReport.openShiftCount > 0
+            ? 'Ca 2 chỉ được chốt khi không còn ca nào đang mở, vì nút này đồng thời chốt Tổng ngày.'
+            : ''
+  const canFinalize = !finalizeBlockedReason
+  const automaticPosterScopes: ReportScope[] = leaderShiftSession?.sequence === 1
+    ? ['shift-1']
+    : leaderShiftSession?.sequence === 2
+      ? ['shift-2', 'day']
+      : []
+  const visibleMessage = friendlyReportMessage(message)
+  const messageTone = reportMessageTone(message)
+
+  async function queueCurrentReportImages(session: BagShiftSession, sendNow = false): Promise<N8nQueueResult> {
+    const reportKinds: N8nReportKind[] = session.sequence === 1 ? ['shift-1'] : ['shift-2', 'day']
+    const reports = []
+    for (const kind of reportKinds) {
+      const target = n8nPosterRefs[kind].current
+      if (!target) throw new Error(`Infographic ${reportKindLabel(kind)} chưa render xong.`)
+      const blob = await captureReportPosterBlob(target, { scale: 1.35, quality: .88, maxBytes: 2_200_000 })
+      reports.push({
+        kind,
+        label: reportKindLabel(kind),
+        fileName: `GUSTINO-bao-cao-${kind}-${businessDate}.jpg`,
+        mimeType: 'image/jpeg' as const,
+        imageBase64: await blobToBase64(blob),
+      })
+    }
+    return queueN8nReportImages(user, {
+      branchId: user.branchId,
+      branchName: dailyReport.branchName,
+      businessDate,
+      shiftId: session.id,
+      shiftSequence: session.sequence as 1 | 2,
+      sendNow,
+      reports,
+    })
+  }
+
+  async function sendReportToZalo() {
+    if (!leaderShiftSession || !shiftReportEntry) return
+    const confirmed = window.confirm('Gửi ngay ảnh báo cáo lên Zalo? Thao tác này có thể gửi trùng nếu báo cáo đã được gửi trước đó.')
+    if (!confirmed) return
     setBusy(true)
     try {
-      await Promise.all([onRefresh(), refreshLedger()])
-      setMessage('Đã lấy lại dữ liệu mới nhất từ kho và sổ túi.')
+      const result = await queueCurrentReportImages(leaderShiftSession, true)
+      await saveShiftReportSnapshot(user, businessDate, {
+        shiftId: shiftReportEntry.shiftId,
+        sequence: shiftReportEntry.sequence,
+        scope: shiftReportEntry.scope,
+        leaderId: shiftReportEntry.leaderId,
+        leaderName: shiftReportEntry.leaderName,
+        report: shiftReportEntry.report,
+        zaloDelivery: shiftReportEntry.zaloDelivery,
+        n8nDelivery: { ...result, updatedAt: new Date().toISOString() },
+      })
+      await refreshLedger()
+      setMessage(result.message)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Không thể lấy lại dữ liệu hôm nay.')
+      setMessage(error instanceof Error ? error.message : 'Chưa gửi được báo cáo lên Zalo.')
     } finally {
       setBusy(false)
     }
@@ -251,28 +472,153 @@ export function ReportPage({ user, movements, onNavigate, onOpenInventory, onRef
       setMessage('Ngày đã kết thúc. Chúc cả đội ngủ ngon.')
       return
     }
-    if (!canFinalize) {
-      setMessage(report.blockingIssues[0] || 'Báo cáo chưa đủ điều kiện chốt.')
-      return
-    }
     setBusy(true)
     try {
-      const proofImages = getShiftProofImages(bagSessions, user.branchId, businessDate)
-      await ensureOperationDay(user, businessDate)
-      await saveReportSnapshot(user, {
-        reportDate: businessDate,
-        state: report.legacyState,
-        openingImage: proofImages.opening,
-        closingImage: proofImages.closing,
-        bagShiftSummary: report.bagShiftSummary,
-        dailyReport: report,
-        summary: report.summary,
+      const freshLedger = await loadReportLedger()
+      applyReportLedger(freshLedger)
+      const freshSnapshot = freshLedger.snapshots.find((item) => item.reportDate === businessDate) || null
+      const freshLeaderShiftSession = [...freshLedger.sessions]
+        .filter((item) => item.leaderId === user.id || normalizeName(item.leaderName) === normalizeName(user.name))
+        .sort((a, b) => {
+          if (a.status !== b.status) return a.status === 'closed' ? -1 : 1
+          return b.sequence - a.sequence || b.startedAt.localeCompare(a.startedAt)
+        })[0]
+      if (!freshLeaderShiftSession) {
+        throw new Error('Không tìm thấy ca do bạn phụ trách trong ngày hôm nay.')
+      }
+      if (freshLeaderShiftSession.status !== 'closed') {
+        throw new Error(`Ca ${freshLeaderShiftSession.sequence} chưa bàn giao xong. Hãy chụp ảnh cuối ca và chốt Bàn giao trước.`)
+      }
+
+      const freshDailyReport = buildDailyReport(
+        user,
+        movements,
+        freshLedger.sessions,
+        freshLedger.allocations,
+        freshLedger.registrations,
+        freshLedger.records,
+        freshLedger.receipts,
+        businessDate,
+        employeeKpiTargets,
+      )
+      const freshShiftReportEntry = freshSnapshot?.payload.shiftReports?.[freshLeaderShiftSession.id]
+      const freshIsSecondShiftFinalization = freshLeaderShiftSession.sequence === 2
+      const freshCanResumeSecondShiftFinalization = Boolean(
+        freshIsSecondShiftFinalization && freshShiftReportEntry && !finalized,
+      )
+      if (freshShiftReportEntry && !freshCanResumeSecondShiftFinalization) {
+        throw new Error(`Báo cáo Ca ${freshLeaderShiftSession.sequence} đã được chốt trước đó.`)
+      }
+      if (freshIsSecondShiftFinalization && freshDailyReport.openShiftCount > 0) {
+        throw new Error('Ca 2 chỉ được chốt khi không còn ca nào đang mở, vì nút này đồng thời chốt Tổng ngày.')
+      }
+
+      const shiftScope: ReportScope = freshLeaderShiftSession.sequence === 1 ? 'shift-1' : 'shift-2'
+      const shiftReport = buildDailyReport(
+        user,
+        movements.filter((item) => isTimestampInShift(item.createdAt, freshLeaderShiftSession)),
+        [freshLeaderShiftSession],
+        freshLedger.allocations.filter((item) => item.shiftId === freshLeaderShiftSession.id),
+        freshLedger.registrations,
+        freshLedger.records,
+        freshLedger.receipts.filter((item) => isTimestampInShift(item.createdAt, freshLeaderShiftSession)),
+        businessDate,
+        employeeKpiTargets,
+      )
+      const shiftEntry = {
+        shiftId: freshLeaderShiftSession.id,
+        sequence: freshLeaderShiftSession.sequence,
+        scope: shiftScope,
+        leaderId: user.id,
+        leaderName: user.name,
+        report: shiftReport as unknown as Record<string, unknown>,
+      }
+      if (freshIsSecondShiftFinalization) {
+        const previousShiftReports = freshSnapshot?.payload.shiftReports || {}
+        const nextShiftReports = {
+          ...previousShiftReports,
+          [freshLeaderShiftSession.id]: {
+            ...previousShiftReports[freshLeaderShiftSession.id],
+            ...shiftEntry,
+            finalizedAt: new Date().toISOString(),
+          },
+        }
+        await finalizeDailyReport(user, businessDate, {
+          reportDate: businessDate,
+          state: freshDailyReport.legacyState,
+          openingImage: freshDailyReport.proofImages.find((item) => item.label.includes('Đầu'))?.url || '',
+          closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.label.includes('Cuối'))?.url || '',
+          bagShiftSummary: freshDailyReport.bagShiftSummary,
+          dailyReport: freshDailyReport,
+          summary: freshDailyReport.summary,
+          shiftReports: nextShiftReports,
+        })
+        setFinalized(true)
+      } else {
+        await saveShiftReportSnapshot(user, businessDate, shiftEntry)
+      }
+
+      const reportKinds: ZaloReportKind[] = freshIsSecondShiftFinalization ? ['shift-2', 'day'] : ['shift-1']
+      const reports = reportKinds.map((kind) => {
+        const model = kind === 'day' ? freshDailyReport : shiftReport
+        return {
+          kind,
+          label: reportKindLabel(kind),
+          revenue: model.totals.revenue,
+          sold: model.totals.sold,
+          employeeCount: model.employeeRows.length,
+        }
       })
-      await closeOperationDay(user, businessDate)
-      setFinalized(true)
-      setMessage('Đã chốt báo cáo và kết thúc ngày. Chúc cả đội ngủ ngon.')
+      let n8nResult: N8nQueueResult
+      try {
+        n8nResult = await queueCurrentReportImages(freshLeaderShiftSession)
+      } catch (error) {
+        n8nResult = {
+          queued: false,
+          mode: 'error',
+          message: error instanceof Error ? error.message : 'Không tạo được ảnh để đưa vào n8n.',
+          jobs: {},
+        }
+      }
+      const zaloResult = n8nResult.mode === 'not-configured'
+        ? await sendZaloShiftReports(user, {
+            branchId: user.branchId,
+            branchName: freshDailyReport.branchName,
+            businessDate,
+            shiftId: freshLeaderShiftSession.id,
+            shiftSequence: freshLeaderShiftSession.sequence as 1 | 2,
+            reportKinds,
+            reports,
+          })
+        : null
+      await saveShiftReportSnapshot(user, businessDate, {
+        ...shiftEntry,
+        n8nDelivery: { ...n8nResult, updatedAt: new Date().toISOString() },
+        ...(zaloResult ? { zaloDelivery: { ...zaloResult } } : {}),
+      })
+      await refreshLedger()
+      const deliveryMessage = zaloResult?.message || n8nResult.message
+      setMessage(freshIsSecondShiftFinalization
+        ? `Đã chốt Ca 2 và Tổng ngày. ${deliveryMessage}`
+        : `Đã chốt báo cáo Ca 1. ${deliveryMessage}`)
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Không thể lưu báo cáo.')
+      const detail = error instanceof Error ? error.message : ''
+      setMessage(detail ? `Không thể lưu báo cáo: ${detail}` : 'Không thể lưu báo cáo.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function reopenDay() {
+    if (!window.confirm('Mở lại ngày vận hành để bổ sung/sửa số liệu? Sau khi xong nhớ bấm Chốt báo cáo lại.')) return
+    setBusy(true)
+    try {
+      await ensureOperationDay(user, businessDate, { allowAutoOpen: true, reopenClosed: true })
+      setFinalized(false)
+      setMessage('Đã mở lại ngày vận hành. Bổ sung số liệu xong hãy chốt báo cáo lại.')
+      await Promise.all([onRefresh(), refreshLedger()])
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Không thể mở lại ngày vận hành.')
     } finally {
       setBusy(false)
     }
@@ -280,21 +626,21 @@ export function ReportPage({ user, movements, onNavigate, onOpenInventory, onRef
 
   async function exportInfographicImage() {
     const target = infographicRef.current
-    if (!target) return
+    if (!target) {
+      setMessage('Infographic chưa sẵn sàng để tải. Hãy thử lại sau khi báo cáo render xong.')
+      return
+    }
     setBusy(true)
     try {
-      await waitForPaint()
-      const { default: html2canvas } = await import('html2canvas')
-      const canvas = await html2canvas(target, {
-        scale: 2,
-        backgroundColor: '#f7f8ef',
-        useCORS: true,
+      const fileName = `GUSTINO-bao-cao-${reportScope}-${businessDate}.jpg`
+      const blob = await captureReportPosterBlob(target, { scale: 2, quality: .95 })
+      const result = await shareOrDownloadBlob(blob, fileName, {
+        title: `Báo cáo GUSTINO ${businessDate}`,
+        text: 'Chọn “Lưu hình ảnh” để ảnh vào Photos hoặc “Lưu vào Tệp” trên iPhone.',
       })
-      const link = document.createElement('a')
-      link.download = `GUSTINO-bao-cao-${businessDate}.jpg`
-      link.href = canvas.toDataURL('image/jpeg', 0.95)
-      link.click()
-      setMessage('Đã tải infographic báo cáo dạng JPG.')
+      setMessage(result === 'shared'
+        ? 'Đã mở chia sẻ ảnh.'
+        : 'Đã tải ảnh JPG.')
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Không thể tải infographic.')
     } finally {
@@ -302,228 +648,262 @@ export function ReportPage({ user, movements, onNavigate, onOpenInventory, onRef
     }
   }
 
-  const proofImages = getShiftProofImages(bagSessions, user.branchId, businessDate)
+  async function shareInfographicToZalo() {
+    const target = infographicRef.current
+    if (!target) {
+      setMessage('Infographic chưa sẵn sàng để chia sẻ. Hãy thử lại sau khi báo cáo render xong.')
+      return
+    }
+    setBusy(true)
+    try {
+      const fileName = `GUSTINO-bao-cao-${reportScope}-${businessDate}.jpg`
+      const blob = await captureReportPosterBlob(target, { scale: 1.7, quality: .92 })
+      const result = await shareOrDownloadBlob(blob, fileName, {
+        title: `Báo cáo GUSTINO ${reportScopeLabel} ${businessDate}`,
+        text: `Báo cáo ${reportScopeLabel} · ${dailyReport.branchName} · ${businessDate}`,
+      })
+      setMessage(result === 'shared'
+        ? 'Đã mở bảng chia sẻ. Hãy chọn Zalo và nhóm cần gửi.'
+        : 'Thiết bị chưa hỗ trợ chia sẻ file trực tiếp; ảnh đã được tải xuống để bạn gửi qua Zalo.')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Không thể chia sẻ infographic qua Zalo.')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="report-page">
       <div className="report-toolbar">
-        <div>
-          <strong>{finalized ? 'Kết thúc ngày' : 'Báo cáo cuối ngày'}</strong>
-          <small>{finalized ? 'Báo cáo đã chốt, dữ liệu đã vào dashboard. Chúc cả đội ngủ ngon.' : 'Chỉ tổng hợp dữ liệu từ kho, mẻ chế biến và sổ túi theo ca. Muốn sửa số, sửa ở màn nguồn.'}</small>
+        <div className="report-toolbar-summary">
+          <strong>{finalized ? 'Đã chốt Ca 2 và Tổng ngày' : `Báo cáo ${reportScopeLabel.toLowerCase()}`}</strong>
         </div>
-        <div className="toolbar-actions report-toolbar-actions">
-          {message && <span className="toolbar-message">{message}</span>}
-          <button className="secondary-button" onClick={() => void reloadTodayData()} disabled={busy}>↻ Lấy lại dữ liệu</button>
-          <button className="secondary-button" onClick={() => onOpenInventory('processing_out')}>Sửa làm hàng</button>
-          <button className="secondary-button" onClick={() => onNavigate('handover')}>Sửa sổ túi</button>
-          <button className="secondary-button" onClick={() => void exportInfographicImage()} disabled={busy}>Tải infographic</button>
-          <button className="primary-button" onClick={() => void saveCloud()} disabled={busy || !canFinalize}>{finalized ? 'Đã kết thúc ngày' : 'Chốt báo cáo'}</button>
+        <div className="report-toolbar-controls">
+          <label className="report-scope-select">
+            <span>Xem dữ liệu</span>
+            <select
+              value={reportScope}
+              onChange={(event) => setReportScope(event.target.value as ReportScope)}
+              disabled={busy}
+              aria-label="Chọn phạm vi báo cáo"
+            >
+              <option value="shift-1" disabled={!hasShiftOne}>Ca 1</option>
+              <option value="shift-2" disabled={!hasShiftTwo}>Ca 2</option>
+              <option value="day">Tổng cả ngày</option>
+            </select>
+          </label>
+
+          <div className="report-essential-actions">
+            <button className="secondary-button" onClick={() => void exportInfographicImage()} disabled={busy}>Tải ảnh</button>
+            {shiftReportEntry && (
+              <button className="secondary-button" onClick={() => void sendReportToZalo()} disabled={busy}>Gửi Zalo</button>
+            )}
+            {(finalized || shiftReportEntry) && (
+              <button className="secondary-button report-share-zalo-button" onClick={() => void shareInfographicToZalo()} disabled={busy}>Chia sẻ ảnh Zalo</button>
+            )}
+            {finalized
+              ? <button className="secondary-button report-reopen-button" onClick={() => void reopenDay()} disabled={busy}>Mở lại ngày</button>
+              : shiftReportEntry && !canResumeSecondShiftFinalization
+                ? <span className="report-finalized-status">✓ Đã chốt Ca {leaderShiftSession?.sequence}</span>
+                : <button
+                    className="primary-button"
+                    onClick={() => void saveCloud()}
+                    disabled={busy}
+                    title={canFinalize ? undefined : finalizeBlockedReason}
+                  >
+                    {busy ? 'Đang chốt…' : 'Chốt báo cáo'}
+                  </button>}
+          </div>
+
+          {visibleMessage && (
+            <p className={`report-feedback ${messageTone}`} title={visibleMessage === message ? undefined : message}>
+              {visibleMessage}
+            </p>
+          )}
         </div>
       </div>
 
-      <div className="report-infographic-export" aria-hidden="true">
-        <div ref={infographicRef}>
-          <ReportInfographicSheet report={report} proofImages={proofImages} />
-        </div>
+      <div className="rp-stage">
+        <ReportPoster report={report} scopeLabel={reportScopeLabel} posterRef={infographicRef} />
       </div>
-      <ReportInfographicSheet report={report} proofImages={proofImages} visible />
+      <div className="rp-n8n-poster-stage" aria-hidden="true">
+        {automaticPosterScopes.map((scope) => (
+          <ReportPoster
+            key={`n8n-${scope}`}
+            report={reportModelForScope(scope)}
+            scopeLabel={reportPosterScopeLabel(scope)}
+            posterRef={n8nPosterRefs[scope]}
+          />
+        ))}
+      </div>
     </div>
   )
 }
 
-function ReportInfographicSheet({
+function ReportPoster({
   report,
-  proofImages,
-  visible = false,
+  scopeLabel,
+  posterRef,
 }: {
   report: DailyReportModel
-  proofImages: { opening: string; closing: string }
-  visible?: boolean
+  scopeLabel: string
+  posterRef: RefObject<HTMLDivElement | null>
 }) {
-  const inventoryRows = buildInfographicInventoryRows(report)
-  const employees = report.employeeRows.slice(0, 6)
-  const maxSold = Math.max(1, ...employees.map((item) => item.sold))
-  const wasteNotes = report.wasteRows.length
-    ? report.wasteRows.map((item) =>
-        `${item.productName}: ${formatNumber(item.quantity)} ${item.unit}${item.note ? ` - ${item.note}` : ''}`,
-      ).join('\n')
-    : 'Không có ghi chú hủy hàng.'
+  const racers = [...report.employeeRows].sort((a, b) => b.revenue - a.revenue || b.sold - a.sold)
+  const maxRevenue = Math.max(1, ...racers.map((item) => item.revenue))
+  const products = [...report.productRows].sort((a, b) => b.sold - a.sold || b.issued - a.issued)
+  const maxIssued = Math.max(1, ...products.map((item) => item.issued))
+  const tone = gradeTone(report.grade)
+  const remainingTotal = report.productRows.reduce((sum, item) => sum + item.remaining, 0)
+  // Nhiều nhân viên → xổ bảng thi đua thành nhiều cột để poster giãn ngang thay vì dài dằng dặc.
+  const density = racers.length > 10 ? 'rp-dense rp-dense-3' : racers.length > 5 ? 'rp-dense' : ''
 
   return (
-    <article className={`report-infographic-card ${visible ? 'report-visible-card' : ''}`}>
-      <header className="report-info-header">
-        <div>
-          <span>HẠT DẺ ÔNG LÝ</span>
+    <div className={`rp-poster${density ? ` ${density}` : ''}`} ref={posterRef}>
+      <header className={`rp-head rp-tone-${tone}`}>
+        <div className="rp-brand">
+          <span>🌰 HẠT DẺ ÔNG LÝ</span>
           <h1>{report.branchName}</h1>
-          <p>INFOGRAPHIC BÁO CÁO CHỐT CA</p>
+          <p>Báo cáo {scopeLabel} · Ngày {report.dateLabel}</p>
+          <div className="rp-leaders">
+            <em>Ca sáng: <b>{report.morningLeaderName || '—'}</b></em>
+            <em>Ca tối: <b>{report.eveningLeaderName || '—'}</b></em>
+          </div>
         </div>
-        <dl>
-          <div><dt>Chi nhánh</dt><dd>{report.branchName}</dd></div>
-          <div><dt>Ca sáng</dt><dd>{report.morningLeaderName || '---'}</dd></div>
-          <div><dt>Ca tối</dt><dd>{report.eveningLeaderName || '---'}</dd></div>
-          <div><dt>Ngày & ca</dt><dd>Ngày {report.dateLabel}</dd></div>
-          <div><dt>Xếp loại</dt><dd>{report.grade.toLocaleUpperCase('vi')}</dd></div>
-        </dl>
+        <div className="rp-grade">
+          <small>Xếp loại</small>
+          <strong>{report.grade}</strong>
+          <span>Hiệu suất doanh thu {report.totals.teamKpi}%</span>
+        </div>
       </header>
 
-      <section className="report-info-kpis">
-        <InfographicKpiBlock label="Tổng doanh thu" value={formatMoney(report.totals.revenue)} note={report.grade} tone="dark" />
-        <InfographicKpiBlock label="Tổng nhận" value={`${formatNumber(report.totals.issued)} SP`} note="Hàng đã phát" />
-        <InfographicKpiBlock label="Đã bán" value={`${formatNumber(report.totals.sold)} SP`} note={`${report.totals.salesRate}% hiệu suất`} tone="good" />
-        <InfographicKpiBlock label="KPI đội" value={`${report.totals.teamKpi}%`} note="Trung bình PG" tone="blue" />
-        <InfographicKpiBlock label="Hao hụt" value={`${report.totals.processingLossRate}%`} note="Bếp sống → chín" tone="warn" />
+      <section className="rp-revenue">
+        <span>TỔNG DOANH THU</span>
+        <strong>{formatMoney(report.totals.revenue)}</strong>
+        <div className="rp-revenue-sub">
+          <div><b>{formatNumber(report.totals.sold)}</b><i>sản phẩm đã bán</i></div>
+          <div><b>{report.totals.salesRate}%</b><i>hiệu suất</i></div>
+          <div><b>{formatMoney(report.totals.commission)}</b><i>thưởng KPI</i></div>
+        </div>
       </section>
 
-      <section className="report-info-grid">
-        <div className="report-info-panel">
-          <div className="report-info-panel-head">
-            <strong>NGUYÊN LIỆU & TỒN KHO</strong>
-            <span>TỒN SP: {formatNumber(report.productRows.reduce((sum, item) => sum + item.remaining, 0))}</span>
+      <section className="rp-stats">
+        <StatChip tone="sky" label="POS ghi nhận" value={`${formatNumber(report.totals.issued)}`} unit="sản phẩm" />
+        <StatChip tone="green" label="Đã bán" value={`${formatNumber(report.totals.sold)}`} unit="sản phẩm" />
+        <StatChip tone="amber" label="Còn tồn quầy" value={`${formatNumber(remainingTotal)}`} unit="sản phẩm" />
+        <StatChip tone="rose" label="Hao hụt chế biến" value={`${report.totals.processingLossRate}`} unit="%" />
+        <StatChip tone="grape" label="Hủy / hỏng" value={`${formatNumber(report.totals.damaged)}`} unit="sản phẩm" />
+        <StatChip tone="navy" label="KPI nhân viên TB" value={`${report.totals.averageEmployeeKpi}`} unit="%" />
+      </section>
+
+      <section className="rp-card rp-board">
+        <div className="rp-card-head">
+          <strong>🏆 BẢNG THI ĐUA NHÂN VIÊN</strong>
+          <span>xếp theo doanh thu</span>
+        </div>
+        {racers.length ? (
+          <div className="rp-racers">
+            {racers.map((row, index) => (
+              <article className={`rp-racer rp-place-${index < 3 ? index + 1 : 'x'}`} key={row.key}>
+                <div className="rp-medal">{medal(index)}</div>
+                <div className="rp-racer-body">
+                  <div className="rp-racer-top">
+                    <strong>{row.name}</strong>
+                    {row.achievedCommission
+                      ? <em className="rp-badge-on">✓ Đạt thưởng KPI</em>
+                      : <em className="rp-badge-off">Cần thêm {formatMoney(Math.max(0, row.targetRevenue - row.revenue))}</em>}
+                  </div>
+                  <div className="rp-bar"><i style={{ width: `${Math.max(4, row.revenue / maxRevenue * 100)}%` }} /></div>
+                  <div className="rp-racer-meta">
+                    <span>{formatNumber(row.sold)}/{formatNumber(row.issued)} sản phẩm</span>
+                    <span>Hạng {row.rank} · {row.kpi}% KPI</span>
+                    <b>{formatMoney(row.revenue)}</b>
+                  </div>
+                </div>
+              </article>
+            ))}
           </div>
-          <InfographicInfoTable rows={inventoryRows} />
-        </div>
+        ) : <p className="rp-empty">Chưa có dữ liệu nhân viên trong ngày.</p>}
+      </section>
 
-        <div className="report-info-panel">
-          <div className="report-info-panel-head">
-            <strong>BÁN HÀNG THEO SẢN PHẨM</strong>
-            <span>NHẬN - BÁN - TỒN</span>
+      <section className="rp-card rp-products">
+        <div className="rp-card-head">
+          <strong>📦 BÁN HÀNG THEO SẢN PHẨM</strong>
+          <span>nhận · bán · doanh thu</span>
+        </div>
+        {products.length ? (
+          <div className="rp-product-list">
+            {products.map((item) => (
+              <div className="rp-product" key={item.productId}>
+                <div className="rp-product-name">
+                  <strong>{item.name}</strong>
+                  <small>{formatNumber(item.sold)}/{formatNumber(item.issued)} sản phẩm · {formatMoney(item.revenue)}</small>
+                </div>
+                <div className="rp-bar sm">
+                  <i style={{ width: `${Math.max(5, item.issued / maxIssued * 100)}%` }}>
+                    <b style={{ width: `${Math.min(100, item.sold / Math.max(1, item.issued) * 100)}%` }} />
+                  </i>
+                </div>
+              </div>
+            ))}
           </div>
-          <InfographicProductSalesTable rows={report.productRows} />
+        ) : <p className="rp-empty">Chưa có dữ liệu bán hàng.</p>}
+      </section>
+
+      <section className="rp-two">
+        <div className="rp-card rp-loss">
+          <div className="rp-card-head"><strong>♻️ HAO HỤT & HỦY HÀNG</strong></div>
+          <div className="rp-loss-row">
+            <span>Sống → chín (bếp)</span>
+            <b>{formatKg(report.totals.processingLossKg)} kg · {report.totals.processingLossRate}%</b>
+          </div>
+          {report.wasteRows.length ? report.wasteRows.slice(0, 5).map((item) => (
+            <div className="rp-loss-row" key={item.id}>
+              <span>{item.productName}{item.note ? ` · ${item.note}` : ''}</span>
+              <b>{formatNumber(item.quantity)} {item.unit}</b>
+            </div>
+          )) : <div className="rp-loss-row muted"><span>Không có ghi chú hủy hàng.</span></div>}
+        </div>
+        <div className="rp-card rp-proofs">
+          <div className="rp-card-head"><strong>📸 HÌNH ẢNH QUẦY</strong></div>
+          <div className="rp-proof-grid">
+            {report.proofImages.map((image) => (
+              <figure key={image.key}>
+                {image.url ? <img src={image.url} alt={image.label} /> : <span>Chưa có ảnh</span>}
+                <figcaption>{image.label}</figcaption>
+              </figure>
+            ))}
+          </div>
         </div>
       </section>
 
-      <section className="report-info-panel report-info-kpi-panel">
-        <div className="report-info-panel-head">
-          <strong>BẢNG KPI PG</strong>
-          <span>TOP THEO KPI</span>
-        </div>
-        <div className="report-info-employee-grid">
-          {employees.length ? employees.map((employee, index) => (
-            <InfographicEmployeeKpiCard key={employee.key} row={employee} index={index} maxSold={maxSold} />
-          )) : <p className="report-info-empty">Chưa có dữ liệu PG.</p>}
-        </div>
-      </section>
-
-      <section className="report-info-grid compact">
-        <ProofPanel title="HÌNH ẢNH ĐẦU CA" src={proofImages.opening} empty="Chưa có ảnh đầu ca." />
-        <ProofPanel title="HÌNH ẢNH CUỐI CA" src={proofImages.closing} empty="Chưa có ảnh cuối ca." />
-      </section>
-
-      <section className="report-info-grid compact">
-        <TextPanel title="HỦY HÀNG CUỐI CA" text={wasteNotes} />
-        <TextPanel title="SỰ CỐ TRONG CA" text="Không có ghi chú sự cố." />
-      </section>
-
-      <footer className="report-info-footer">
-        <span>GUSTINO - HỆ THỐNG VẬN HÀNH</span>
-        <span>XUẤT LÚC: {new Date().toLocaleTimeString('vi-VN')} {report.dateLabel}</span>
+      <footer className="rp-foot">
+        <span>GUSTINO · Hệ thống vận hành nội bộ</span>
+        <span>Xuất {new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} · {report.dateLabel}</span>
       </footer>
-    </article>
+    </div>
   )
 }
 
-function InfographicKpiBlock({ label, value, note, tone = '' }: { label: string; value: string; note: string; tone?: string }) {
+function StatChip({ tone, label, value, unit }: { tone: string; label: string; value: string; unit: string }) {
   return (
-    <div className={`report-info-kpi ${tone}`}>
+    <div className={`rp-chip rp-chip-${tone}`}>
       <span>{label}</span>
-      <strong>{value}</strong>
-      <small>{note}</small>
+      <strong>{value}<i>{unit}</i></strong>
     </div>
   )
 }
 
-function InfographicInfoTable({ rows }: { rows: [string, string][] }) {
-  return (
-    <table className="report-info-table">
-      <tbody>
-        {rows.map(([label, value]) => (
-          <tr key={label}><td>{label}</td><td>{value}</td></tr>
-        ))}
-      </tbody>
-    </table>
-  )
+function gradeTone(grade: string) {
+  if (grade.includes('Xuất sắc')) return 'great'
+  if (grade.includes('Ổn định')) return 'good'
+  if (grade.includes('cải thiện')) return 'warn'
+  if (grade.includes('cố gắng')) return 'warn'
+  return 'muted'
 }
 
-function InfographicProductSalesTable({ rows }: { rows: ProductReportRow[] }) {
-  const maxIssued = Math.max(1, ...rows.map((item) => item.issued))
-  return (
-    <table className="report-product-table">
-      <thead>
-        <tr>
-          <th>Sản phẩm</th>
-          <th>Nhận</th>
-          <th>Bán</th>
-          <th>Hủy</th>
-          <th>Tồn</th>
-          <th>Tiền</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.length ? rows.map((item) => (
-          <tr key={item.productId}>
-            <td>
-              <strong>{item.name}</strong>
-              <i><b style={{ width: `${Math.max(6, item.issued / maxIssued * 100)}%` }} /></i>
-            </td>
-            <td>{formatNumber(item.issued)}</td>
-            <td className="good">{formatNumber(item.sold)}</td>
-            <td className="warn">{formatNumber(item.damaged)}</td>
-            <td className="amber">{formatNumber(item.remaining)}</td>
-            <td>{formatMoney(item.revenue)}</td>
-          </tr>
-        )) : (
-          <tr><td colSpan={6}>Chưa có dữ liệu phát túi.</td></tr>
-        )}
-      </tbody>
-    </table>
-  )
-}
-
-function InfographicEmployeeKpiCard({ row, index, maxSold }: { row: EmployeeReportRow; index: number; maxSold: number }) {
-  const small = sumEmployeeProducts(row, (productId) => productId.includes('110'))
-  const large = sumEmployeeProducts(row, (productId) => productId.includes('500') || productId.includes('1kg'))
-  const cake = sumEmployeeProducts(row, (productId) => productId.includes('cake'))
-  return (
-    <article className="report-employee-kpi">
-      <div>
-        <strong>{index + 1}. {row.name}<span> /PT</span></strong>
-        <b>{row.kpi}%</b>
-      </div>
-      <p>0h · {formatNumber(row.sold)}/{formatNumber(row.issued)} SP · Hoa hồng {formatMoney(row.commission)}</p>
-      <div className="report-employee-bars">
-        <i style={{ width: `${Math.max(5, row.kpi)}%` }} />
-      </div>
-      <div className="report-employee-compare">
-        <span>So sánh bán</span>
-        <em><i style={{ width: `${Math.max(5, row.sold / maxSold * 100)}%` }} /></em>
-        <strong>{formatNumber(row.sold)} SP</strong>
-      </div>
-      <footer>
-        <span>S: {formatNumber(small)}/10</span>
-        <span>L: {formatNumber(large)}/7</span>
-        <span>Cake: {formatNumber(cake)}/5</span>
-      </footer>
-      <small>Doanh thu: {formatMoney(row.revenue)}</small>
-    </article>
-  )
-}
-
-function ProofPanel({ title, src, empty }: { title: string; src: string; empty: string }) {
-  return (
-    <div className="report-info-panel proof">
-      <div className="report-info-panel-head"><strong>{title}</strong></div>
-      {src ? <img className="report-proof-image" src={src} alt={title} /> : <div className="report-info-textbox">{empty}</div>}
-    </div>
-  )
-}
-
-function TextPanel({ title, text }: { title: string; text: string }) {
-  return (
-    <div className="report-info-panel proof">
-      <div className="report-info-panel-head"><strong>{title}</strong></div>
-      <div className="report-info-textbox">{text}</div>
-    </div>
-  )
+function medal(index: number) {
+  return index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}`
 }
 
 function buildDailyReport(
@@ -531,39 +911,59 @@ function buildDailyReport(
   movements: StockMovement[],
   sessions: BagShiftSession[],
   allocations: BagAllocation[],
+  registrations: ShiftRegistration[],
+  attendanceRecords: AttendanceRecord[],
+  receipts: SalesReceipt[],
   businessDate: string,
+  employeeKpiTargets: Record<string, number>,
 ): DailyReportModel {
-  const branchName = BRANCHES.find((item) => item.id === user.branchId)?.name || user.branchId
+  const branchName = configuredBranchName(user.branchId) || user.branchId
   const todayMovements = movements.filter((item) => item.branchId === user.branchId && item.shiftDate === businessDate)
   const todaySessions = sessions
     .filter((item) => item.branchId === user.branchId && item.businessDate === businessDate)
     .sort((a, b) => a.sequence - b.sequence || a.startedAt.localeCompare(b.startedAt))
-  const sessionIds = new Set(todaySessions.map((item) => item.id))
   const todayAllocations = allocations
     .filter((item) => item.branchId === user.branchId)
-    .filter((item) => !sessionIds.size || sessionIds.has(item.shiftId) || Boolean(item.settlementShiftId && sessionIds.has(item.settlementShiftId)))
-  const productRows = buildProductReportRows(todayAllocations)
-  const employeeRows = buildEmployeeRows(todayAllocations)
+    .filter((item) => allocationBusinessDate(item, todaySessions) === businessDate)
+  const todayRegistrations = registrations.filter((item) =>
+    item.branchId === user.branchId
+    && item.workDate === businessDate
+    && item.status !== 'rejected',
+  )
+  const todayAttendanceRecords = attendanceRecords.filter((item) =>
+    item.branchId === user.branchId
+    && item.checkInTime.slice(0, 10) === businessDate,
+  )
+  const todayReceipts = receipts.filter((item) => item.branchId === user.branchId && item.businessDate === businessDate)
+  const productRows = mergeReceiptProductRows(buildProductReportRows(todayAllocations), todayReceipts)
+  const employeeRows = buildEmployeeRows(todayAllocations, todayRegistrations, todayAttendanceRecords, todayReceipts, employeeKpiTargets, businessDate)
   const batchRows = buildBatchRows(todayMovements)
   const inboundRows = groupProductQuantities(todayMovements.filter((item) => item.type === 'inbound'))
   const packingRows = groupProductQuantities(todayMovements.filter((item) => item.type === 'packing_in'))
   const wasteRows = buildWasteRows(todayMovements)
   const stockRows = buildStockRows(movements, user.branchId, businessDate)
-  const salesEmployees = summarizeEmployeeBagSales(todayAllocations)
   const totalIssued = productRows.reduce((sum, item) => sum + item.issued, 0)
   const totalSold = productRows.reduce((sum, item) => sum + item.sold, 0)
   const totalReturned = productRows.reduce((sum, item) => sum + item.returned, 0)
   const totalDamaged = productRows.reduce((sum, item) => sum + item.damaged, 0)
   const totalRevenue = productRows.reduce((sum, item) => sum + item.revenue, 0)
-  const commission = salesEmployees.reduce((sum, item) => sum + item.commission, 0)
+  const commission = employeeRows.reduce((sum, item) => sum + item.commission, 0)
   const processingRawKg = batchRows.reduce((sum, item) => sum + item.raw, 0)
   const processingCookedKg = batchRows.reduce((sum, item) => sum + item.cooked, 0)
   const processingLossKg = batchRows.reduce((sum, item) => sum + item.loss, 0)
   const processingLossRate = processingRawKg ? roundPercent(processingLossKg / processingRawKg * 100) : 0
   const salesRate = totalIssued ? Math.round(totalSold / totalIssued * 100) : 0
-  const teamTarget = Math.max(COMMISSION_MIN_BAGS, Math.max(1, employeeRows.length) * COMMISSION_MIN_BAGS)
-  const teamKpi = Math.min(100, Math.round(totalSold / teamTarget * 100))
-  const grade = teamKpi >= 90 ? 'Xuất sắc' : teamKpi >= 70 ? 'Ổn định' : teamKpi >= 40 ? 'Cần cải thiện' : 'Thiếu dữ liệu'
+  const averageEmployeeKpi = employeeRows.length
+    ? Math.round(employeeRows.reduce((sum, row) => sum + row.kpi, 0) / employeeRows.length)
+    : 0
+  const teamTarget = Math.max(
+    DEFAULT_REVENUE_TARGET,
+    employeeRows.reduce((sum, row) => sum + row.targetRevenue, 0) || Math.max(1, employeeRows.length) * DEFAULT_REVENUE_TARGET,
+  )
+  const teamKpi = Math.min(100, Math.round(totalRevenue / teamTarget * 100))
+  // Xếp loại LUÔN theo KPI (không hiện "thiếu dữ liệu"): ưu tiên KPI nhân viên trung bình, fallback KPI đội theo doanh thu.
+  const kpiScore = employeeRows.length ? Math.max(teamKpi, averageEmployeeKpi) : teamKpi
+  const grade = kpiScore >= 90 ? 'Xuất sắc' : kpiScore >= 70 ? 'Ổn định' : kpiScore >= 40 ? 'Cần cải thiện' : 'Cần cố gắng'
   const closedShiftCount = todaySessions.filter((item) => item.status === 'closed').length
   const openShiftCount = todaySessions.filter((item) => item.status === 'open').length
   const outstandingCount = todayAllocations.filter((item) => !item.settledAt).length
@@ -571,14 +971,18 @@ function buildDailyReport(
   const morningLeaderName = todaySessions.find((item) => item.sequence === 1)?.leaderName || ''
   const eveningLeaderName = todaySessions.find((item) => item.sequence === 2)?.leaderName || ''
   const blockingIssues = [
-    closedShiftCount < 2 ? `Cần đủ 2 ca (Ca sáng và Ca tối) đã bàn giao, hiện mới có ${closedShiftCount}/2.` : '',
-    openShiftCount > 0 ? `Còn ${openShiftCount} ca đang mở.` : '',
-    outstandingCount > 0 ? `Còn ${outstandingCount} lượt túi nhân viên chưa đối soát.` : '',
+    openShiftCount > 0 ? `Còn ${openShiftCount} ca bàn giao quầy đang mở.` : '',
   ].filter(Boolean)
   const warnings = [
-    !todayMovements.length && !todayAllocations.length ? 'Chưa thấy phát sinh kho hoặc sổ túi trong ngày này.' : '',
+    !todayMovements.length && !todayAllocations.length && !todayReceipts.length ? 'Chưa thấy phát sinh kho hoặc POS trong ngày này.' : '',
     !batchRows.length ? 'Chưa có mẻ chế biến, hãy kiểm tra lại nếu hôm nay có làm hàng.' : '',
     !inboundRows.length ? 'Chưa có phiếu nhập đầu ngày.' : '',
+    closedShiftCount < 2 ? `Hôm nay mới có ${closedShiftCount}/2 ca quầy đã bàn giao. Báo cáo vẫn hiển thị doanh thu nhân viên theo POS.` : '',
+    outstandingCount > 0 ? `Còn ${outstandingCount} dòng bàn giao cũ chưa tất toán; doanh thu đã bán vẫn được tính theo POS.` : '',
+    todayRegistrations.some((registration) => {
+      const record = findAttendanceRecordForRegistration(todayAttendanceRecords, registration)
+      return record && !record.checkOutTime
+    }) ? 'Có nhân viên đã check-in nhưng chưa check-out. Giờ công sẽ cập nhật tiếp khi nhân viên kết ca.' : '',
   ].filter(Boolean)
   const legacyPatch = buildOperationalReportPatch(user, movements, businessDate)
   const legacyState = mergeBagSalesIntoReportState({
@@ -625,6 +1029,7 @@ function buildDailyReport(
       commission,
       salesRate,
       teamKpi,
+      averageEmployeeKpi,
       processingRawKg,
       processingCookedKg,
       processingLossKg,
@@ -639,7 +1044,14 @@ function buildDailyReport(
     wasteRows,
     stockRows,
     bagShiftSummary: buildBagShiftSummary(todaySessions, todayAllocations),
+    proofImages: buildProofImages(todaySessions, user.branchId, businessDate),
   }
+}
+
+function allocationBusinessDate(allocation: BagAllocation, sessions: BagShiftSession[]) {
+  if (allocation.businessDate) return allocation.businessDate
+  const session = sessions.find((item) => item.id === allocation.shiftId || item.id === allocation.settlementShiftId)
+  return session?.businessDate || allocation.issuedAt.slice(0, 10)
 }
 
 function buildShiftRows(sessions: BagShiftSession[], allocations: BagAllocation[]): ShiftReportRow[] {
@@ -734,30 +1146,114 @@ function buildProductReportRows(allocations: BagAllocation[]): ProductReportRow[
   return Array.from(rows.values()).sort((a, b) => b.issued - a.issued || a.name.localeCompare(b.name, 'vi'))
 }
 
-function buildEmployeeRows(allocations: BagAllocation[]): EmployeeReportRow[] {
-  const commissionRows = new Map(summarizeEmployeeBagSales(allocations).map((item) => [
-    `${item.branchId}|${item.employeeId || normalizeName(item.employeeName)}`,
-    item,
-  ]))
+function mergeReceiptProductRows(rows: ProductReportRow[], receipts: SalesReceipt[]): ProductReportRow[] {
+  if (!receipts.length) return rows
+  const merged = new Map(rows.map((row) => [row.productId, { ...row }]))
+  const receiptRows = new Map<string, { name: string; quantity: number; total: number }>()
+  receipts.forEach((receipt) => {
+    const directLines = receipt.lines.filter((line) => !line.allocationId)
+    directLines.forEach((line) => {
+      const current = receiptRows.get(line.productId) || { name: line.productName, quantity: 0, total: 0 }
+      current.quantity += line.quantity
+      current.total += line.total
+      receiptRows.set(line.productId, current)
+    })
+  })
+  receiptRows.forEach((receiptRow, productId) => {
+    const existing = merged.get(productId)
+    const product = productById(productId)
+    const current = existing || {
+      productId,
+      name: product?.name || receiptRow.name || productId,
+      unit: product?.unit || 'túi',
+      issued: 0,
+      sold: 0,
+      returned: 0,
+      damaged: 0,
+      remaining: 0,
+      outstanding: 0,
+      revenue: 0,
+      weightKg: product?.weightKg || 0,
+    }
+    current.issued = Math.max(current.issued, current.sold + receiptRow.quantity)
+    current.sold += receiptRow.quantity
+    current.revenue += receiptRow.total
+    current.remaining = Math.max(0, current.issued - current.sold - current.damaged)
+    merged.set(productId, current)
+  })
+  return Array.from(merged.values()).sort((a, b) => b.issued - a.issued || a.name.localeCompare(b.name, 'vi'))
+}
+
+function buildEmployeeRows(
+  allocations: BagAllocation[],
+  registrations: ShiftRegistration[],
+  attendanceRecords: AttendanceRecord[],
+  receipts: SalesReceipt[],
+  employeeKpiTargets: Record<string, number>,
+  businessDate: string,
+): EmployeeReportRow[] {
   const rows = new Map<string, EmployeeReportRow & { productMap: Map<string, EmployeeProductRow> }>()
-  allocations.forEach((allocation) => {
-    const key = `${allocation.branchId}|${allocation.employeeId || normalizeName(allocation.employeeName)}`
-    const commission = commissionRows.get(key)
-    const current = rows.get(key) || {
+  const registrationByEmployee = new Map(registrations.map((item) => [item.userId, item]))
+  const registrationByName = new Map(registrations.map((item) => [normalizeName(item.userName), item]))
+  const registeredRowKeys = new Set(registrations.flatMap((item) => [
+    `${item.branchId}|${item.userId}`,
+    `${item.branchId}|${normalizeName(item.userName)}`,
+  ]))
+  const ensureRow = (
+    branchId: string,
+    employeeKey: string,
+    employeeName: string,
+    registration?: ShiftRegistration,
+  ) => {
+    const key = `${branchId}|${employeeKey}`
+    const current = rows.get(key)
+    if (current) return current
+    const attendance = employeeAttendanceSummary(employeeKey, registrations, attendanceRecords)
+    const row = {
       key,
-      name: allocation.employeeName,
+      name: employeeName,
       issued: 0,
       sold: 0,
       returned: 0,
       damaged: 0,
       outstanding: 0,
       revenue: 0,
-      commission: commission?.commission || 0,
-      achievedCommission: commission?.achieved || false,
+      commission: 0,
+      achievedCommission: false,
       kpi: 0,
+      rank: 'D',
+      targetRevenue: employeeRevenueTarget(
+        branchId,
+        employeeKey,
+        employeePeriodRevenueTarget(
+          branchId,
+          registration?.employmentType === 'leader' ? 'shift_leader' : 'staff',
+          registration?.employmentType,
+          registration?.positionTitle,
+          registration?.workDate || businessDate,
+          registration?.workDate || businessDate,
+        ),
+        employeeKpiTargets,
+      ),
+      workHours: attendance.workHours,
+      checkedIn: attendance.checkedIn,
+      checkedOut: attendance.checkedOut,
       products: [],
       productMap: new Map<string, EmployeeProductRow>(),
     }
+    rows.set(key, row)
+    return row
+  }
+
+  registrations.forEach((registration) => {
+    ensureRow(registration.branchId, registration.userId, registration.userName, registration)
+  })
+
+  allocations.forEach((allocation) => {
+    const employeeKey = allocation.employeeId || normalizeName(allocation.employeeName)
+    const key = `${allocation.branchId}|${employeeKey}`
+    const registration = registrationByEmployee.get(employeeKey) || registrationByName.get(normalizeName(allocation.employeeName))
+    const current = ensureRow(allocation.branchId, employeeKey, allocation.employeeName, registration)
     const sold = soldQuantity(allocation)
     current.issued += allocation.issuedQuantity
     current.sold += sold
@@ -765,8 +1261,26 @@ function buildEmployeeRows(allocations: BagAllocation[]): EmployeeReportRow[] {
     current.damaged += allocation.damagedQuantity
     current.outstanding += allocation.settledAt ? 0 : allocation.issuedQuantity
     current.revenue += productSaleValues(allocation.productId, sold).revenue
-    current.commission = commission?.commission || 0
-    current.achievedCommission = commission?.achieved || false
+    current.targetRevenue = employeeRevenueTarget(
+      allocation.branchId,
+      employeeKey,
+      employeePeriodRevenueTarget(
+        allocation.branchId,
+        registration?.employmentType === 'leader' ? 'shift_leader' : 'staff',
+        registration?.employmentType,
+        registration?.positionTitle,
+        registration?.workDate || businessDate,
+        registration?.workDate || businessDate,
+      ),
+      employeeKpiTargets,
+    )
+    current.commission = dailyKpiBonus(
+      current.revenue / Math.max(1, current.targetRevenue) * 100,
+      registration?.employmentType === 'leader' ? 'shift_leader' : 'staff',
+      registration?.employmentType,
+      registration?.positionTitle,
+    )
+    current.achievedCommission = current.revenue >= current.targetRevenue
     const product = productById(allocation.productId)
     const productRow = current.productMap.get(allocation.productId) || {
       productId: allocation.productId,
@@ -783,13 +1297,93 @@ function buildEmployeeRows(allocations: BagAllocation[]): EmployeeReportRow[] {
     current.productMap.set(allocation.productId, productRow)
     rows.set(key, current)
   })
+
+  receipts.forEach((receipt) => {
+    const employeeKey = receipt.sellerId || receipt.sellerKey || normalizeName(receipt.sellerName)
+    const registration = registrationByEmployee.get(employeeKey) || registrationByName.get(normalizeName(receipt.sellerName))
+    const current = ensureRow(receipt.branchId, employeeKey, receipt.sellerName, registration)
+    const directLines = receipt.lines.filter((line) => !line.allocationId)
+    if (!directLines.length && (current.revenue > 0 || current.sold > 0)) return
+    const soldQuantity = directLines.length
+      ? directLines.reduce((sum, line) => sum + line.quantity, 0)
+      : receipt.totalQuantity
+    const revenue = directLines.length
+      ? directLines.reduce((sum, line) => sum + line.total, 0)
+      : receipt.totalAmount
+    current.sold += soldQuantity
+    current.revenue += revenue
+    // POS fallback: đã bán không bao giờ được hiển thị với số nhận bằng 0
+    // khi allocation liên kết chưa kịp đồng bộ vào phạm vi báo cáo.
+    current.issued = Math.max(current.issued, current.sold)
+    current.targetRevenue = employeeRevenueTarget(
+      receipt.branchId,
+      employeeKey,
+      employeePeriodRevenueTarget(
+        receipt.branchId,
+        registration?.employmentType === 'leader' ? 'shift_leader' : 'staff',
+        registration?.employmentType,
+        registration?.positionTitle,
+        receipt.businessDate,
+        receipt.businessDate,
+      ),
+      employeeKpiTargets,
+    )
+    current.achievedCommission = current.revenue >= current.targetRevenue
+    current.commission = dailyKpiBonus(
+      current.revenue / Math.max(1, current.targetRevenue) * 100,
+      registration?.employmentType === 'leader' ? 'shift_leader' : 'staff',
+      registration?.employmentType,
+      registration?.positionTitle,
+    )
+    directLines.forEach((line) => {
+      const product = productById(line.productId)
+      const productRow = current.productMap.get(line.productId) || {
+        productId: line.productId,
+        name: product?.name || line.productName || line.productId,
+        issued: 0,
+        sold: 0,
+        returned: 0,
+        damaged: 0,
+      }
+      productRow.issued += line.quantity
+      productRow.sold += line.quantity
+      current.productMap.set(line.productId, productRow)
+    })
+  })
+
   return Array.from(rows.values())
+    .filter((row) => {
+      const branchId = row.key.split('|')[0]
+      return registeredRowKeys.has(row.key) || registeredRowKeys.has(`${branchId}|${normalizeName(row.name)}`)
+    })
     .map(({ productMap, ...row }) => ({
       ...row,
-      kpi: row.issued ? Math.min(100, Math.round(row.sold / row.issued * 100)) : 0,
+      kpi: Math.min(200, Math.round(row.revenue / Math.max(1, row.targetRevenue) * 100)),
+      rank: kpiRank(row.revenue / Math.max(1, row.targetRevenue) * 100),
       products: Array.from(productMap.values()).sort((a, b) => b.issued - a.issued),
     }))
-    .sort((a, b) => b.sold - a.sold || a.name.localeCompare(b.name, 'vi'))
+    .filter(hasSalesActivity)
+    .sort((a, b) => b.revenue - a.revenue || a.name.localeCompare(b.name, 'vi'))
+}
+
+function hasSalesActivity(row: EmployeeReportRow) {
+  return row.sold > 0 || row.revenue > 0
+}
+
+function employeeAttendanceSummary(employeeKey: string, registrations: ShiftRegistration[], records: AttendanceRecord[]) {
+  const employeeRegistrations = registrations.filter((item) => item.userId === employeeKey)
+  let workHours = 0
+  let checkedIn = false
+  let checkedOut = false
+  employeeRegistrations.forEach((registration) => {
+    const record = findAttendanceRecordForRegistration(records, registration)
+    if (!record) return
+    checkedIn = true
+    if (record.checkOutTime) checkedOut = true
+    const end = record.checkOutTime ? new Date(record.checkOutTime).getTime() : Date.now()
+    workHours += Math.max(0, (end - new Date(record.checkInTime).getTime()) / 36e5)
+  })
+  return { workHours: Math.round(workHours * 10) / 10, checkedIn, checkedOut }
 }
 
 function buildWasteRows(movements: StockMovement[]): WasteReportRow[] {
@@ -911,47 +1505,6 @@ function buildBagShiftSummary(sessions: BagShiftSession[], allocations: BagAlloc
   }
 }
 
-function buildInfographicInventoryRows(report: DailyReportModel): [string, string][] {
-  const chestnutCookedKg = report.batchRows
-    .filter((item) => {
-      const normalized = normalizeName(item.outputLabel)
-      return normalized.includes('hat de') || normalized.includes('chestnut')
-    })
-    .reduce((sum, item) => sum + item.cooked, 0)
-  const potatoCookedKg = report.batchRows
-    .filter((item) => {
-      const normalized = normalizeName(item.outputLabel)
-      return normalized.includes('khoai') || normalized.includes('potato')
-    })
-    .reduce((sum, item) => sum + item.cooked, 0)
-  const chestnutRemainKg = report.productRows
-    .filter((item) => isChestnutBag(item.productId))
-    .reduce((sum, item) => sum + item.remaining * item.weightKg, 0)
-  const potatoRemainKg = report.productRows
-    .filter((item) => item.productId.includes('potato'))
-    .reduce((sum, item) => sum + item.remaining * item.weightKg, 0)
-
-  return [
-    ['Nguyên liệu sống', `${formatKg(report.totals.processingRawKg)} kg`],
-    ['Thành phẩm chín', `${formatKg(report.totals.processingCookedKg)} kg`],
-    ['Hạt dẻ chín để chia túi', `${formatKg(chestnutCookedKg)} kg chín`],
-    ['Khoai lang chín để chia túi', `${formatKg(potatoCookedKg)} kg chín`],
-    ['Dư hạt dẻ sau chia túi', `Dư / Remain: ${formatKg(chestnutRemainKg)} kg`],
-    ['Dư khoai sau chia túi', `Dư / Remain: ${formatKg(potatoRemainKg)} kg`],
-    ['Hủy hàng cuối ca', `${formatNumber(report.totals.damaged)} SP`],
-  ]
-}
-
-function sumEmployeeProducts(row: EmployeeReportRow, predicate: (productId: string) => boolean) {
-  return row.products
-    .filter((item) => predicate(item.productId))
-    .reduce((sum, item) => sum + item.sold, 0)
-}
-
-function isChestnutBag(productId: string) {
-  return productId.includes('chestnut') || productId.includes('snow') || productId.includes('grilled')
-}
-
 function groupByDocument(rows: StockMovement[]) {
   const groups = new Map<string, StockMovement[]>()
   rows.forEach((item) => {
@@ -981,7 +1534,48 @@ function soldQuantity(item: BagAllocation) {
 }
 
 function productById(productId: string) {
-  return PRODUCTS.find((item) => item.id === productId)
+  return catalogProductById(productId) || PRODUCTS.find((item) => item.id === productId)
+}
+
+function shiftLabel(sequence: number) {
+  if (sequence === 1) return 'Ca sáng'
+  if (sequence === 2) return 'Ca tối'
+  return `Ca ${sequence}`
+}
+
+function isTimestampInShift(timestamp: string, session: BagShiftSession) {
+  if (!timestamp || timestamp < session.startedAt) return false
+  return !session.endedAt || timestamp <= session.endedAt
+}
+
+function defaultReportScopeForLeader(session: Pick<BagShiftSession, 'sequence'>): ReportScope {
+  return session.sequence === 1 ? 'shift-1' : 'shift-2'
+}
+
+function friendlyReportMessage(value: string) {
+  if (!value) return ''
+  const normalized = value.toLocaleLowerCase('vi')
+  const operationalError = 'Chưa gửi được Zalo. Vui lòng thử lại; nếu vẫn lỗi, báo quản trị.'
+  if ([
+    'response rỗng',
+    'response không phải json',
+    'mới chỉ xác nhận bắt đầu',
+    'chưa xác nhận đã ghi sheet cho đúng job_key',
+  ].some((item) => normalized.includes(item))) return operationalError
+  if (
+    (normalized.includes('n8n') || normalized.includes('webhook'))
+    && ['lỗi', 'không', 'chưa', 'từ chối', 'quá thời gian'].some((item) => normalized.includes(item))
+  ) {
+    return operationalError
+  }
+  return value
+}
+
+function reportMessageTone(value: string) {
+  const normalized = value.toLocaleLowerCase('vi')
+  return ['không', 'chưa', 'lỗi', 'từ chối', 'quá thời gian'].some((item) => normalized.includes(item))
+    ? 'error'
+    : 'success'
 }
 
 function unique(values: string[]) {
@@ -1004,23 +1598,96 @@ function shiftPhotoKey(branchId: string, date: string, kind: 'opening' | 'closin
   return `gustino_shift_${branchId}_${date}_${kind}_photo`
 }
 
-function getShiftProofImages(sessions: BagShiftSession[], branchId: string, businessDate: string) {
+function buildProofImages(sessions: BagShiftSession[], branchId: string, businessDate: string): ProofImage[] {
   const sorted = [...sessions]
     .filter((item) => item.businessDate === businessDate)
     .sort((a, b) => a.sequence - b.sequence)
-  const opening = sorted.find((item) => item.openingPhotoUrl)?.openingPhotoUrl
-    || getLocalImage(shiftPhotoKey(branchId, businessDate, 'opening'))
-  const closing = [...sorted].reverse().find((item) => item.closingPhotoUrl)?.closingPhotoUrl
-    || getLocalImage(shiftPhotoKey(branchId, businessDate, 'closing'))
-  return { opening, closing }
+  const images = sorted.flatMap((session) => [
+    {
+      key: `${session.id}-opening`,
+      label: `${shiftLabel(session.sequence)} · Đầu ca`,
+      url: session.openingPhotoUrl || '',
+    },
+    {
+      key: `${session.id}-closing`,
+      label: `${shiftLabel(session.sequence)} · Cuối ca`,
+      url: session.closingPhotoUrl || '',
+    },
+  ])
+  if (images.length) return images
+  return [
+    { key: 'cloud-opening', label: 'Đầu ca', url: '' },
+    { key: 'cloud-closing', label: 'Cuối ca', url: '' },
+  ]
 }
 
-function getLocalImage(key: string) {
+function reportPosterScopeLabel(kind: N8nReportKind) {
+  return kind === 'day' ? 'Tổng ngày' : kind === 'shift-1' ? 'Ca 1' : 'Ca 2'
+}
+
+function reportKindLabel(kind: N8nReportKind) {
+  return kind === 'day' ? 'Tổng ngày' : `Báo cáo ${reportPosterScopeLabel(kind)}`
+}
+
+async function captureReportPosterBlob(
+  target: HTMLDivElement,
+  options: { scale: number; quality: number; maxBytes?: number },
+) {
+  let exportFrame: HTMLDivElement | null = null
   try {
-    return localStorage.getItem(key) || ''
-  } catch {
-    return ''
+    await waitForPaint()
+    const { default: html2canvas } = await import('html2canvas')
+    const exportTarget = target.cloneNode(true) as HTMLDivElement
+    exportTarget.classList.add('rp-poster-export')
+    exportFrame = document.createElement('div')
+    exportFrame.className = 'rp-export-frame'
+    exportFrame.appendChild(exportTarget)
+    document.body.appendChild(exportFrame)
+    await waitForPaint()
+    exportFrame.style.height = `${exportTarget.scrollHeight}px`
+    const canvas = await html2canvas(exportTarget, {
+      scale: options.scale,
+      backgroundColor: '#fff8ec',
+      useCORS: true,
+      width: exportTarget.scrollWidth,
+      height: exportTarget.scrollHeight,
+      windowWidth: exportTarget.scrollWidth,
+    })
+    let blob = await canvasToBlob(canvas, 'image/jpeg', options.quality)
+    if (!options.maxBytes || blob.size <= options.maxBytes) return blob
+
+    for (const quality of [.8, .72, .64]) {
+      blob = await canvasToBlob(canvas, 'image/jpeg', quality)
+      if (blob.size <= options.maxBytes) return blob
+    }
+
+    const ratio = Math.max(.5, Math.min(.9, Math.sqrt(options.maxBytes / blob.size) * .9))
+    const resized = document.createElement('canvas')
+    resized.width = Math.max(1, Math.round(canvas.width * ratio))
+    resized.height = Math.max(1, Math.round(canvas.height * ratio))
+    const context = resized.getContext('2d')
+    if (!context) throw new Error('Không thể thu gọn infographic để gửi n8n.')
+    context.drawImage(canvas, 0, 0, resized.width, resized.height)
+    blob = await canvasToBlob(resized, 'image/jpeg', .76)
+    if (blob.size > options.maxBytes) throw new Error('Infographic quá lớn để gửi n8n. Hãy bấm gửi lại sau khi tải lại trang.')
+    return blob
+  } finally {
+    exportFrame?.remove()
   }
+}
+
+function blobToBase64(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = String(reader.result || '')
+      const comma = result.indexOf(',')
+      if (comma < 0) reject(new Error('Không đọc được dữ liệu infographic.'))
+      else resolve(result.slice(comma + 1))
+    }
+    reader.onerror = () => reject(reader.error || new Error('Không đọc được dữ liệu infographic.'))
+    reader.readAsDataURL(blob)
+  })
 }
 
 function waitForPaint() {

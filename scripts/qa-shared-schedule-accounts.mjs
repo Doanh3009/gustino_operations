@@ -2,23 +2,24 @@ import { chromium } from 'playwright-core'
 
 const baseUrl = process.env.QA_BASE_URL || 'http://127.0.0.1:5175'
 const accountApi = process.env.QA_ACCOUNT_API || 'http://127.0.0.1:5187/api/attendance'
-const managerLogin = await fetch(`${accountApi}/login`, {
+const adminLogin = await fetch(`${accountApi}/login`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ email: 'quanly@gustino.vn', password: '123456' }),
+  body: JSON.stringify({ email: 'admin@gustino.vn', password: '123456' }),
 })
-if (!managerLogin.ok) throw new Error(`Đăng nhập Quản lý QA thất bại: ${await managerLogin.text()}`)
-const manager = await managerLogin.json()
-const managerHeaders = {
+if (!adminLogin.ok) throw new Error(`Đăng nhập Admin QA thất bại: ${await adminLogin.text()}`)
+const admin = await adminLogin.json()
+const adminHeaders = {
   'Content-Type': 'application/json',
-  Authorization: `Bearer ${manager.authToken}`,
+  Authorization: `Bearer ${admin.authToken}`,
 }
 
 const createResponse = await fetch(`${accountApi}/employees`, {
   method: 'POST',
-  headers: managerHeaders,
+  headers: adminHeaders,
   body: JSON.stringify({
     name: 'Nhân viên QA Account',
+    username: 'qaaccount',
     email: 'qa.account@gustino.test',
     branchId: 'gold-coast',
     role: 'staff',
@@ -37,7 +38,7 @@ if (!firstLogin.ok) throw new Error('Account mới không đăng nhập được
 
 const resetResponse = await fetch(`${accountApi}/employees/${employee.id}/password`, {
   method: 'PATCH',
-  headers: managerHeaders,
+  headers: adminHeaders,
   body: JSON.stringify({ temporaryPassword: 'ResetQA456' }),
 })
 if (!resetResponse.ok) throw new Error(`Đặt lại mật khẩu thất bại: ${await resetResponse.text()}`)
@@ -58,7 +59,7 @@ if (!newPasswordLogin.ok) throw new Error('Mật khẩu mới không đăng nh�
 
 const deleteResponse = await fetch(`${accountApi}/employees/${employee.id}`, {
   method: 'DELETE',
-  headers: managerHeaders,
+  headers: adminHeaders,
 })
 if (!deleteResponse.ok) throw new Error(`Xóa account thất bại: ${await deleteResponse.text()}`)
 
@@ -75,49 +76,51 @@ const browser = await chromium.launch({
 })
 
 try {
+  // Staff mở tab "Đăng ký tuần": bảng lịch DỌC (schedule-vboard, mục 14 CODEMAP)
+  // phải render — bảng ma trận cuộn ngang cũ đã bị thay thế.
   const staffContext = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   await staffContext.addInitScript(() => {
-    localStorage.setItem('gustino_demo_user_v1', JSON.stringify({
-      id: 'demo-staff',
-      name: 'Nhân viên Demo',
-      email: 'nhanvien@gustino.vn',
+    localStorage.setItem('gustino_user_v1', JSON.stringify({
+      id: 'qa-attendance-user',
+      name: 'Nhân viên QA',
+      email: 'qa-attendance@gustino.local',
       role: 'staff',
       branchId: 'gold-coast',
       branchIds: ['gold-coast'],
+      authToken: 'qa-staff-token',
     }))
+    localStorage.removeItem('gustino_demo_user_v1')
   })
   const staffPage = await staffContext.newPage()
   await staffPage.goto(`${baseUrl}/#attendance`, { waitUntil: 'networkidle' })
-  await staffPage.getByRole('button', { name: 'Bảng lịch tuần' }).click()
-  await staffPage.getByLabel('Tuần bắt đầu').fill(weekStartKey())
-  await staffPage.getByRole('heading', { name: 'Ai đã đăng ký ca nào?' }).waitFor()
-  await staffPage.locator('.weekly-schedule-matrix').waitFor()
-  await staffPage.getByRole('button', { name: /Nhân viên Demo · Tôi/ }).click()
-  const todayLabel = new Date().toLocaleDateString('vi-VN')
-  const ownCell = staffPage.getByLabel(`Nhân viên Demo ${todayLabel}`)
-  await ownCell.selectOption({ label: '10:00-15:00' })
-  await staffPage.waitForTimeout(300)
-  if (await ownCell.inputValue() === '') throw new Error('Dropdown lịch không lưu ca đã chọn.')
+  await staffPage.getByRole('button', { name: 'Đăng ký tuần' }).click()
+  await staffPage.getByRole('heading', { name: 'Đăng ký ca trong tuần' }).waitFor()
+  await staffPage.locator('.schedule-vboard').waitFor()
+  if (await staffPage.locator('.weekly-schedule-matrix').count()) {
+    throw new Error('Bảng ma trận cuộn ngang cũ vẫn còn render.')
+  }
   await staffContext.close()
 
-  const managerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
-  await managerContext.addInitScript(() => {
-    localStorage.setItem('gustino_demo_user_v1', JSON.stringify({
-      id: 'demo-manager',
-      name: 'Quản lý Demo',
-      email: 'quanly@gustino.vn',
-      role: 'manager',
+  const adminContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+  await adminContext.addInitScript(() => {
+    localStorage.setItem('gustino_user_v1', JSON.stringify({
+      id: 'demo-admin',
+      name: 'Admin hệ thống',
+      email: 'admin@gustino.vn',
+      role: 'admin',
       branchId: 'gold-coast',
       branchIds: ['gold-coast', 'lotte-2310', 'lotte-vt'],
+      authToken: 'qa-admin-token',
     }))
+    localStorage.removeItem('gustino_demo_user_v1')
   })
-  const managerPage = await managerContext.newPage()
-  await managerPage.goto(`${baseUrl}/#management`, { waitUntil: 'networkidle' })
-  await managerPage.getByRole('heading', { name: 'Tạo và quản lý tài khoản nhân viên' }).waitFor()
-  await managerPage.getByLabel('Họ tên').waitFor()
-  await managerPage.getByLabel('Email đăng nhập').waitFor()
-  await managerPage.getByText(/Mật khẩu được mã hóa/).waitFor()
-  await managerContext.close()
+  const adminPage = await adminContext.newPage()
+  await adminPage.goto(`${baseUrl}/#admin-accounts`, { waitUntil: 'networkidle' })
+  await adminPage.getByRole('heading', { name: 'Tạo và quản lý tài khoản nhân viên' }).waitFor()
+  await adminPage.getByLabel('Họ tên').waitFor()
+  await adminPage.getByLabel('Tên đăng nhập').waitFor()
+  await adminPage.getByText(/Admin hệ thống tự đặt mật khẩu/).waitFor()
+  await adminContext.close()
 
   console.log('SHARED_SCHEDULE_ACCOUNTS_QA_OK')
 } finally {

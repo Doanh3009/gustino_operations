@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build:report-css": "tailwindcss -c tailwind.report.config.cjs -i report-tailwind.input.css -o public/report-tailwind.css --minify",
-    "build": "npm run build:report-css && tsc -b && vite build",
+    "build": "npm run build:report-css && tsc -b && vite build && node scripts/test-production-supabase-bundle.mjs",
     "preview": "node scripts/preview.mjs",
     "serve:lan": "node scripts/lan-server.mjs",
     "qa:roles": "node scripts/qa-roles.mjs"
@@ -17,7 +17,8 @@
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "recharts": "^3.9.1"
   },
   "devDependencies": {
     "@types/react": "^19.1.0",

@@ -5,6 +5,12 @@ import { fileURLToPath } from 'node:url'
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
 
+try {
+  process.loadEnvFile?.('.env.local')
+} catch {
+  // Local secrets are optional. The Zalo route returns a clear setup error when absent.
+}
+
 const root = fileURLToPath(new URL('../', import.meta.url))
 const dist = join(root, 'dist')
 const dataDir = process.env.GUSTINO_DATA_DIR ? resolve(root, process.env.GUSTINO_DATA_DIR) : join(root, 'data')
@@ -13,6 +19,98 @@ const selfieDir = join(dataDir, 'attendance-selfies')
 const shiftProofDir = join(dataDir, 'shift-proofs')
 const port = Number(process.env.GUSTINO_API_PORT || 5177)
 const scrypt = promisify(scryptCallback)
+const N8N_WEBHOOK_TIMEOUT_MS = 20_000
+const N8N_ERROR_DETAIL_MAX_CHARS = 240
+
+async function n8nWebhookError(webhookResponse, webhookToken) {
+  let detail = ''
+  try {
+    const responseText = (await webhookResponse.text()).slice(0, 8_192).trim()
+    if (responseText.startsWith('{')) {
+      const payload = JSON.parse(responseText)
+      const candidate = payload?.message ?? payload?.error ?? payload?.description
+      detail = typeof candidate === 'string'
+        ? candidate
+        : typeof candidate?.message === 'string' ? candidate.message : ''
+    }
+  } catch {
+    detail = ''
+  }
+  if (detail && webhookToken) detail = detail.split(webhookToken).join('[đã ẩn]')
+  detail = detail.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, N8N_ERROR_DETAIL_MAX_CHARS)
+
+  if (webhookResponse.status === 403) {
+    return 'Webhook n8n từ chối xác thực (HTTP 403). Đặt Header Auth Name là x-gustino-token, Value trùng N8N_REPORT_WEBHOOK_TOKEN; kiểm tra IP Whitelist rồi Publish workflow.'
+  }
+  const base = webhookResponse.status === 500
+    ? 'Workflow n8n lỗi HTTP 500.'
+    : `Webhook n8n trả lỗi HTTP ${webhookResponse.status}.`
+  return detail
+    ? `${base} Chi tiết n8n: ${detail} Mở n8n > Executions để xem node lỗi.`
+    : `${base} Mở n8n > Executions để xem node lỗi.`
+}
+
+function n8nImmediateOnlyAck(responseText, payload) {
+  const message = typeof payload?.message === 'string' ? payload.message : responseText
+  return /workflow\s+(?:got|was|has been)\s+started/i.test(message)
+}
+
+async function n8nCompletedIngestion(webhookResponse, expectedJobKey) {
+  const responseText = (await webhookResponse.text()).slice(0, 8_192).trim()
+  if (!responseText) {
+    return {
+      ok: false,
+      code: 'N8N_EMPTY_ACK',
+      error: 'n8n trả HTTP 200 nhưng response rỗng, chưa xác nhận đã ghi Sheet. Đặt Respond = When Last Node Finishes và để node Sheet trả JSON có job_key, row_number.',
+    }
+  }
+
+  let payload
+  try {
+    payload = JSON.parse(responseText)
+  } catch {
+    return {
+      ok: false,
+      code: 'N8N_INVALID_ACK',
+      error: 'n8n trả HTTP 200 nhưng response không phải JSON, chưa xác nhận đã ghi Sheet. Node cuối phải trả job_key và row_number.',
+    }
+  }
+
+  if (n8nImmediateOnlyAck(responseText, payload)) {
+    return {
+      ok: false,
+      code: 'N8N_EARLY_ACK',
+      error: 'n8n mới chỉ xác nhận bắt đầu workflow, chưa xác nhận Drive/Sheet. Đặt Webhook Respond = When Last Node Finishes, lưu và Publish workflow rồi thử lại.',
+    }
+  }
+
+  const entries = (Array.isArray(payload) ? payload : [payload])
+    .flatMap((item) => [item, item?.json, item?.data])
+    .filter(Boolean)
+  const matchedRow = entries.find((item) => {
+    const hasRowNumber = item?.row_number !== undefined
+      && item?.row_number !== null
+      && String(item.row_number).trim() !== ''
+    const hasReadyStatus = String(item?.status || '').toUpperCase() === 'READY'
+    return String(item?.job_key || '') === expectedJobKey && (hasRowNumber || hasReadyStatus)
+  })
+
+  return matchedRow
+    ? { ok: true, rowNumber: matchedRow.row_number, status: matchedRow.status }
+    : {
+        ok: false,
+        code: 'N8N_SHEET_NOT_CONFIRMED',
+        error: 'n8n trả HTTP 200 nhưng chưa xác nhận đã ghi Sheet cho đúng job_key. Node Sheet phải trả đúng job_key cùng row_number hoặc status READY.',
+      }
+}
+
+function currentVietnamTimestamp(now = new Date()) {
+  return new Date(now.getTime() + 7 * 60 * 60 * 1_000).toISOString().replace('Z', '+07:00')
+}
+
+function currentVietnamDateKey(now = new Date()) {
+  return currentVietnamTimestamp(now).slice(0, 10)
+}
 
 const emptyStore = {
   movements: [],
@@ -25,9 +123,12 @@ const emptyStore = {
   attendanceRecords: [],
   bagShiftSessions: [],
   bagAllocations: [],
+  salesReceipts: [],
   supplyRequests: [],
   profiles: [],
   commissionRules: [],
+  employeeKpiTargets: [],
+  branches: [],
 }
 
 async function loadStore() {
@@ -40,6 +141,19 @@ async function loadStore() {
 
 let store = await loadStore()
 const sessions = new Map()
+const defaultBranches = [
+  { id: 'gold-coast', name: 'Gold Coast Nha Trang' },
+  { id: 'lotte-2310', name: 'Lotte Mart 23/10' },
+  { id: 'lotte-vt', name: 'Lotte Mart Vung Tau' },
+]
+store.branches = [
+  ...defaultBranches.map((branch) => ({
+    ...branch,
+    ...(store.branches || []).find((item) => item.id === branch.id),
+    active: (store.branches || []).find((item) => item.id === branch.id)?.active !== false,
+  })),
+  ...(store.branches || []).filter((branch) => !defaultBranches.some((item) => item.id === branch.id)),
+]
 store.shiftRegistrations = (store.shiftRegistrations || []).map((item) =>
   item.status === 'pending'
     ? { ...item, status: 'approved' }
@@ -68,7 +182,7 @@ const employmentShiftTemplates = [
   ['part-evening', 'Ca gãy chiều tối', '15:00', '21:00', ['part_time']],
   ['part-late', 'Ca tối', '16:30', '21:30', ['part_time']],
 ]
-for (const branchId of ['gold-coast', 'lotte-2310', 'lotte-vt']) {
+function ensureDefaultShiftsForBranch(branchId) {
   for (const [suffix, name, startTime, endTime, employmentTypes] of employmentShiftTemplates) {
     const id = `${branchId}-${suffix}`
     if (!store.shifts.some((shift) => shift.id === id)) {
@@ -79,7 +193,9 @@ for (const branchId of ['gold-coast', 'lotte-2310', 'lotte-vt']) {
     }
   }
 }
+for (const branch of store.branches) ensureDefaultShiftsForBranch(branch.id)
 const defaultAccounts = [
+  { id: 'demo-admin', name: 'Admin hệ thống', email: 'admin@gustino.vn', role: 'admin', branchId: 'gold-coast', branchIds: ['gold-coast', 'lotte-2310', 'lotte-vt'], employmentType: 'leader', positionTitle: 'Admin hệ thống' },
   { id: 'demo-manager', name: 'Quản lý Demo', email: 'quanly@gustino.vn', role: 'manager', branchId: 'gold-coast', branchIds: ['gold-coast', 'lotte-2310', 'lotte-vt'], employmentType: 'leader', positionTitle: 'Quản lý' },
   { id: 'demo-shift-leader', name: 'Ca trưởng Demo', email: 'catruong@gustino.vn', role: 'shift_leader', branchId: 'gold-coast', branchIds: ['gold-coast'], employmentType: 'leader', positionTitle: 'Ca trưởng' },
   { id: 'demo-staff', name: 'Nhân viên Demo', email: 'nhanvien@gustino.vn', role: 'staff', branchId: 'gold-coast', branchIds: ['gold-coast'], employmentType: 'part_time', positionTitle: 'Part-time' },
@@ -87,7 +203,8 @@ const defaultAccounts = [
 ]
 let seededDefaultAccounts = false
 for (const account of defaultAccounts) {
-  if (!(store.profiles || []).some((profile) => profile.id === account.id)) {
+  const existingIndex = (store.profiles || []).findIndex((profile) => profile.id === account.id)
+  if (existingIndex < 0) {
     store.profiles.push({
       ...account,
       active: true,
@@ -96,6 +213,17 @@ for (const account of defaultAccounts) {
       createdAt: new Date().toISOString(),
     })
     seededDefaultAccounts = true
+  } else {
+    const existing = store.profiles[existingIndex]
+    store.profiles[existingIndex] = {
+      ...existing,
+      ...account,
+      active: existing.active !== false,
+      passwordHash: existing.passwordHash || await hashPassword('123456'),
+      passwordUpdatedAt: existing.passwordUpdatedAt || new Date().toISOString(),
+      createdAt: existing.createdAt || new Date().toISOString(),
+    }
+    if (JSON.stringify(existing) !== JSON.stringify(store.profiles[existingIndex])) seededDefaultAccounts = true
   }
 }
 let writeQueue = Promise.resolve()
@@ -123,6 +251,42 @@ async function body(request) {
   return chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}
 }
 
+async function fetchJsonWithTimeout(url, init = {}, timeoutMs = 5000) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const result = await fetch(url, { ...init, signal: controller.signal })
+    if (!result.ok) return null
+    return await result.json()
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function reverseGeocodeAddress(latitude, longitude) {
+  const nominatimUrl = new URL('https://nominatim.openstreetmap.org/reverse')
+  nominatimUrl.searchParams.set('format', 'jsonv2')
+  nominatimUrl.searchParams.set('lat', String(latitude))
+  nominatimUrl.searchParams.set('lon', String(longitude))
+  nominatimUrl.searchParams.set('zoom', '18')
+  nominatimUrl.searchParams.set('addressdetails', '1')
+  nominatimUrl.searchParams.set('accept-language', 'vi')
+  const nominatim = await fetchJsonWithTimeout(nominatimUrl, {
+    headers: { 'User-Agent': 'GUSTINO-Operations/1.0' },
+  }).catch(() => null)
+  if (String(nominatim?.display_name || '').trim()) return String(nominatim.display_name).trim()
+
+  const bigDataUrl = new URL('https://api.bigdatacloud.net/data/reverse-geocode-client')
+  bigDataUrl.searchParams.set('latitude', String(latitude))
+  bigDataUrl.searchParams.set('longitude', String(longitude))
+  bigDataUrl.searchParams.set('localityLanguage', 'vi')
+  const bigData = await fetchJsonWithTimeout(bigDataUrl).catch(() => null)
+  const parts = [bigData?.locality, bigData?.city, bigData?.principalSubdivision, bigData?.countryName]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+  return [...new Set(parts)].join(', ')
+}
+
 function draftKey(branchId, date) {
   return `${branchId}:${date}`
 }
@@ -140,12 +304,132 @@ function actor(request) {
   }
 }
 
+async function authenticatedSupabaseReportOperator(request) {
+  const accessToken = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '')
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
+  const anonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
+  if (!accessToken || !supabaseUrl || !anonKey) return null
+  const authUser = await fetchJsonWithTimeout(`${supabaseUrl}/auth/v1/user`, {
+    headers: { apikey: anonKey, Authorization: `Bearer ${accessToken}` },
+  }, 8000).catch(() => null)
+  if (!authUser?.id) return null
+  const profiles = await fetchJsonWithTimeout(
+    `${supabaseUrl}/rest/v1/profiles?id=eq.${encodeURIComponent(authUser.id)}&select=id,role,active`,
+    { headers: { apikey: anonKey, Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } },
+    8000,
+  ).catch(() => null)
+  const profile = profiles?.[0]
+  if (!profile || profile.active === false) return null
+  return {
+    id: profile.id,
+    role: profile.role,
+    active: profile.active,
+    authenticated: true,
+    authSource: 'supabase',
+    accessToken,
+    supabaseUrl,
+    anonKey,
+  }
+}
+
+async function verifySupabaseReportShiftAndSnapshot(operator, input, shiftSequence) {
+  if (!input.shiftId || !input.branchId || !input.businessDate) {
+    return { ok: false, status: 400, error: 'Thiếu mã ca, chi nhánh hoặc ngày báo cáo.' }
+  }
+  const headers = { apikey: operator.anonKey, Authorization: `Bearer ${operator.accessToken}`, Accept: 'application/json' }
+  const shiftParams = new URLSearchParams({
+    id: `eq.${input.shiftId}`,
+    branch_id: `eq.${input.branchId}`,
+    business_date: `eq.${input.businessDate}`,
+    sequence: `eq.${shiftSequence}`,
+    leader_id: `eq.${operator.id}`,
+    status: 'eq.closed',
+    select: 'id',
+  })
+  const shifts = await fetchJsonWithTimeout(`${operator.supabaseUrl}/rest/v1/bag_shift_sessions?${shiftParams}`, { headers }, 8000).catch(() => null)
+  if (!Array.isArray(shifts)) return { ok: false, status: 502, error: 'Không kiểm tra được trạng thái ca trên Supabase.' }
+  if (!shifts.length) return { ok: false, status: 409, error: 'Chỉ được xếp lịch sau khi chính ca trưởng đã đóng ca.' }
+
+  if (shiftSequence === 2) {
+    const openParams = new URLSearchParams({
+      branch_id: `eq.${input.branchId}`,
+      business_date: `eq.${input.businessDate}`,
+      status: 'eq.open',
+      select: 'id',
+    })
+    const openShifts = await fetchJsonWithTimeout(`${operator.supabaseUrl}/rest/v1/bag_shift_sessions?${openParams}`, { headers }, 8000).catch(() => null)
+    if (!Array.isArray(openShifts)) return { ok: false, status: 502, error: 'Không kiểm tra được ca đang mở trên Supabase.' }
+    if (openShifts.length) return { ok: false, status: 409, error: 'Ca 2 chỉ xếp lịch cùng Tổng ngày khi không còn ca nào đang mở.' }
+  }
+
+  const snapshotParams = new URLSearchParams({
+    branch_id: `eq.${input.branchId}`,
+    report_date: `eq.${input.businessDate}`,
+    select: 'id,payload',
+    limit: '1',
+  })
+  const snapshots = await fetchJsonWithTimeout(`${operator.supabaseUrl}/rest/v1/report_snapshots?${snapshotParams}`, { headers }, 8000).catch(() => null)
+  if (!Array.isArray(snapshots)) return { ok: false, status: 502, error: 'Không kiểm tra được báo cáo đã chốt trên Supabase.' }
+  const snapshot = snapshots[0]
+  const shiftEntry = snapshot?.payload?.shiftReports?.[input.shiftId]
+  if (!shiftEntry) return { ok: false, status: 409, error: 'Báo cáo ca chưa được lưu nên chưa thể xếp lịch.' }
+  return { ok: true, snapshot, shiftEntry, previousDelivery: shiftEntry.n8nDelivery || {} }
+}
+
+async function persistSupabaseN8nDelivery(operator, snapshot, shiftId, delivery) {
+  const payload = {
+    ...snapshot.payload,
+    shiftReports: {
+      ...snapshot.payload.shiftReports,
+      [shiftId]: { ...snapshot.payload.shiftReports[shiftId], n8nDelivery: delivery },
+    },
+  }
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8000)
+  try {
+    const response = await fetch(`${operator.supabaseUrl}/rest/v1/report_snapshots?id=eq.${encodeURIComponent(snapshot.id)}`, {
+      method: 'PATCH',
+      headers: {
+        apikey: operator.anonKey,
+        Authorization: `Bearer ${operator.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ payload }),
+      signal: controller.signal,
+    })
+    if (!response.ok) throw new Error(`Supabase trả HTTP ${response.status}`)
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 function canAccessBranch(user, branchId) {
-  return user.branchId === branchId || (user.role === 'manager' && user.branchIds.includes(branchId))
+  if (['admin', 'manager', 'kitchen'].includes(user.role)) return true
+  return user.branchId === branchId || user.branchIds.includes(branchId)
+}
+
+function closeOutstandingBagSession(session, userId, note = 'Auto closed.') {
+  const endedAt = new Date().toISOString()
+  session.status = 'closed'
+  session.discrepancyNote = session.discrepancyNote || note
+  session.endedAt = session.endedAt || endedAt
+  store.bagAllocations = (store.bagAllocations || []).map((allocation) => {
+    if (allocation.shiftId !== session.id || allocation.settledAt) return allocation
+    const issued = Number(allocation.issuedQuantity || 0)
+    const sold = Number(allocation.soldQuantity || 0)
+    const damaged = Number(allocation.damagedQuantity || 0)
+    return {
+      ...allocation,
+      returnedQuantity: Math.max(0, issued - sold - damaged),
+      settledBy: userId,
+      settlementShiftId: session.id,
+      settledAt: endedAt,
+    }
+  })
 }
 
 function attendanceRowsAllowed(user, rows, ownerField = 'userId') {
-  if (user.role === 'manager' || user.role === 'shift_leader') return rows.filter((item) => canAccessBranch(user, item.branchId))
+  if (['admin', 'manager', 'shift_leader'].includes(user.role)) return rows.filter((item) => canAccessBranch(user, item.branchId))
   return rows.filter((item) => item[ownerField] === user.id)
 }
 
@@ -157,9 +441,18 @@ function attendanceFilters(rows, url) {
   return rows.filter((item) =>
     (!branchId || item.branchId === branchId)
     && (!userId || item.userId === userId)
-    && (!from || (item.workDate || item.checkInTime.slice(0, 10)) >= from)
-    && (!to || (item.workDate || item.checkInTime.slice(0, 10)) <= to)
+    && (!from || attendanceRowDateKey(item) >= from)
+    && (!to || attendanceRowDateKey(item) <= to)
   )
+}
+
+function attendanceRowDateKey(item) {
+  if (item.workDate) return item.workDate
+  const date = new Date(item.checkInTime)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 async function hashPassword(password) {
@@ -184,8 +477,10 @@ function publicProfile(profile) {
     role: profile.role,
     branchId: profile.branchId,
     active: profile.active !== false,
+    hasLoginAccount: Boolean(profile.email && profile.passwordHash && profile.active !== false),
     employmentType: profile.employmentType,
     positionTitle: profile.positionTitle,
+    avatarUrl: profile.avatarUrl,
   }
 }
 
@@ -193,17 +488,46 @@ async function handleApi(request, response, url) {
   if (request.method === 'OPTIONS') return json(response, 200, {})
   const branchId = url.searchParams.get('branchId') || ''
   const date = url.searchParams.get('date') || ''
+  const from = url.searchParams.get('from') || ''
+  const to = url.searchParams.get('to') || ''
 
   if (url.pathname === '/api/health') return json(response, 200, { ok: true, updatedAt: new Date().toISOString() })
+  if (url.pathname === '/api/server-time' && request.method === 'GET') return json(response, 200, { now: new Date().toISOString() })
+  if (url.pathname === '/api/branches' && request.method === 'GET') {
+    const user = actor(request)
+    if (!user.id) return json(response, 401, { error: 'Chưa đăng nhập.' })
+    const includeInactive = url.searchParams.get('includeInactive') === '1'
+    return json(response, 200, (store.branches || []).filter((branch) => includeInactive || branch.active !== false))
+  }
+  if (url.pathname === '/api/branches' && request.method === 'PUT') {
+    const user = actor(request)
+    if (user.role !== 'admin') return json(response, 403, { error: 'Chỉ Admin hệ thống được cập nhật chi nhánh.' })
+    const rows = await body(request)
+    if (!Array.isArray(rows)) return json(response, 400, { error: 'Danh sách chi nhánh không hợp lệ.' })
+    const next = rows
+      .filter((branch) => branch && branch.id && branch.name)
+      .map((branch) => ({
+        ...branch,
+        id: String(branch.id).trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-'),
+        name: String(branch.name).trim(),
+        active: branch.active !== false,
+      }))
+    store.branches = next
+    for (const branch of store.branches) ensureDefaultShiftsForBranch(branch.id)
+    await persist()
+    return json(response, 200, store.branches)
+  }
   if (url.pathname === '/api/commission-rules' && request.method === 'GET') {
     const user = actor(request)
     if (!user.id) return json(response, 401, { error: 'Chưa đăng nhập.' })
-    const branchIds = Array.from(new Set([user.branchId, ...(user.branchIds || [])]))
+    const branchIds = ['admin', 'manager'].includes(user.role)
+      ? (store.branches || []).map((branch) => branch.id)
+      : Array.from(new Set([user.branchId, ...(user.branchIds || [])]))
     return json(response, 200, (store.commissionRules || []).filter((rule) => branchIds.includes(rule.branchId)))
   }
   if (url.pathname === '/api/commission-rules' && request.method === 'PUT') {
     const user = actor(request)
-    if (user.role !== 'manager') return json(response, 403, { error: 'Chỉ Quản lý được đổi chính sách hoa hồng.' })
+    if (!['admin', 'manager'].includes(user.role)) return json(response, 403, { error: 'Chỉ Quản lý được đổi chính sách hoa hồng.' })
     const input = await body(request)
     if (!canAccessBranch(user, input.branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
     const rule = {
@@ -217,31 +541,70 @@ async function handleApi(request, response, url) {
     await persist()
     return json(response, 200, rule)
   }
+  if (url.pathname === '/api/employee-kpi-targets' && request.method === 'GET') {
+    const user = actor(request)
+    if (!user.id) return json(response, 401, { error: 'Chưa đăng nhập.' })
+    const requestedBranchIds = (url.searchParams.get('branchIds') || user.branchId).split(',').filter(Boolean)
+    const allowedBranchIds = requestedBranchIds.filter((id) => canAccessBranch(user, id))
+    return json(response, 200, (store.employeeKpiTargets || []).filter((target) => allowedBranchIds.includes(target.branchId)))
+  }
+  if (url.pathname === '/api/employee-kpi-targets' && request.method === 'PUT') {
+    const user = actor(request)
+    if (!['admin', 'manager'].includes(user.role)) return json(response, 403, { error: 'Chỉ Quản lý được đổi KPI nhân viên.' })
+    const input = await body(request)
+    if (!canAccessBranch(user, input.branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
+    const key = `${input.branchId}|${input.employeeKey}`
+    if (!(Number(input.targetRevenue) > 0)) {
+      store.employeeKpiTargets = (store.employeeKpiTargets || []).filter((item) => `${item.branchId}|${item.employeeKey}` !== key)
+      await persist()
+      return json(response, 200, {
+        branchId: input.branchId,
+        employeeKey: input.employeeKey,
+        employeeId: input.employeeId,
+        employeeName: input.employeeName || '',
+        targetRevenue: 0,
+        updatedAt: new Date().toISOString(),
+      })
+    }
+    const target = {
+      id: (store.employeeKpiTargets || []).find((item) => `${item.branchId}|${item.employeeKey}` === key)?.id || randomUUID(),
+      branchId: input.branchId,
+      employeeKey: input.employeeKey,
+      employeeId: input.employeeId || '',
+      employeeName: input.employeeName || '',
+      targetRevenue: Math.round(Number(input.targetRevenue)),
+      updatedAt: new Date().toISOString(),
+    }
+    store.employeeKpiTargets = [...(store.employeeKpiTargets || []).filter((item) => `${item.branchId}|${item.employeeKey}` !== key), target]
+    await persist()
+    return json(response, 200, target)
+  }
   if (url.pathname === '/api/reverse-geocode' && request.method === 'GET') {
     const latitude = Number(url.searchParams.get('lat'))
     const longitude = Number(url.searchParams.get('lng'))
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return json(response, 400, { error: 'Tọa độ không hợp lệ.' })
-    return json(response, 200, { address: `Vị trí GPS ${latitude.toFixed(6)}, ${longitude.toFixed(6)}` })
+    const address = await reverseGeocodeAddress(latitude, longitude)
+    if (!address) return json(response, 502, { error: 'Chưa lấy được địa chỉ cụ thể từ vị trí này.' })
+    return json(response, 200, { address })
   }
 
   if (url.pathname === '/api/supply-requests' && request.method === 'GET') {
     const user = actor(request)
     if (!user.id) return json(response, 401, { error: 'Chưa đăng nhập.' })
     const requestedBranchIds = (url.searchParams.get('branchIds') || user.branchId).split(',').filter(Boolean)
-    const allowedBranchIds = user.role === 'manager'
+    const allowedBranchIds = ['admin', 'manager'].includes(user.role)
       ? requestedBranchIds.filter((id) => canAccessBranch(user, id))
       : [user.branchId]
     const rows = (store.supplyRequests || [])
       .filter((item) => allowedBranchIds.includes(item.branchId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 80)
     return json(response, 200, rows)
   }
 
   if (url.pathname === '/api/supply-requests' && request.method === 'POST') {
     const user = actor(request)
     if (!user.id) return json(response, 401, { error: 'Chưa đăng nhập.' })
-    if (!['shift_leader', 'manager'].includes(user.role)) return json(response, 403, { error: 'Chỉ ca trưởng hoặc quản lý được gửi đơn đặt bếp.' })
+    if (!['shift_leader', 'manager', 'admin'].includes(user.role)) return json(response, 403, { error: 'Chỉ ca trưởng hoặc quản lý được gửi đơn đặt bếp.' })
     const input = await body(request)
     const branchId = String(input.branchId || user.branchId)
     if (!canAccessBranch(user, branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
@@ -275,19 +638,118 @@ async function handleApi(request, response, url) {
   if (supplyRequestMatch && request.method === 'PATCH') {
     const user = actor(request)
     if (!user.id) return json(response, 401, { error: 'Chưa đăng nhập.' })
-    if (!['kitchen', 'manager'].includes(user.role)) return json(response, 403, { error: 'Chỉ bếp hoặc quản lý được cập nhật đơn.' })
+    if (!['shift_leader', 'kitchen', 'manager', 'admin'].includes(user.role)) return json(response, 403, { error: 'Chỉ bếp, ca trưởng hoặc quản lý được cập nhật đơn.' })
     const index = (store.supplyRequests || []).findIndex((item) => item.id === supplyRequestMatch[1])
     if (index < 0) return json(response, 404, { error: 'Không tìm thấy đơn đặt bếp.' })
     if (!canAccessBranch(user, store.supplyRequests[index].branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
     const patch = await body(request)
-    if (!['pending', 'acknowledged', 'fulfilled', 'cancelled'].includes(patch.status)) return json(response, 400, { error: 'Trạng thái không hợp lệ.' })
+    if (patch.status && !['pending', 'acknowledged', 'fulfilled', 'cancelled'].includes(patch.status)) return json(response, 400, { error: 'Trạng thái không hợp lệ.' })
     store.supplyRequests[index] = {
       ...store.supplyRequests[index],
-      status: patch.status,
+      ...(patch.productName !== undefined ? { productName: String(patch.productName).trim() } : {}),
+      ...(patch.quantity !== undefined ? { quantity: Number(patch.quantity) } : {}),
+      ...(patch.unit !== undefined ? { unit: String(patch.unit).trim() || 'kg' } : {}),
+      ...(patch.note !== undefined ? { note: String(patch.note).trim() } : {}),
+      ...(patch.status ? { status: patch.status } : {}),
       updatedAt: new Date().toISOString(),
     }
     await persist()
     return json(response, 200, store.supplyRequests[index])
+  }
+
+  if (supplyRequestMatch && request.method === 'DELETE') {
+    const user = actor(request)
+    if (!user.id) return json(response, 401, { error: 'Chưa đăng nhập.' })
+    const index = (store.supplyRequests || []).findIndex((item) => item.id === supplyRequestMatch[1])
+    if (index < 0) return json(response, 404, { error: 'Không tìm thấy đơn đặt bếp.' })
+    if (!canAccessBranch(user, store.supplyRequests[index].branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
+    if (!['shift_leader', 'manager', 'admin'].includes(user.role) && store.supplyRequests[index].requestedBy !== user.id) {
+      return json(response, 403, { error: 'Không có quyền xóa đơn.' })
+    }
+    store.supplyRequests.splice(index, 1)
+    await persist()
+    return json(response, 200, { ok: true })
+  }
+
+  if (url.pathname === '/api/sales-receipts' && request.method === 'GET') {
+    const user = actor(request)
+    if (!user.id) return json(response, 401, { error: 'Chua dang nhap.' })
+    const rows = (store.salesReceipts || [])
+      .filter((item) => canAccessBranch(user, item.branchId))
+      .filter((item) => !branchId || item.branchId === branchId)
+      .filter((item) => !date || item.businessDate === date)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    return json(response, 200, rows)
+  }
+
+  if (url.pathname === '/api/sales-receipts/range' && request.method === 'GET') {
+    const user = actor(request)
+    if (!user.id) return json(response, 401, { error: 'Chua dang nhap.' })
+    const from = url.searchParams.get('from') || ''
+    const to = url.searchParams.get('to') || ''
+    const requestedBranchIds = (url.searchParams.get('branchIds') || user.branchId).split(',').filter(Boolean)
+    const allowedBranchIds = requestedBranchIds.filter((id) => canAccessBranch(user, id))
+    const rows = (store.salesReceipts || [])
+      .filter((item) => allowedBranchIds.includes(item.branchId))
+      .filter((item) => (!from || item.businessDate >= from) && (!to || item.businessDate <= to))
+      .sort((a, b) => b.businessDate.localeCompare(a.businessDate) || b.createdAt.localeCompare(a.createdAt))
+    return json(response, 200, rows)
+  }
+
+  if (url.pathname === '/api/sales-receipts' && request.method === 'POST') {
+    const user = actor(request)
+    if (!user.id) return json(response, 401, { error: 'Chua dang nhap.' })
+    if (!['staff', 'shift_leader', 'manager', 'admin'].includes(user.role)) {
+      return json(response, 403, { error: 'Khong co quyen tao hoa don.' })
+    }
+    const receipt = await body(request)
+    if (!receipt?.id || !receipt.branchId || !receipt.businessDate || !Array.isArray(receipt.lines)) {
+      return json(response, 400, { error: 'Hoa don khong hop le.' })
+    }
+    if (!canAccessBranch(user, receipt.branchId)) return json(response, 403, { error: 'Khong co quyen tai chi nhanh nay.' })
+    if ((store.salesReceipts || []).some((item) => item.id === receipt.id || item.code === receipt.code)) {
+      return json(response, 409, { error: 'Hoa don da ton tai.' })
+    }
+    const totalQuantity = Number(receipt.totalQuantity || receipt.lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0))
+    const totalAmount = Number(receipt.totalAmount || receipt.lines.reduce((sum, line) => sum + Number(line.total || 0), 0))
+    const row = {
+      ...receipt,
+      sellerKey: receipt.sellerKey || receipt.sellerId || String(receipt.sellerName || '').trim().toLowerCase(),
+      sellerName: String(receipt.sellerName || user.id),
+      paymentMethod: receipt.paymentMethod || 'cash',
+      totalQuantity,
+      totalAmount,
+      createdBy: receipt.createdBy || user.id,
+      createdByName: receipt.createdByName || user.id,
+      createdAt: receipt.createdAt || new Date().toISOString(),
+      lines: receipt.lines.map((line) => ({
+        allocationId: line.allocationId || undefined,
+        productId: String(line.productId || ''),
+        productName: String(line.productName || line.productId || ''),
+        quantity: Number(line.quantity || 0),
+        unitPrice: Number(line.unitPrice || 0),
+        total: Number(line.total || 0),
+      })).filter((line) => line.productId && line.quantity > 0),
+    }
+    if (!row.lines.length) return json(response, 400, { error: 'Hoa don chua co mon.' })
+    store.salesReceipts.unshift(row)
+    await persist()
+    return json(response, 200, row)
+  }
+
+  if (url.pathname.startsWith('/api/sales-receipts/') && request.method === 'DELETE') {
+    const user = actor(request)
+    if (!user.id) return json(response, 401, { error: 'Chua dang nhap.' })
+    const receiptId = decodeURIComponent(url.pathname.slice('/api/sales-receipts/'.length))
+    const receipt = (store.salesReceipts || []).find((item) => item.id === receiptId)
+    if (!receipt) return json(response, 404, { error: 'Khong tim thay hoa don.' })
+    const todayKey = currentVietnamDateKey()
+    const canManage = ['shift_leader', 'manager', 'admin'].includes(user.role) && canAccessBranch(user, receipt.branchId)
+    const ownsToday = (receipt.createdBy === user.id || receipt.sellerId === user.id) && receipt.businessDate === todayKey
+    if (!canManage && !ownsToday) return json(response, 403, { error: 'Khong co quyen xoa hoa don nay.' })
+    store.salesReceipts = (store.salesReceipts || []).filter((item) => item.id !== receiptId)
+    await persist()
+    return json(response, 200, { ok: true })
   }
 
   if (url.pathname.startsWith('/api/shift-ledger/')) {
@@ -300,6 +762,8 @@ async function handleApi(request, response, url) {
         .filter((item) => canAccessBranch(user, item.branchId))
         .filter((item) => !branchId || item.branchId === branchId)
         .filter((item) => !date || item.businessDate === date)
+        .filter((item) => !from || item.businessDate >= from)
+        .filter((item) => !to || item.businessDate <= to)
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       return json(response, 200, rows)
     }
@@ -307,6 +771,10 @@ async function handleApi(request, response, url) {
       if (!canWrite) return json(response, 403, { error: 'Chỉ ca trưởng được nhận ca.' })
       const session = await body(request)
       if (!canAccessBranch(user, session.branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
+      const staleOpenSessions = store.bagShiftSessions.filter((item) =>
+        item.branchId === session.branchId && item.status === 'open' && item.businessDate !== session.businessDate
+      )
+      staleOpenSessions.forEach((item) => closeOutstandingBagSession(item, user.id, 'Auto closed when opening a new business day.'))
       if (store.bagShiftSessions.some((item) => item.branchId === session.branchId && item.status === 'open')) {
         return json(response, 409, { error: 'Chi nhánh đang có một ca chưa bàn giao.' })
       }
@@ -437,17 +905,22 @@ async function handleApi(request, response, url) {
   if (url.pathname.startsWith('/api/attendance/')) {
     if (url.pathname === '/api/attendance/login' && request.method === 'POST') {
       const credentials = await body(request)
-      const username = normalizeUsername(String(credentials.username || credentials.email || ''))
-      const email = username.includes('@') ? username : `${username}@accounts.gustino.vn`
+      const rawLogin = String(credentials.username || credentials.email || '').trim().toLowerCase()
+      const username = normalizeUsername(rawLogin.includes('@') ? rawLogin.split('@')[0] : rawLogin)
+      const emailCandidates = new Set([
+        rawLogin.includes('@') ? rawLogin : `${username}@accounts.gustino.vn`,
+        `${username}@accounts.gustino.vn`,
+        `${username}@gustino.vn`,
+      ])
       const profile = (store.profiles || []).find((item) =>
-        String(item.email || '').toLowerCase() === email
+        emailCandidates.has(String(item.email || '').toLowerCase())
         || normalizeUsername(String(item.email || '').split('@')[0]) === username,
       )
       if (!profile || profile.active === false || !(await passwordMatches(String(credentials.password || ''), profile.passwordHash))) {
         return json(response, 401, { error: 'Tên đăng nhập hoặc mật khẩu không đúng.' })
       }
       const authToken = randomBytes(32).toString('hex')
-      const branchIds = profile.role === 'manager'
+      const branchIds = ['admin', 'manager', 'kitchen'].includes(profile.role)
         ? Array.from(new Set([profile.branchId, ...(profile.branchIds || [])]))
         : [profile.branchId]
       sessions.set(authToken, {
@@ -468,6 +941,50 @@ async function handleApi(request, response, url) {
     if (url.pathname === '/api/attendance/shifts' && request.method === 'GET') {
       return json(response, 200, store.shifts.filter((item) => item.active && canAccessBranch(user, item.branchId)))
     }
+    if (url.pathname === '/api/attendance/shifts' && request.method === 'POST') {
+      const input = await body(request)
+      const branchId = String(input.branchId || user.branchId)
+      const startTime = String(input.startTime || '').slice(0, 5)
+      const endTime = String(input.endTime || '').slice(0, 5)
+      if (!['admin', 'manager', 'shift_leader'].includes(user.role)) return json(response, 403, { error: 'Không có quyền tạo khung ca.' })
+      if (!canAccessBranch(user, branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
+      if (!/^\d{2}:\d{2}$/.test(startTime) || !/^\d{2}:\d{2}$/.test(endTime)) {
+        return json(response, 400, { error: 'Khung giờ không hợp lệ.' })
+      }
+      if (!store.branches.some((branch) => branch.id === branchId)) {
+        store.branches.push({ id: branchId, name: String(input.branchName || branchId), active: true, createdAt: new Date().toISOString() })
+      }
+      const duplicate = store.shifts.find((item) =>
+        item.active && item.branchId === branchId && item.startTime === startTime && item.endTime === endTime,
+      )
+      if (duplicate) return json(response, 200, duplicate)
+      const shift = {
+        id: randomUUID(),
+        branchId,
+        name: String(input.name || `${startTime}-${endTime}`).trim(),
+        startTime,
+        endTime,
+        graceMinutes: 5,
+        recommendedStaff: Number(input.recommendedStaff || 3),
+        employmentTypes: Array.isArray(input.employmentTypes) ? input.employmentTypes.filter((item) => ['leader', 'full_time', 'part_time'].includes(item)) : [],
+        active: true,
+        createdBy: user.id,
+        createdAt: new Date().toISOString(),
+      }
+      store.shifts.push(shift)
+      await persist()
+      return json(response, 200, shift)
+    }
+    const shiftMatch = url.pathname.match(/^\/api\/attendance\/shifts\/([^/]+)$/)
+    if (shiftMatch && request.method === 'DELETE') {
+      if (!['admin', 'manager', 'shift_leader'].includes(user.role)) return json(response, 403, { error: 'Không có quyền xóa khung ca.' })
+      const shift = store.shifts.find((item) => item.id === shiftMatch[1])
+      if (!shift) return json(response, 404, { error: 'Không tìm thấy khung ca.' })
+      if (!canAccessBranch(user, shift.branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
+      shift.active = false
+      await persist()
+      return json(response, 200, { ok: true })
+    }
     if (url.pathname === '/api/attendance/employees' && request.method === 'GET') {
       const profiles = new Map()
       for (const item of store.profiles || []) {
@@ -476,14 +993,18 @@ async function handleApi(request, response, url) {
       for (const item of [...store.shiftRegistrations, ...store.attendanceRecords]) {
         if (item.userId && item.userName && canAccessBranch(user, item.branchId)) {
           const existing = profiles.get(item.userId)
-          profiles.set(item.userId, { id: item.userId, name: item.userName, role: existing?.role || 'staff', branchId: item.branchId })
+          if (!existing) {
+            profiles.set(item.userId, { id: item.userId, name: item.userName, role: 'staff', branchId: item.branchId })
+          }
         }
       }
-      profiles.set(user.id, { id: user.id, name: user.id === 'demo-shift-leader' ? 'Ca trưởng Demo' : user.id, role: user.role, branchId: user.branchId })
+      if (!profiles.has(user.id)) {
+        profiles.set(user.id, { id: user.id, name: user.id === 'demo-shift-leader' ? 'Ca trưởng Demo' : user.id, role: user.role, branchId: user.branchId })
+      }
       return json(response, 200, Array.from(profiles.values()).map(publicProfile))
     }
     if (url.pathname === '/api/attendance/employees' && request.method === 'POST') {
-      if (!user.authenticated || user.role !== 'manager') return json(response, 403, { error: 'Vui lòng đăng nhập lại bằng tài khoản Quản lý.' })
+      if (!user.authenticated || user.role !== 'admin') return json(response, 403, { error: 'Chỉ Admin hệ thống được tạo nhân sự.' })
       const input = await body(request)
       const username = normalizeUsername(String(input.username || ''))
       const email = String(input.email || `${username}@accounts.gustino.vn`).trim().toLowerCase()
@@ -491,8 +1012,10 @@ async function handleApi(request, response, url) {
       const name = String(input.name || '').trim()
       if (!name || username.length < 3 || !email.includes('@')) return json(response, 400, { error: 'Tên và tên đăng nhập không hợp lệ.' })
       if (password.length < 6) return json(response, 400, { error: 'Mật khẩu tạm cần ít nhất 6 ký tự.' })
-      if (!canAccessBranch(user, input.branchId)) return json(response, 403, { error: 'Không có quyền tạo tài khoản tại chi nhánh này.' })
       if (!['manager', 'shift_leader', 'staff', 'kitchen'].includes(input.role)) return json(response, 400, { error: 'Vai trò không hợp lệ.' })
+      const branchlessRole = ['manager', 'kitchen'].includes(input.role)
+      const accountBranchId = branchlessRole ? '' : input.branchId
+      if (!branchlessRole && !canAccessBranch(user, accountBranchId)) return json(response, 403, { error: 'Không có quyền tạo tài khoản tại chi nhánh này.' })
       if ((store.profiles || []).some((item) => String(item.email || '').toLowerCase() === email && item.active !== false)) {
         return json(response, 409, { error: 'Tên đăng nhập này đã có tài khoản.' })
       }
@@ -503,7 +1026,9 @@ async function handleApi(request, response, url) {
         role: input.role,
         employmentType: input.employmentType,
         positionTitle: input.positionTitle,
-        branchId: input.branchId,
+        avatarUrl: input.avatarUrl,
+        branchId: accountBranchId,
+        branchIds: branchlessRole ? (store.branches || []).map((branch) => branch.id) : [accountBranchId],
         active: true,
         passwordHash: await hashPassword(password),
         passwordUpdatedAt: new Date().toISOString(),
@@ -515,7 +1040,7 @@ async function handleApi(request, response, url) {
     }
     const employeeMatch = url.pathname.match(/^\/api\/attendance\/employees\/([^/]+)$/)
     if (employeeMatch && request.method === 'PATCH') {
-      if (!user.authenticated || user.role !== 'manager') return json(response, 403, { error: 'Vui lòng đăng nhập lại bằng tài khoản Quản lý.' })
+      if (!user.authenticated || user.role !== 'admin') return json(response, 403, { error: 'Chỉ Admin hệ thống được cập nhật nhân sự.' })
       const patch = await body(request)
       if (patch.role && !['manager', 'shift_leader', 'staff', 'kitchen'].includes(patch.role)) {
         return json(response, 400, { error: 'Vai trò không hợp lệ.' })
@@ -523,7 +1048,7 @@ async function handleApi(request, response, url) {
       if (patch.employmentType && !['leader', 'full_time', 'part_time'].includes(patch.employmentType)) {
         return json(response, 400, { error: 'Nhóm ca không hợp lệ.' })
       }
-      if (employeeMatch[1] === user.id && patch.role && patch.role !== 'manager') {
+      if (employeeMatch[1] === user.id && patch.role && patch.role !== 'admin') {
         return json(response, 409, { error: 'Bạn không thể tự hạ quyền Quản lý của chính mình.' })
       }
       let profile = (store.profiles || []).find((item) => item.id === employeeMatch[1])
@@ -541,12 +1066,13 @@ async function handleApi(request, response, url) {
       if (patch.role !== undefined) profile.role = patch.role
       if (patch.employmentType !== undefined) profile.employmentType = patch.employmentType
       if (patch.positionTitle !== undefined) profile.positionTitle = String(patch.positionTitle || '').trim()
+      if (patch.avatarUrl !== undefined) profile.avatarUrl = String(patch.avatarUrl || '').trim() || undefined
       await persist()
       return json(response, 200, publicProfile(profile))
     }
     const employeePasswordMatch = url.pathname.match(/^\/api\/attendance\/employees\/([^/]+)\/password$/)
     if (employeePasswordMatch && request.method === 'PATCH') {
-      if (!user.authenticated || user.role !== 'manager') return json(response, 403, { error: 'Vui lòng đăng nhập lại bằng tài khoản Quản lý.' })
+      if (!user.authenticated || user.role !== 'admin') return json(response, 403, { error: 'Chỉ Admin hệ thống được đặt lại mật khẩu.' })
       const profile = (store.profiles || []).find((item) => item.id === employeePasswordMatch[1])
       if (!profile || profile.active === false) return json(response, 404, { error: 'Không tìm thấy tài khoản.' })
       if (!canAccessBranch(user, profile.branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
@@ -558,7 +1084,7 @@ async function handleApi(request, response, url) {
       return json(response, 200, { ok: true })
     }
     if (employeeMatch && request.method === 'DELETE') {
-      if (!user.authenticated || user.role !== 'manager') return json(response, 403, { error: 'Vui lòng đăng nhập lại bằng tài khoản Quản lý.' })
+      if (!user.authenticated || user.role !== 'admin') return json(response, 403, { error: 'Chỉ Admin hệ thống được xóa tài khoản.' })
       if (employeeMatch[1] === user.id) return json(response, 409, { error: 'Không thể xóa tài khoản đang đăng nhập.' })
       const profile = (store.profiles || []).find((item) => item.id === employeeMatch[1])
       if (!profile) return json(response, 404, { error: 'Không tìm thấy tài khoản.' })
@@ -591,16 +1117,16 @@ async function handleApi(request, response, url) {
     }
     if (url.pathname === '/api/attendance/registrations/cell' && request.method === 'PUT') {
       const payload = await body(request)
-      const canEdit = payload.userId === user.id || user.role === 'manager'
+      const canEdit = payload.userId === user.id || ['admin', 'manager'].includes(user.role)
       if (!canEdit) return json(response, 403, { error: 'Bạn chỉ được chỉnh lịch của chính mình.' })
-      if (user.role !== 'manager' && payload.workDate < new Date().toISOString().slice(0, 10)) {
+      if (!['admin', 'manager'].includes(user.role) && payload.workDate < currentVietnamDateKey()) {
         return json(response, 409, { error: 'Nhân viên không thể sửa lịch của ngày đã qua.' })
       }
       if (!canAccessBranch(user, payload.branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
       store.shiftRegistrations = store.shiftRegistrations.filter((item) =>
-        !(item.userId === payload.userId && item.branchId === payload.branchId && item.workDate === payload.workDate),
+        !isReplaceableScheduleRegistration(item, payload),
       )
-      if (!payload.shiftId) {
+      if (!payload.shiftId && (!payload.startTime || !payload.endTime)) {
         await persist()
         return json(response, 200, null)
       }
@@ -610,13 +1136,13 @@ async function handleApi(request, response, url) {
         userName: payload.userName,
         branchId: payload.branchId,
         workDate: payload.workDate,
-        shiftId: payload.shiftId,
+        shiftId: payload.shiftId || undefined,
         startTime: payload.startTime,
         endTime: payload.endTime,
         employmentType: payload.employmentType,
         positionTitle: payload.positionTitle,
         status: 'approved',
-        note: '',
+        note: String(payload.note || (payload.shiftId ? '' : 'Ca tuy chinh')),
         createdAt: new Date().toISOString(),
       }
       store.shiftRegistrations.unshift(registration)
@@ -635,6 +1161,10 @@ async function handleApi(request, response, url) {
       if (store.attendanceRecords.some((item) => item.shiftRegistrationId === registration.id)) {
         return json(response, 409, { error: 'Ca này đã check-in.' })
       }
+      const serverNow = new Date().toISOString()
+      record.checkInTime = serverNow
+      record.createdAt = serverNow
+      record.updatedAt = serverNow
       store.attendanceRecords.unshift(record)
       await persist()
       return json(response, 200, record)
@@ -645,7 +1175,11 @@ async function handleApi(request, response, url) {
       if (index < 0) return json(response, 404, { error: 'Không tìm thấy bản ghi chấm công.' })
       if (store.attendanceRecords[index].userId !== user.id) return json(response, 403, { error: 'Không thể check-out thay người khác.' })
       if (store.attendanceRecords[index].checkOutTime) return json(response, 409, { error: 'Ca này đã check-out.' })
-      store.attendanceRecords[index] = { ...store.attendanceRecords[index], ...await body(request) }
+      const patch = await body(request)
+      const serverNow = new Date().toISOString()
+      patch.checkOutTime = serverNow
+      patch.updatedAt = serverNow
+      store.attendanceRecords[index] = { ...store.attendanceRecords[index], ...patch }
       await persist()
       return json(response, 200, store.attendanceRecords[index])
     }
@@ -686,6 +1220,11 @@ async function handleApi(request, response, url) {
   }
   if (url.pathname === '/api/operation-day' && request.method === 'PUT') {
     const day = await body(request)
+    if (day.status === 'closed') {
+      store.bagShiftSessions
+        .filter((session) => session.branchId === day.branchId && session.businessDate === day.businessDate && session.status === 'open')
+        .forEach((session) => closeOutstandingBagSession(session, day.closedBy || day.openedBy || '', 'Auto closed by daily report.'))
+    }
     const index = store.operationDays.findIndex((item) => item.branchId === day.branchId && item.businessDate === day.businessDate)
     if (index >= 0) store.operationDays[index] = day
     else store.operationDays.unshift(day)
@@ -710,6 +1249,8 @@ async function handleApi(request, response, url) {
     }
     return json(response, 200, store.reportSnapshots
       .filter((entry) => entry.branch_id === branchId)
+      .filter((entry) => !from || entry.report_date >= from)
+      .filter((entry) => !to || entry.report_date <= to)
       .map((entry) => ({
         id: entry.id,
         branchId: entry.branch_id,
@@ -733,6 +1274,217 @@ async function handleApi(request, response, url) {
     return json(response, 200, { ok: true })
   }
 
+  if (url.pathname === '/api/n8n-report-image' && request.method === 'POST') {
+    const lanUser = actor(request)
+    const user = lanUser.authenticated
+      ? { ...lanUser, authSource: 'lan' }
+      : await authenticatedSupabaseReportOperator(request)
+    if (!user?.authenticated) return json(response, 401, { error: 'Phiên đăng nhập không hợp lệ để xếp lịch báo cáo.' })
+    if (!['shift_leader', 'admin'].includes(user.role)) {
+      return json(response, 403, { error: 'Chỉ ca trưởng hoặc Admin được xếp lịch báo cáo.' })
+    }
+    const input = await body(request)
+    if (!input || input.leaderId !== user.id || (user.authSource === 'lan' && !canAccessBranch(user, String(input.branchId || '')))) {
+      return json(response, 403, { error: 'Người chốt hoặc chi nhánh báo cáo không khớp phiên đăng nhập.' })
+    }
+    const shiftSequence = Number(input.shiftSequence)
+    const requiredKinds = shiftSequence === 1 ? ['shift-1'] : shiftSequence === 2 ? ['shift-2', 'day'] : []
+    const report = input.report
+    if (!requiredKinds.length || !report || !requiredKinds.includes(report.kind)) {
+      return json(response, 400, { error: 'Loại báo cáo không đúng nghiệp vụ của ca.' })
+    }
+    if (typeof report.imageBase64 !== 'string' || !report.imageBase64.length || report.imageBase64.length > 3_200_000) {
+      return json(response, 413, { error: 'Ảnh báo cáo rỗng hoặc quá lớn để đưa vào hàng đợi.' })
+    }
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(report.imageBase64)) {
+      return json(response, 400, { error: 'Dữ liệu ảnh báo cáo không đúng định dạng base64.' })
+    }
+    let snapshot
+    let shiftEntry
+    let previousDelivery
+    if (user.authSource === 'supabase') {
+      const verified = await verifySupabaseReportShiftAndSnapshot(user, input, shiftSequence)
+      if (!verified.ok) return json(response, verified.status, { error: verified.error })
+      snapshot = verified.snapshot
+      shiftEntry = verified.shiftEntry
+      previousDelivery = verified.previousDelivery
+    } else {
+      const closedShift = (store.bagShiftSessions || []).find((item) =>
+        item.id === input.shiftId
+        && item.branchId === input.branchId
+        && item.businessDate === input.businessDate
+        && Number(item.sequence) === shiftSequence
+        && item.leaderId === user.id
+        && item.status === 'closed',
+      )
+      if (!closedShift) return json(response, 409, { error: 'Chỉ được xếp lịch sau khi chính ca trưởng đã đóng ca.' })
+      if (shiftSequence === 2 && (store.bagShiftSessions || []).some((item) =>
+        item.branchId === input.branchId && item.businessDate === input.businessDate && item.status === 'open')) {
+        return json(response, 409, { error: 'Ca 2 chỉ xếp lịch cùng Tổng ngày khi không còn ca nào đang mở.' })
+      }
+      snapshot = (store.reportSnapshots || []).find((item) => item.branch_id === input.branchId && item.report_date === input.businessDate)
+      shiftEntry = snapshot?.payload?.shiftReports?.[input.shiftId]
+      if (!shiftEntry) return json(response, 409, { error: 'Báo cáo ca chưa được lưu nên chưa thể xếp lịch.' })
+      previousDelivery = shiftEntry.n8nDelivery || {}
+    }
+    const previousJob = previousDelivery.jobs?.[report.kind]
+    const sendNow = input.sendNow === true
+    if (previousJob?.queued === true && !sendNow) return json(response, 200, { mode: 'n8n', idempotent: true, job: previousJob })
+
+    if (String(process.env.N8N_REPORT_ENABLED || '').toLowerCase() !== 'true') {
+      return json(response, 200, {
+        mode: 'disabled',
+        queued: false,
+        message: 'n8n đang tắt bằng N8N_REPORT_ENABLED để kiểm thử an toàn.',
+      })
+    }
+    const webhookUrl = process.env.N8N_REPORT_WEBHOOK_URL
+    const webhookToken = process.env.N8N_REPORT_WEBHOOK_TOKEN
+    if (!webhookUrl || !webhookToken) {
+      return json(response, 503, { code: 'N8N_NOT_CONFIGURED', error: 'Chưa cấu hình webhook và token n8n trên server.' })
+    }
+    const sendTimes = { 'shift-1': '15:15', 'shift-2': '22:00', day: '22:15' }
+    const jobKey = `${input.branchId}:${input.businessDate}:${report.kind}`
+    const sendAt = sendNow ? currentVietnamTimestamp() : `${input.businessDate}T${sendTimes[report.kind]}:00+07:00`
+    const fileName = `GUSTINO-bao-cao-${report.kind}-${input.businessDate}.jpg`
+    let webhookResponse
+    const webhookController = new AbortController()
+    const webhookTimeout = setTimeout(() => webhookController.abort(), N8N_WEBHOOK_TIMEOUT_MS)
+    try {
+      webhookResponse = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-gustino-token': webhookToken },
+        signal: webhookController.signal,
+        body: JSON.stringify({
+          job_key: jobKey,
+          branch_id: input.branchId,
+          branch_name: input.branchName || input.branchId,
+          business_date: input.businessDate,
+          report_type: report.kind,
+          report_label: report.label,
+          send_at: sendAt,
+          file_name: fileName,
+          mime_type: 'image/jpeg',
+          image_base64: report.imageBase64,
+          send_now: sendNow,
+          status: 'READY',
+          attempts: 0,
+        }),
+      })
+    } catch (error) {
+      return json(response, 502, {
+        code: 'N8N_WEBHOOK_FAILED',
+        error: error instanceof Error && error.name === 'AbortError'
+          ? 'Webhook n8n quá thời gian phản hồi. Kiểm tra workflow đang Active và Webhook Response Mode.'
+          : 'Không kết nối được webhook n8n.',
+      })
+    } finally {
+      clearTimeout(webhookTimeout)
+    }
+    if (!webhookResponse.ok) {
+      const error = await n8nWebhookError(webhookResponse, webhookToken)
+      return json(response, 502, { code: 'N8N_WEBHOOK_FAILED', error })
+    }
+    const completion = await n8nCompletedIngestion(webhookResponse, jobKey)
+    if (!completion.ok) return json(response, 502, { code: completion.code, error: completion.error })
+    const job = { queued: true, jobKey, sendAt, sendNow, rowNumber: completion.rowNumber, queuedAt: new Date().toISOString() }
+    const delivery = {
+      ...previousDelivery,
+      queued: requiredKinds.every((kind) => kind === report.kind ? true : previousDelivery.jobs?.[kind]?.queued === true),
+      mode: 'n8n',
+      jobs: { ...(previousDelivery.jobs || {}), [report.kind]: job },
+      updatedAt: new Date().toISOString(),
+    }
+    if (user.authSource === 'supabase') {
+      await persistSupabaseN8nDelivery(user, snapshot, input.shiftId, delivery).catch(() => null)
+    } else {
+      shiftEntry.n8nDelivery = delivery
+      await persist()
+    }
+    return json(response, 200, { mode: 'n8n', job })
+  }
+
+  if (url.pathname === '/api/zalo-shift-report' && request.method === 'POST') {
+    const user = actor(request)
+    if (!user.authenticated) return json(response, 401, { error: 'Phiên đăng nhập không hợp lệ để gửi Zalo.' })
+    if (!['shift_leader', 'admin'].includes(user.role)) {
+      return json(response, 403, { error: 'Chỉ ca trưởng hoặc Admin được gửi báo cáo Zalo.' })
+    }
+    const input = await body(request)
+    if (!input || input.leaderId !== user.id || !canAccessBranch(user, String(input.branchId || ''))) {
+      return json(response, 403, { error: 'Người chốt hoặc chi nhánh báo cáo không khớp phiên đăng nhập.' })
+    }
+    const shiftSequence = Number(input.shiftSequence)
+    const requiredKinds = shiftSequence === 1 ? ['shift-1'] : shiftSequence === 2 ? ['shift-2', 'day'] : []
+    const incomingKinds = Array.isArray(input.reportKinds) ? input.reportKinds : []
+    const reports = Array.isArray(input.reports) ? input.reports : []
+    if (!requiredKinds.length || JSON.stringify(incomingKinds) !== JSON.stringify(requiredKinds)) {
+      return json(response, 400, { error: 'Gói báo cáo không đúng nghiệp vụ: Ca 1 gửi một báo cáo; Ca 2 gửi Ca 2 và Tổng ngày.' })
+    }
+    if (reports.length !== requiredKinds.length || reports.some((item, index) => item.kind !== requiredKinds[index])) {
+      return json(response, 400, { error: 'Nội dung báo cáo không khớp thứ tự cần gửi.' })
+    }
+    const closedShift = (store.bagShiftSessions || []).find((item) =>
+      item.id === input.shiftId
+      && item.branchId === input.branchId
+      && item.businessDate === input.businessDate
+      && Number(item.sequence) === shiftSequence
+      && item.leaderId === user.id
+      && item.status === 'closed',
+    )
+    if (!closedShift) return json(response, 409, { error: 'Chỉ được gửi Zalo sau khi chính ca trưởng đã đóng ca.' })
+    if (shiftSequence === 2 && (store.bagShiftSessions || []).some((item) =>
+      item.branchId === input.branchId && item.businessDate === input.businessDate && item.status === 'open')) {
+      return json(response, 409, { error: 'Ca 2 chỉ gửi cùng Tổng ngày khi không còn ca nào đang mở.' })
+    }
+    const snapshot = (store.reportSnapshots || []).find((item) => item.branch_id === input.branchId && item.report_date === input.businessDate)
+    const shiftEntry = snapshot?.payload?.shiftReports?.[input.shiftId]
+    if (!shiftEntry) return json(response, 409, { error: 'Báo cáo ca chưa được lưu nên chưa thể gửi Zalo.' })
+    if (shiftEntry.zaloDelivery?.sent === true) {
+      return json(response, 200, {
+        sentCount: requiredKinds.length,
+        messageIds: shiftEntry.zaloDelivery.messageIds || [],
+        mode: shiftEntry.zaloDelivery.mode || 'text',
+        idempotent: true,
+        warning: 'Báo cáo này đã gửi Zalo thành công trước đó, hệ thống không gửi trùng.',
+      })
+    }
+    const accessToken = process.env.ZALO_OA_ACCESS_TOKEN
+    const groupId = process.env.ZALO_GMF_GROUP_ID
+    if (!accessToken || !groupId) {
+      return json(response, 503, { error: 'Chưa cấu hình ZALO_OA_ACCESS_TOKEN và ZALO_GMF_GROUP_ID trong .env.local.' })
+    }
+    const messageIds = []
+    for (const report of reports) {
+      const text = [
+        `[GUSTINO] ${String(report.label || '').toLocaleUpperCase('vi')}`,
+        `${input.branchName || input.branchId} · ${input.businessDate}`,
+        `Ca trưởng: ${input.leaderName}`,
+        `Doanh thu: ${Math.round(Number(report.revenue || 0)).toLocaleString('vi-VN')}đ`,
+        `Đã bán: ${Number(report.sold || 0).toLocaleString('vi-VN')} sản phẩm`,
+        `Nhân viên bán: ${Number(report.employeeCount || 0).toLocaleString('vi-VN')}`,
+      ].join('\n')
+      const zaloResponse = await fetch('https://openapi.zalo.me/v3.0/oa/group/message', {
+        method: 'POST',
+        headers: { access_token: accessToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient: { group_id: groupId }, message: { text } }),
+      })
+      const zaloPayload = await zaloResponse.json().catch(() => null)
+      if (!zaloResponse.ok || Number(zaloPayload?.error || 0) !== 0) {
+        return json(response, 502, { error: zaloPayload?.message || 'Zalo từ chối gửi báo cáo.', sentCount: messageIds.length, messageIds })
+      }
+      if (zaloPayload?.data?.message_id) messageIds.push(zaloPayload.data.message_id)
+    }
+    shiftEntry.zaloDelivery = { sent: true, messageIds, mode: 'text', sentAt: new Date().toISOString() }
+    await persist()
+    return json(response, 200, {
+      sentCount: reports.length,
+      messageIds,
+      mode: 'text',
+      warning: 'Đã gửi nội dung báo cáo. Ảnh infographic chờ Zalo cung cấp contract gửi ảnh GMF chính thức.',
+    })
+  }
+
   if (url.pathname === '/api/inventory-reports' && request.method === 'POST') {
     store.inventoryReports.unshift(await body(request))
     await persist()
@@ -753,6 +1505,18 @@ const mime = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml',
+}
+
+function isReplaceableScheduleRegistration(item, payload) {
+  if (
+    item.userId !== payload.userId
+    || item.branchId !== payload.branchId
+    || item.workDate !== payload.workDate
+  ) return false
+  if (store.attendanceRecords.some((record) => record.shiftRegistrationId === item.id)) return false
+  const note = String(item.note || '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '')
+  const isSupplemental = ['tang ca', 'bo sung', 'phat sinh'].some((keyword) => note.includes(keyword))
+  return Boolean(item.shiftId) || !isSupplemental
 }
 
 function normalizeUsername(value) {

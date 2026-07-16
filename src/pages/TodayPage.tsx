@@ -1,12 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { InventoryTab, Page } from '../components/AppShell'
-import { BRANCHES, PRODUCTS } from '../lib/constants'
-import { calculateStock, closeOperationDay, getOperationDay } from '../lib/store'
-import { fetchBagAllocations, fetchBagShiftSessions } from '../lib/shiftLedger'
+import { PRODUCTS } from '../lib/constants'
+import { branchName } from '../lib/branches'
+import { calculateStock, fetchReportSnapshots, getOperationDay } from '../lib/store'
+import { fetchBagShiftSessions, uploadBagShiftPhoto } from '../lib/shiftLedger'
+import { imageFileToDataUrl } from '../lib/browser'
+import { ShiftPhotoButton } from '../components/ShiftPhotoButton'
+import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
 import { createSupplyRequests } from '../lib/supplyRequests'
-import { fetchAttendanceRecords, fetchShiftRegistrations } from '../lib/attendance'
+import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { localDateKey } from '../lib/dates'
-import type { AppUser, AttendanceRecord, BagAllocation, BagShiftSession, OperationDay, ShiftRegistration, StockMovement } from '../types'
+import { supabase, uniqueChannelName } from '../lib/supabase'
+import type { AppUser, AttendanceRecord, BagShiftSession, OperationDay, ShiftRegistration, StockMovement } from '../types'
 
 interface Props {
   user: AppUser
@@ -23,8 +28,6 @@ interface OrderDraftLine {
   note: string
 }
 
-const ORDER_DRAFT_KEY = 'gustino_supply_order_draft'
-
 const emptyOrderLine = (): OrderDraftLine => ({
   id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
   productName: '',
@@ -33,73 +36,104 @@ const emptyOrderLine = (): OrderDraftLine => ({
   note: '',
 })
 
-function loadOrderDraft(): OrderDraftLine[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(ORDER_DRAFT_KEY) || '[]') as OrderDraftLine[]
-    const lines = parsed
-      .filter((line) => line && typeof line === 'object')
-      .map((line) => ({
-        id: line.id || emptyOrderLine().id,
-        productName: line.productName || '',
-        quantity: line.quantity || '',
-        unit: line.unit || 'kg',
-        note: line.note || '',
-      }))
-    return lines.length ? lines : [emptyOrderLine()]
-  } catch {
-    return [emptyOrderLine()]
-  }
-}
-
 export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Props) {
   const [operationDay, setOperationDay] = useState<OperationDay | null>(null)
   const [bagSessions, setBagSessions] = useState<BagShiftSession[]>([])
-  const [bagAllocations, setBagAllocations] = useState<BagAllocation[]>([])
+  const [salesReceipts, setSalesReceipts] = useState<SalesReceipt[]>([])
   const [registrations, setRegistrations] = useState<ShiftRegistration[]>([])
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([])
-  const [closeShiftConfirm, setCloseShiftConfirm] = useState(false)
-  const [closeShiftBusy, setCloseShiftBusy] = useState(false)
-  const [closeShiftMsg, setCloseShiftMsg] = useState('')
+  const [reportedShiftIds, setReportedShiftIds] = useState<string[]>([])
   const [orderModal, setOrderModal] = useState(false)
-  const [orderLines, setOrderLines] = useState<OrderDraftLine[]>(loadOrderDraft)
+  const [orderLines, setOrderLines] = useState<OrderDraftLine[]>(() => [emptyOrderLine()])
   const [orderBusy, setOrderBusy] = useState(false)
   const [orderFeedback, setOrderFeedback] = useState('')
+  const [openingBusy, setOpeningBusy] = useState(false)
+  const [openingFeedback, setOpeningFeedback] = useState('')
+  const [closingBusy, setClosingBusy] = useState(false)
+  const [closingFeedback, setClosingFeedback] = useState('')
+  const [clockNow, setClockNow] = useState(() => new Date())
   const orderProductRef = useRef<HTMLInputElement>(null)
-  const todayKey = localDateKey()
+  const todayKey = localDateKey(clockNow)
   const todayItems = movements.filter((item) => item.shiftDate === todayKey)
-  const branch = BRANCHES.find((item) => item.id === user.branchId)
+  const currentBranchName = branchName(user.branchId)
   const stock = calculateStock(movements)
   const lowStock = stock.filter((line) => line.expected <= line.product.lowStock)
   const inboundDone = todayItems.some((item) => item.type === 'inbound')
   const processingDone = todayItems.some((item) => item.type === 'processing_in')
-  const packingDone = todayItems.some((item) => item.type === 'packing_in')
-  const saleDone = bagAllocations.length > 0
+  const saleDone = salesReceipts.length > 0
   const closedBagSessions = bagSessions.filter((item) => item.status === 'closed')
   const openBagSession = bagSessions.find((item) => item.status === 'open')
+  const latestClosedOwnSession = [...closedBagSessions]
+    .filter((item) => item.leaderId === user.id || item.leaderName.trim().toLocaleLowerCase('vi') === user.name.trim().toLocaleLowerCase('vi'))
+    .sort((a, b) => (b.endedAt || b.startedAt).localeCompare(a.endedAt || a.startedAt))[0]
   const expectedDailyShifts = 2
-  const reportReady = closedBagSessions.length >= expectedDailyShifts && !openBagSession
-  const handoverDone = reportReady
+  const reportReady = Boolean(latestClosedOwnSession)
   const reportDone = operationDay?.status === 'closed'
   const userCheckedInToday = attendanceRecords.some((item) => item.userId === user.id)
   const attendanceReminder = buildAttendanceReminder(
     registrations.filter((item) => item.userId === user.id),
     attendanceRecords.filter((item) => item.userId === user.id),
+    clockNow,
   )
 
   useEffect(() => {
-    void getOperationDay(user.branchId, todayKey).then(setOperationDay)
+    const updateClock = () => setClockNow(new Date())
+    const timer = window.setInterval(updateClock, 15000)
+    window.addEventListener('focus', updateClock)
+    document.addEventListener('visibilitychange', updateClock)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', updateClock)
+      document.removeEventListener('visibilitychange', updateClock)
+    }
+  }, [])
+
+  useEffect(() => {
+    void getOperationDay(user.branchId, todayKey, user).then(setOperationDay)
   }, [todayItems.length, todayKey, user.branchId])
+  useEffect(() => {
+    void fetchReportSnapshots(user.branchId, user).then((snapshots) => {
+      const snapshot = snapshots.find((item) => item.reportDate === todayKey)
+      setReportedShiftIds(Object.keys(snapshot?.payload.shiftReports || {}))
+    }).catch(() => setReportedShiftIds([]))
+  }, [todayKey, user.id, user.branchId, bagSessions])
   useEffect(() => {
     void Promise.all([
       fetchBagShiftSessions(user, { branchId: user.branchId, date: todayKey }),
-      fetchBagAllocations(user, { branchId: user.branchId, date: todayKey }),
-    ]).then(([nextSessions, nextAllocations]) => {
+      fetchSalesReceipts(user, { branchId: user.branchId, date: todayKey }).catch(() => [] as SalesReceipt[]),
+    ]).then(([nextSessions, nextReceipts]) => {
       setBagSessions(nextSessions)
-      setBagAllocations(nextAllocations)
+      setSalesReceipts(nextReceipts)
     }).catch(() => {
       // Trang bàn giao sẽ hiển thị lỗi chi tiết nếu máy chủ chưa sẵn sàng.
     })
   }, [todayKey, user.id, user.branchId])
+  useEffect(() => {
+    const reloadOperations = () => {
+      void Promise.all([
+        fetchBagShiftSessions(user, { branchId: user.branchId, date: todayKey }),
+        fetchSalesReceipts(user, { branchId: user.branchId, date: todayKey }),
+      ]).then(([nextSessions, nextReceipts]) => {
+        setBagSessions(nextSessions)
+        setSalesReceipts(nextReceipts)
+      }).catch(() => undefined)
+    }
+    const timer = window.setInterval(reloadOperations, 8000)
+    window.addEventListener('focus', reloadOperations)
+    document.addEventListener('visibilitychange', reloadOperations)
+    const client = user.authToken ? null : supabase
+    const channel = client?.channel(uniqueChannelName(`today-live:${user.branchId}:${todayKey}`))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_shift_sessions', filter: `branch_id=eq.${user.branchId}` }, reloadOperations)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts', filter: `branch_id=eq.${user.branchId}` }, reloadOperations)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, reloadOperations)
+      .subscribe()
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', reloadOperations)
+      document.removeEventListener('visibilitychange', reloadOperations)
+      if (client && channel) void client.removeChannel(channel)
+    }
+  }, [todayKey, user.id, user.branchId, user.authToken])
   useEffect(() => {
     void Promise.all([
       fetchShiftRegistrations(user, { branchId: user.branchId, from: todayKey, to: todayKey }),
@@ -119,13 +153,23 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
     }, 30000)
     return () => window.clearInterval(timer)
   }, [todayKey, user.id, user.branchId])
-  useEffect(() => {
-    localStorage.setItem(ORDER_DRAFT_KEY, JSON.stringify(orderLines))
-  }, [orderLines])
-
+  const scrollToOpeningPhoto = () => document.getElementById('today-opening-photo')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  const scrollToClosingPhoto = () => document.getElementById('today-closing-photo')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  const latestClosedSession = [...closedBagSessions].sort((a, b) => b.sequence - a.sequence)[0]
+  const openingPhotoDone = Boolean(openBagSession?.openingPhotoUrl || latestClosedSession?.openingPhotoUrl)
+  const closingPhotoDone = Boolean(openBagSession?.closingPhotoUrl || latestClosedSession?.closingPhotoUrl)
   const steps = [
     {
       number: 1,
+      icon: '📷',
+      title: 'Chụp hình quầy đầu ca',
+      description: 'Ca tự mở sau khi ca trưởng check-in. Chụp quầy trước khi bắt đầu bán.',
+      done: openingPhotoDone,
+      action: openBagSession ? scrollToOpeningPhoto : () => onNavigate('attendance'),
+      actionLabel: openBagSession ? 'Chụp ảnh đầu ca' : 'Check-in để mở ca',
+    },
+    {
+      number: 2,
       icon: '↓',
       title: 'Nhập hàng đầu ngày',
       description: 'Ghi số nguyên liệu và hàng hóa vừa nhận vào kho.',
@@ -134,85 +178,135 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
       actionLabel: 'Nhập kho',
     },
     {
-      number: 2,
+      number: 3,
       icon: '↔',
-      title: 'Lấy hàng ra chế biến',
-      description: 'Ghi lượng lấy từ kho và lượng thành phẩm sau chế biến.',
+      title: 'Rang / chế biến',
+      description: 'Ghi lượng lấy từ kho và lượng thành phẩm sau rang.',
       done: processingDone,
       action: () => onOpenInventory('processing_out'),
       actionLabel: 'Ghi mẻ chế biến',
     },
     {
-      number: 3,
-      icon: '▤',
-      title: 'Đóng thành phẩm vào túi',
-      description: 'Nhập số túi theo từng quy cách ngay trong mẻ chế biến.',
-      done: packingDone,
-      action: () => onOpenInventory('processing_out'),
-      actionLabel: 'Ghi số túi',
-    },
-    {
       number: 4,
       icon: '◉',
-      title: 'Chia hàng cho nhân viên bán',
-      description: 'Phát túi theo nhân viên, thu túi và tự tính số bán.',
+      title: 'Nhân viên bán hàng',
+      description: 'Nhân viên tạo hóa đơn POS trực tiếp theo menu đang hiển thị.',
       done: saleDone,
-      action: () => onNavigate('handover'),
-      actionLabel: 'Mở sổ túi',
+      action: () => onNavigate('sales'),
+      actionLabel: 'Mở POS',
     },
     {
       number: 5,
-      icon: '⇄',
-      title: closedBagSessions.length === 1 && !openBagSession ? 'Nhận ca 2 / bàn giao tiếp' : 'Chốt và bàn giao ca',
-      description: closedBagSessions.length === 1 && !openBagSession
-        ? 'Ca 1 đã bàn giao. Ca trưởng ca 2 nhận lại đúng tồn quầy và tiếp tục bán.'
-        : 'Đếm túi còn tại quầy, chuyển túi đang giữ sang ca sau.',
-      done: handoverDone,
-      action: () => onNavigate('handover'),
-      actionLabel: closedBagSessions.length === 1 && !openBagSession ? 'Nhận ca 2' : 'Chốt bàn giao',
+      icon: '📸',
+      title: 'Chụp hình quầy cuối ca',
+      description: 'Chụp quầy cuối ca rồi vào Bàn giao để kiểm tồn và chốt ca.',
+      done: closingPhotoDone && (!openBagSession || openBagSession.status === 'closed'),
+      action: openBagSession ? scrollToClosingPhoto : () => onNavigate('handover'),
+      actionLabel: openBagSession ? 'Chụp ảnh cuối ca' : 'Xem bàn giao',
     },
     {
       number: 6,
-      icon: '✓',
-      title: 'Báo cáo cuối ngày',
-      description: reportReady
-        ? 'Ca 2 tổng hợp dữ liệu cả ngày, bổ sung hình ảnh/sự cố rồi chốt báo cáo.'
-        : 'Báo cáo chỉ mở sau khi đã bàn giao đủ 2 ca trong ngày.',
-      done: reportDone,
-      action: () => reportReady ? onNavigate('report') : onNavigate('handover'),
-      actionLabel: reportReady ? 'Mở báo cáo cuối ngày' : 'Xem bàn giao',
+      icon: '▤',
+      title: latestClosedOwnSession?.sequence === 1 ? 'Báo cáo cuối Ca 1' : 'Báo cáo cuối Ca 2 & Tổng ngày',
+      description: latestClosedOwnSession?.sequence === 1
+        ? 'Sau khi bàn giao Ca 1, mở báo cáo để kiểm tra dữ liệu Ca 1 và bấm Chốt báo cáo.'
+        : 'Sau khi bàn giao Ca 2, xem Ca 2/Tổng ngày và dùng một nút Chốt báo cáo cho cả hai.',
+      done: Boolean(latestClosedOwnSession && reportedShiftIds.includes(latestClosedOwnSession.id)),
+      action: () => onNavigate('report'),
+      actionLabel: 'Mở báo cáo cuối ca',
     },
   ]
   const nextStep = steps.find((step) => !step.done) || steps[steps.length - 1]
   const blockedByAttendance = !reportDone && !userCheckedInToday
+  const needsOpeningPhoto = !reportDone && userCheckedInToday && Boolean(openBagSession) && !openBagSession?.openingPhotoUrl
   const actionStep = blockedByAttendance
     ? {
         number: 0,
-        title: 'Chấm công trước khi mở ngày',
-        description: 'Hãy check-in trong mục Chấm công, sau đó mới nhập hàng, nhận ca và phát túi.',
+        title: 'Chấm công trước khi vào ca',
+        description: 'Hãy check-in trong mục Chấm công, sau đó mới nhập hàng, nhận ca và bán hàng.',
         action: () => onNavigate('attendance'),
         actionLabel: 'Mở chấm công',
       }
-    : nextStep
+    : needsOpeningPhoto
+      ? {
+          number: 0,
+          title: 'Chụp ảnh quầy đầu ca',
+          description: 'Ca đã mở. Hãy chụp hoặc tải ảnh quầy đầu ca trước khi bán để đối chiếu cuối ca.',
+          action: scrollToOpeningPhoto,
+          actionLabel: 'Chụp ảnh đầu ca',
+        }
+      : reportReady
+        ? {
+            number: 6,
+            title: latestClosedOwnSession?.sequence === 1 ? 'Mở báo cáo Ca 1' : 'Mở báo cáo Ca 2 & Tổng ngày',
+            description: latestClosedOwnSession?.sequence === 1
+              ? 'Ca 1 đã bàn giao. Báo cáo chỉ lấy dữ liệu Ca 1.'
+              : 'Ca 2 đã bàn giao. Có thể xem riêng Ca 2 hoặc Tổng ngày trước khi chốt.',
+            action: () => onNavigate('report'),
+            actionLabel: 'Mở báo cáo',
+          }
+        : nextStep
   const completedSteps = steps.filter((step) => step.done).length
   const progress = completedSteps / steps.length * 100
+  const soldProducts = salesReceipts.reduce((sum, item) => sum + item.totalQuantity, 0)
+  const salesRevenue = salesReceipts.reduce((sum, item) => sum + item.totalAmount, 0)
+  const topSellerRows = useMemo(() => {
+    const map = new Map<string, { key: string; name: string; quantity: number; revenue: number; receipts: number }>()
+    salesReceipts.forEach((receipt) => {
+      const key = receipt.sellerId || receipt.sellerKey || receipt.sellerName
+      const row = map.get(key) || { key, name: receipt.sellerName, quantity: 0, revenue: 0, receipts: 0 }
+      row.quantity += receipt.totalQuantity
+      row.revenue += receipt.totalAmount
+      row.receipts += 1
+      map.set(key, row)
+    })
+    return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue || b.quantity - a.quantity).slice(0, 5)
+  }, [salesReceipts])
+  const activePgCount = new Set(
+    salesReceipts.map((item) => item.sellerId || item.sellerName),
+  ).size
+  const shiftLabel = openBagSession
+    ? `Ca ${openBagSession.sequence} đang mở`
+    : closedBagSessions.length
+      ? `Đã chốt ${closedBagSessions.length}/${expectedDailyShifts} ca`
+      : 'Chưa mở ca'
+  const reportLabel = reportDone ? 'Đã chốt ngày' : reportReady ? 'Sẵn sàng xuất' : 'Chưa đủ dữ liệu'
 
-  async function closeShift() {
-    if (!closeShiftConfirm) {
-      setCloseShiftConfirm(true)
-      window.setTimeout(() => setCloseShiftConfirm(false), 5000)
+  async function saveOpeningPhoto(file?: File) {
+    if (!file) return
+    if (!openBagSession) {
+      setOpeningFeedback('Chưa có ca tự động. Hãy check-in ca trưởng rồi tải lại trang Hôm nay.')
       return
     }
-    setCloseShiftBusy(true)
-    setCloseShiftConfirm(false)
+    setOpeningBusy(true)
+    setOpeningFeedback('')
     try {
-      await closeOperationDay(user, todayKey)
-      void getOperationDay(user.branchId, todayKey).then(setOperationDay)
-      setCloseShiftMsg('Ca đã được kết thành công.')
-    } catch (reason) {
-      setCloseShiftMsg(reason instanceof Error ? reason.message : 'Không thể kết ca.')
+      const dataUrl = await imageFileToDataUrl(file)
+      await uploadBagShiftPhoto(user, openBagSession, 'opening', dataUrl)
+      const next = await fetchBagShiftSessions(user, { branchId: user.branchId, date: todayKey })
+      setBagSessions(next)
+      setOpeningFeedback('Đã lưu ảnh quầy đầu ca.')
+    } catch (error) {
+      setOpeningFeedback(error instanceof Error ? error.message : 'Không thể lưu ảnh đầu ca.')
     } finally {
-      setCloseShiftBusy(false)
+      setOpeningBusy(false)
+    }
+  }
+
+  async function saveClosingPhoto(file?: File) {
+    if (!file || !openBagSession) return
+    setClosingBusy(true)
+    setClosingFeedback('')
+    try {
+      const dataUrl = await imageFileToDataUrl(file)
+      await uploadBagShiftPhoto(user, openBagSession, 'closing', dataUrl)
+      const next = await fetchBagShiftSessions(user, { branchId: user.branchId, date: todayKey })
+      setBagSessions(next)
+      setClosingFeedback('Đã lưu ảnh quầy cuối ca. Bây giờ vào Bàn giao để kiểm tồn và chốt ca.')
+    } catch (error) {
+      setClosingFeedback(error instanceof Error ? error.message : 'Không thể lưu ảnh cuối ca.')
+    } finally {
+      setClosingBusy(false)
     }
   }
 
@@ -245,7 +339,6 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
       setOrderFeedback(`Đã gửi ${validLines.length} món đến bếp và quản lý.`)
       const blankLine = emptyOrderLine()
       setOrderLines([blankLine])
-      localStorage.setItem(ORDER_DRAFT_KEY, JSON.stringify([blankLine]))
       setTimeout(() => setOrderModal(false), 1400)
     } catch (reason) {
       setOrderFeedback(reason instanceof Error ? reason.message : 'Không thể gửi yêu cầu.')
@@ -255,135 +348,151 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   }
 
   return (
-    <div className="page today-page">
-      <div className="today-welcome">
+    <div className="page today-page shift-workspace-page">
+      <section className="shift-hero-card">
         <div>
-          <span className="eyebrow dark">{reportDone ? 'NGÀY VẬN HÀNH ĐÃ KẾT THÚC' : 'CA LÀM VIỆC HÔM NAY'}</span>
-          <h1>{reportDone ? `Kết thúc ngày rồi, ${user.name}` : `Chào ${user.name}, mình bắt đầu nhé`}</h1>
-          <p>{branch?.name} · {reportDone ? 'Báo cáo đã chốt · Chúc cả đội ngủ ngon.' : new Date().toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}</p>
+          <span className="eyebrow dark">BẢNG ĐIỀU PHỐI CA TRƯỞNG</span>
+          <h1>{currentBranchName || 'Chi nhánh'} hôm nay</h1>
+          <p>{new Date().toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })} · {user.name}</p>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 10, flexShrink: 0 }}>
-          <span className={reportDone ? 'shift-status closed' : !userCheckedInToday ? 'shift-status waiting' : operationDay ? 'shift-status open' : 'shift-status waiting'}>
-            <i /> {reportDone ? 'Đã kết thúc ngày' : !userCheckedInToday ? 'Cần check-in' : operationDay ? 'Đang trong ca' : 'Chưa bắt đầu'}
+        <div className="shift-hero-status">
+          <span className={reportDone ? 'shift-status closed' : !userCheckedInToday ? 'shift-status waiting' : openBagSession ? 'shift-status open' : 'shift-status waiting'}>
+            <i /> {reportDone ? 'Đã chốt ngày' : !userCheckedInToday ? 'Cần check-in' : openBagSession ? shiftLabel : 'Chờ mở ca'}
           </span>
-          {!reportDone && operationDay && reportReady && (
-            <button className="close-shift-btn" onClick={() => onNavigate('report')}>
-              Mở báo cáo cuối ngày →
-            </button>
-          )}
-          {closeShiftMsg && (
-            <span className={`close-shift-msg${closeShiftMsg.startsWith('Ca đã') ? ' success' : ' error'}`}>
-              {closeShiftMsg}
-            </span>
-          )}
         </div>
-      </div>
+      </section>
 
       {attendanceReminder && (
         <section className={`attendance-reminder-card ${attendanceReminder.tone}`}>
+          <span className="capybara-mascot attendance-capybara" aria-hidden="true"><i className="capy-ear left" /><i className="capy-ear right" /><i className="capy-eye left" /><i className="capy-eye right" /><i className="capy-nose" /></span>
           <strong>{attendanceReminder.title}</strong>
           <span>{attendanceReminder.message}</span>
           <button onClick={() => onNavigate('attendance')}>Mở chấm công</button>
         </section>
       )}
 
-      <div className="today-operations-layout">
-        <nav className="today-step-rail" aria-label="Các bước vận hành của ca trưởng">
-          <div className="today-step-rail-progress">
-            <strong>{completedSteps}</strong>
-            <span>/ {steps.length}</span>
+      {!reportDone && (
+        <section id="today-opening-photo" className={openBagSession?.openingPhotoUrl ? 'today-opening-photo-card ready' : 'today-opening-photo-card'}>
+          <div className="today-opening-photo-copy">
+            <span className="eyebrow dark">ẢNH QUẦY ĐẦU CA</span>
+            <strong>{openBagSession?.openingPhotoUrl ? 'Đã có ảnh quầy đầu ca' : openBagSession ? 'Chụp ảnh quầy đầu ca' : 'Check-in để ca tự mở'}</strong>
+            <small>{openBagSession
+              ? 'Chụp hoặc tải 1 ảnh quầy trước khi bán để đối chiếu cuối ca. Bấm nút rồi chọn Chụp ảnh hoặc Tải ảnh lên.'
+              : 'Sau khi ca trưởng check-in thành công, hệ thống tự mở Ca 1/Ca 2 và nút chụp ảnh sẽ hiện tại đây.'}</small>
+            {openingFeedback && <em>{openingFeedback}</em>}
           </div>
+          {openBagSession?.openingPhotoUrl && <img src={openBagSession.openingPhotoUrl} alt="Ảnh quầy đầu ca" />}
+          <div className="today-opening-photo-action">
+            {openBagSession
+              ? <ShiftPhotoButton prefix={openBagSession.openingPhotoUrl ? 'Đổi ảnh đầu ca' : 'Ảnh đầu ca'} onPick={(file) => void saveOpeningPhoto(file)} />
+              : <button type="button" className="secondary-button" onClick={() => onNavigate('attendance')}>Mở chấm công</button>}
+            {openingBusy && <small className="attendance-busy-hint">Đang lưu ảnh…</small>}
+          </div>
+        </section>
+      )}
+
+      <section className="shift-kpi-grid" aria-label="Tổng quan ca">
+        <article>
+          <small>Trạng thái ca</small>
+          <strong>{shiftLabel}</strong>
+          <span>{reportReady ? 'Đủ điều kiện xuất báo cáo' : `${completedSteps}/${steps.length} bước đã xong`}</span>
+        </article>
+        <article>
+          <small>Nhân viên đã bán</small>
+          <strong>{activePgCount}</strong>
+          <span>{salesReceipts.length.toLocaleString('vi-VN')} hóa đơn POS</span>
+        </article>
+        <article>
+          <small>Đã bán</small>
+          <strong>{soldProducts.toLocaleString('vi-VN')}</strong>
+          <span>{Math.round(salesRevenue).toLocaleString('vi-VN')}đ doanh thu POS</span>
+        </article>
+        <article className={lowStock.length ? 'warning' : ''}>
+          <small>Cảnh báo kho</small>
+          <strong>{lowStock.length ? `${lowStock.length} món` : 'Ổn'}</strong>
+          <span>{lowStock.length ? 'Cần kiểm tra tồn tối thiểu' : 'Không có tồn thấp'}</span>
+        </article>
+      </section>
+
+      <section className="today-revenue-dashboard">
+        <div className="today-revenue-main">
+          <span className="eyebrow dark">DOANH THU CHI NHÁNH</span>
+          <strong>{Math.round(salesRevenue).toLocaleString('vi-VN')}đ</strong>
+          <small>{salesReceipts.length.toLocaleString('vi-VN')} hóa đơn · {soldProducts.toLocaleString('vi-VN')} sản phẩm đã bán hôm nay</small>
+        </div>
+        <div className="today-top-sellers">
+          <div className="today-top-sellers-head">
+            <strong>Top nhân viên</strong>
+            <button type="button" onClick={() => onNavigate('sales')}>Mở POS</button>
+          </div>
+          {topSellerRows.length ? topSellerRows.map((seller, index) => (
+            <article key={seller.key}>
+              <b>{index + 1}</b>
+              <span><strong>{seller.name}</strong><small>{seller.receipts} hóa đơn · {formatCompactNumber(seller.quantity)} sản phẩm</small></span>
+              <em>{Math.round(seller.revenue).toLocaleString('vi-VN')}đ</em>
+            </article>
+          )) : <p>Chưa có hóa đơn POS hôm nay.</p>}
+        </div>
+      </section>
+
+      <section className="shift-next-panel">
+        <div className="shift-next-copy">
+          <span>{reportDone ? '✓' : actionStep.number || '!'}</span>
+          <div>
+            <small>{reportDone ? 'NGÀY ĐÃ ĐÓNG' : blockedByAttendance ? 'CẦN LÀM TRƯỚC' : 'VIỆC NÊN LÀM TIẾP'}</small>
+            <h2>{reportDone ? 'Báo cáo cuối ngày đã chốt' : actionStep.title}</h2>
+            <p>{reportDone ? 'Dữ liệu đã vào báo cáo và dashboard quản lý.' : actionStep.description}</p>
+          </div>
+        </div>
+        <button onClick={reportDone ? () => onNavigate('report') : actionStep.action}>
+          {reportDone ? 'Xem báo cáo' : actionStep.actionLabel}
+        </button>
+      </section>
+
+      <section className="shift-mini-flow" aria-label="Tiến độ vận hành">
+        <div className="shift-mini-flow-head">
+          <div>
+            <span className="eyebrow dark">TIẾN ĐỘ NGÀY</span>
+            <h2>{completedSteps}/{steps.length} bước hoàn tất</h2>
+          </div>
+          <strong>{Math.round(progress)}%</strong>
+        </div>
+        <div className="progress-track" aria-label={`Đã hoàn tất ${completedSteps} trên ${steps.length} bước`}>
+          <span style={{ width: `${progress}%` }} />
+        </div>
+        <div className="shift-flow-chips">
           {steps.map((step) => {
             const isCurrent = !reportDone && step.number === nextStep.number
             return (
               <button
                 key={step.number}
-                className={`today-rail-step${step.done ? ' done' : ''}${isCurrent ? ' current' : ''}`}
+                className={`${step.done ? 'done' : ''}${isCurrent ? ' current' : ''}`}
                 onClick={blockedByAttendance ? () => onNavigate('attendance') : step.action}
-                title={`Bước ${step.number}: ${step.title}`}
-                aria-label={`Bước ${step.number}: ${step.title}`}
               >
-                <span>{step.done ? '✓' : step.icon}</span>
-                <small>{step.number}</small>
+                <span>{step.done ? '✓' : step.number}</span>
+                <strong>{step.title}</strong>
               </button>
             )
           })}
-        </nav>
-
-        <div className="today-command-stack">
-          <section className="next-action-card today-command-card">
-            <div className="next-action-copy">
-              <span className="next-action-icon">{reportDone ? '✓' : actionStep.number || '!'}</span>
-              <div>
-                <small>{reportDone ? 'KẾT THÚC NGÀY' : blockedByAttendance ? 'CẦN CHẤM CÔNG' : 'VIỆC NÊN LÀM TIẾP'}</small>
-                <h2>{reportDone ? 'Báo cáo đã chốt. Chúc cả đội ngủ ngon.' : actionStep.title}</h2>
-                <p>{reportDone ? 'Không còn việc cần làm hôm nay. Dữ liệu đã vào lịch sử và dashboard.' : actionStep.description}</p>
-              </div>
-            </div>
-            <button onClick={reportDone ? () => onNavigate('report') : actionStep.action}>
-              {reportDone ? 'Xem báo cáo' : actionStep.actionLabel} <span>→</span>
-            </button>
-          </section>
-
-          <section className={`today-flow${reportDone ? ' finished' : ''}`}>
-            <div className="today-flow-head">
-              <div>
-                <span className="eyebrow dark">{reportDone ? 'NGÀY ĐÃ ĐÓNG' : 'LUỒNG VẬN HÀNH'}</span>
-                <h2>{reportDone ? 'Kết thúc ngày' : '6 bước của một ngày vận hành'}</h2>
-                <p>{reportDone ? '6/6 bước đã hoàn tất. Hẹn gặp lại vào ca sau.' : 'Bấm từng icon bên trái hoặc mở trực tiếp từng bước bên dưới.'}</p>
-              </div>
-              <div className="today-progress">
-                <strong>{completedSteps}/{steps.length}</strong>
-                <span>đã hoàn tất</span>
-              </div>
-            </div>
-            <div className="progress-track" aria-label={`Đã hoàn tất ${completedSteps} trên ${steps.length} bước`}>
-              <span style={{ width: `${progress}%` }} />
-            </div>
-            {reportDone ? (
-              <div className="today-finished-panel">
-                <span>✓</span>
-                <div>
-                  <strong>Ngày vận hành đã hoàn tất</strong>
-                  <p>Báo cáo cuối ngày đã chốt. Cả đội có thể nghỉ ngơi rồi, chúc ngủ ngon.</p>
-                </div>
-                <button onClick={() => onNavigate('report')}>Xem báo cáo</button>
-              </div>
-            ) : (
-              <div className="today-step-list">
-                {steps.map((step) => {
-                  const isCurrent = !reportDone && step.number === nextStep.number
-                  return (
-                    <button
-                      key={step.number}
-                      className={`today-step${step.done ? ' done' : ''}${isCurrent ? ' current' : ''}`}
-                      onClick={blockedByAttendance ? () => onNavigate('attendance') : step.action}
-                    >
-                      <span className="today-step-number">{step.done ? '✓' : step.icon}</span>
-                      <span className="today-step-copy">
-                        <small>BƯỚC {step.number}</small>
-                        <strong>{step.title}</strong>
-                        <span>{step.description}</span>
-                      </span>
-                      <span className="today-step-state">{blockedByAttendance ? 'Cần check-in' : step.done ? 'Đã xong' : isCurrent ? 'Làm ngay' : 'Mở'}</span>
-                      <b>→</b>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </section>
         </div>
-      </div>
-
-      <section className="today-priority-dock" aria-label="Chức năng trọng điểm">
-        <button onClick={() => onNavigate('sales')}><span>₫</span><strong>Bán hàng</strong><small>Tạo hóa đơn</small></button>
-        <button onClick={() => onNavigate('handover')}><span>⇄</span><strong>Bàn giao</strong><small>Phát/thu túi</small></button>
-        <button onClick={() => onOpenInventory('overview')}><span>▦</span><strong>Tồn kho</strong><small>{lowStock.length ? `${lowStock.length} cảnh báo` : 'Đang ổn'}</small></button>
-        <button onClick={() => onNavigate('orders')}><span>↑</span><strong>Đặt hàng</strong><small>Báo bếp</small></button>
-        <button onClick={() => onOpenInventory('count')}><span>≡</span><strong>Kiểm kê</strong><small>Cuối ca</small></button>
-        {user.role === 'shift_leader' && <button onClick={() => onNavigate('restaurant')}><span>◇</span><strong>Quản lý</strong><small>Doanh thu</small></button>}
       </section>
+
+      {!reportDone && openBagSession && (
+        <section id="today-closing-photo" className={openBagSession.closingPhotoUrl ? 'today-opening-photo-card today-closing-photo-card ready' : 'today-opening-photo-card today-closing-photo-card'}>
+          <div className="today-opening-photo-copy">
+            <span className="eyebrow dark">BƯỚC CUỐI · ẢNH QUẦY CUỐI CA</span>
+            <strong>{openBagSession.closingPhotoUrl ? 'Đã có ảnh quầy cuối ca' : 'Chụp hình quầy cuối ca'}</strong>
+            <small>Chụp ảnh sau khi kết thúc bán. Ảnh được gắn thẳng vào ca đang mở; sau đó vào Bàn giao để kiểm tồn và chốt ca.</small>
+            {closingFeedback && <em>{closingFeedback}</em>}
+          </div>
+          {openBagSession.closingPhotoUrl && <img src={openBagSession.closingPhotoUrl} alt="Ảnh quầy cuối ca" />}
+          <div className="today-opening-photo-action">
+            <ShiftPhotoButton prefix={openBagSession.closingPhotoUrl ? 'Đổi ảnh cuối ca' : 'Ảnh cuối ca'} onPick={(file) => void saveClosingPhoto(file)} />
+            <button type="button" className="secondary-button" onClick={() => onNavigate('handover')}>Mở Bàn giao</button>
+            {closingBusy && <small className="attendance-busy-hint">Đang lưu ảnh…</small>}
+          </div>
+        </section>
+      )}
 
       {lowStock.length > 0 && <section className="today-warning">
         <strong>Có {lowStock.length} mặt hàng sắp hết</strong>
@@ -480,18 +589,18 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   )
 }
 
-function buildAttendanceReminder(registrations: ShiftRegistration[], records: AttendanceRecord[]) {
-  const now = new Date()
+function buildAttendanceReminder(registrations: ShiftRegistration[], records: AttendanceRecord[], now = new Date()) {
   const today = localDateKey(now)
   const activeRegistrations = registrations
     .filter((item) => item.workDate === today && item.status !== 'rejected')
     .sort((a, b) => a.startTime.localeCompare(b.startTime))
   for (const registration of activeRegistrations) {
-    const record = records.find((item) => item.shiftRegistrationId === registration.id)
+    const record = findAttendanceRecordForRegistration(records, registration)
     const startsAt = new Date(`${registration.workDate}T${registration.startTime}:00`)
     const endsAt = new Date(`${registration.workDate}T${registration.endTime}:00`)
     if (registration.endTime <= registration.startTime) endsAt.setDate(endsAt.getDate() + 1)
-    const opensAt = new Date(startsAt.getTime() - 15 * 60000)
+    // Đồng bộ với màn hình Chấm công: mở nhắc và thao tác trước giờ ca 30 phút.
+    const opensAt = new Date(startsAt.getTime() - 30 * 60000)
     const lateAt = new Date(startsAt.getTime() + 5 * 60000)
     if (!record && now >= lateAt && now <= endsAt) {
       return {
@@ -507,13 +616,17 @@ function buildAttendanceReminder(registrations: ShiftRegistration[], records: At
         message: `Ca ${registration.startTime}-${registration.endTime} đã mở check-in. Nhớ chụp selfie trước khi vào ca.`,
       }
     }
-    if (record && !record.checkOutTime && now >= new Date(endsAt.getTime() - 10 * 60000)) {
+    if (record && !record.checkOutTime && now >= new Date(endsAt.getTime() - 30 * 60000)) {
       return {
         tone: 'soon',
         title: 'Sắp đến giờ check-out',
-        message: `Ca ${registration.startTime}-${registration.endTime} sắp kết thúc. Đừng quên check-out khi bàn giao xong.`,
+        message: `Ca ${registration.startTime}-${registration.endTime} đã mở check-out. Đừng quên chụp ảnh và check-out riêng cho ca này.`,
       }
     }
   }
   return null
+}
+
+function formatCompactNumber(value: number) {
+  return Number(value.toFixed(2)).toLocaleString('vi-VN')
 }

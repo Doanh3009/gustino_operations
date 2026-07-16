@@ -42,6 +42,135 @@ export const PRODUCTS: Product[] = [
   { id: 'dumpling', sku: 'TP-SUI-CAO', name: 'Sủi cảo', unit: 'phần', category: 'finished', lowStock: 6 },
 ]
 
+export type ConfiguredProduct = Product & {
+  active: boolean
+  source: 'system' | 'custom'
+  price: number
+  deletedAt?: string
+}
+
+let configuredProductsCache: ConfiguredProduct[] | null = null
+let deletedProductsCache = new Map<string, ConfiguredProduct>()
+
+export function setConfiguredProductsCache(
+  products: ConfiguredProduct[],
+  deletedProducts?: ConfiguredProduct[],
+) {
+  configuredProductsCache = products
+  if (deletedProducts) {
+    deletedProductsCache = new Map(
+      deletedProducts
+        .filter((product) => Boolean(product.deletedAt))
+        .map((product) => [product.id, product]),
+    )
+  }
+  products.forEach((product) => {
+    if (!product.deletedAt) deletedProductsCache.delete(product.id)
+  })
+}
+
+export function markConfiguredProductDeleted(product: ConfiguredProduct) {
+  configuredProductsCache = configuredProductsCache?.filter((item) => item.id !== product.id) ?? null
+  deletedProductsCache.set(product.id, product)
+}
+
+function safeReadProducts(): ConfiguredProduct[] | null {
+  return configuredProductsCache
+}
+
+export function baseConfiguredProducts(): ConfiguredProduct[] {
+  return PRODUCTS.map((product) => ({
+    ...product,
+    price: defaultProductSalePrice(product.id),
+    active: true,
+    source: 'system' as const,
+    deletedAt: undefined,
+  }))
+}
+
+export function getProducts(): ConfiguredProduct[] {
+  const base = baseConfiguredProducts().filter((product) => !deletedProductsCache.has(product.id))
+  const saved = safeReadProducts()
+  if (!saved?.length) return base
+  const byId = new Map(base.map((product) => [product.id, product]))
+  saved.forEach((product) => {
+    if (product.deletedAt || deletedProductsCache.has(product.id)) {
+      byId.delete(product.id)
+      return
+    }
+    const fallback = byId.get(product.id)
+    byId.set(product.id, {
+      ...fallback,
+      ...product,
+      active: product.active !== false,
+      price: Number(product.price || fallback?.price || 0),
+      lowStock: Number(product.lowStock ?? fallback?.lowStock ?? 0),
+      source: product.source || fallback?.source || 'custom',
+    })
+  })
+  return Array.from(byId.values())
+}
+
+export function productById(productId: string) {
+  return getProducts().find((product) => product.id === productId)
+    || deletedProductsCache.get(productId)
+}
+
+// Menu POS của nhân viên = đúng những gì admin cấu hình ở Control Center:
+// thành phẩm đang bật (active), bán theo đơn vị đóng gói (không phải kg rời) và có giá > 0.
+// Admin bật/tắt món hoặc đổi giá là menu nhân viên đổi theo (một nguồn sự thật).
+export function getSaleProducts() {
+  return getProducts()
+    .filter((product) =>
+      product.active !== false
+      && product.category === 'finished'
+      && product.unit !== 'kg'
+      && Number(product.price || 0) > 0,
+    )
+}
+
+export function configuredProductPrice(productId: string, fallback = 0) {
+  return Number(productById(productId)?.price || fallback || 0)
+}
+
+export function getPackingOptionsByOutput() {
+  const currentProducts = getProducts().filter((product) => product.active !== false)
+  const currentProductIds = new Set(currentProducts.map((product) => product.id))
+  const merged: Record<string, PackingOption[]> = Object.fromEntries(
+    Object.entries(PACKING_OPTIONS_BY_OUTPUT)
+      .filter(([outputId]) => currentProductIds.has(outputId))
+      .map(([outputId, options]) => [
+        outputId,
+        options.filter((option) => currentProductIds.has(option.productId)),
+      ]),
+  )
+  currentProducts
+    .filter((product) => product.source === 'custom' && product.active !== false && product.recipe?.length)
+    .forEach((product) => {
+      const source = product.recipe?.find((line) => line.role === 'source' && line.quantity > 0)
+      if (!source || !currentProductIds.has(source.productId)) return
+      const options = merged[source.productId] || []
+      if (!options.some((option) => option.productId === product.id)) {
+        options.push({
+          productId: product.id,
+          label: product.name,
+          sourceQuantity: source.quantity,
+        })
+      }
+      merged[source.productId] = options
+    })
+  return merged
+}
+
+export function defaultProductSalePrice(productId: string) {
+  if (productId.includes('110')) return 30000
+  if (productId.includes('330')) return 80000
+  if (productId.includes('500')) return 120000
+  if (productId.includes('1kg')) return 220000
+  if (productId === 'cake-box') return 36000
+  return 0
+}
+
 export const INBOUND_PRODUCT_IDS = [
   'chestnut-roasted-bulk',
   'chestnut-snow',
@@ -55,6 +184,24 @@ export const INBOUND_PRODUCTS = PRODUCTS.filter((product) =>
 )
 
 export const PROCESS_INPUT_PRODUCTS = INBOUND_PRODUCTS
+
+// Dropdown "nhập kho" của ca trưởng lấy TỪ SKU nguyên liệu do admin cấu hình (không hardcode nữa).
+// Admin thêm/ẩn/sửa một SKU category 'raw' ở Control Center → phản ánh ngay vào đây.
+export function getInboundProducts(): ConfiguredProduct[] {
+  return getProducts().filter((product) => product.active !== false && product.category === 'raw')
+}
+
+// Nguyên liệu đưa vào chế biến = cùng tập nguyên liệu cấu hình.
+export function getProcessInputProducts(): ConfiguredProduct[] {
+  return getInboundProducts()
+}
+
+// Thành phẩm rời (kg) có thể chọn khi chia mẻ — do admin cấu hình qua SKU category 'finished'.
+export function getFinishedBulkProducts(): ConfiguredProduct[] {
+  return getProducts().filter((product) =>
+    product.active !== false && product.category === 'finished' && product.unit === 'kg',
+  )
+}
 
 export const PROCESS_OUTPUT_BY_INPUT: Record<string, string> = {
   'chestnut-snow': 'chestnut-snow-finished',

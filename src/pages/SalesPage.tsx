@@ -1,38 +1,36 @@
 import { useEffect, useMemo, useState } from 'react'
-import { PRODUCTS } from '../lib/constants'
-import { productSaleValues, soldBagQuantity } from '../lib/commission'
-import { fetchBagAllocations, fetchBagShiftSessions, recordBagSale } from '../lib/shiftLedger'
+import { getSaleProducts, productById } from '../lib/constants'
+import { productSaleValues } from '../lib/commission'
+import { fetchAttendanceRecords, fetchEmployees, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { createId } from '../lib/browser'
 import {
+  deleteSalesReceipt,
   fetchSalesReceipts,
-  loadLocalReceipts,
-  saveLocalReceipts,
   saveSalesReceipt,
-  type PaymentMethod,
   type SalesReceipt,
   type SalesReceiptLine,
 } from '../lib/salesReceipts'
-import { supabase } from '../lib/supabase'
+import { supabase, uniqueChannelName } from '../lib/supabase'
 import { localDateKey } from '../lib/dates'
-import type { AppUser, BagAllocation, BagShiftSession } from '../types'
+import { fetchConfiguredProducts } from '../lib/products'
 import type { Page } from '../components/AppShell'
+import type { AppUser, AttendanceRecord, EmployeeProfile, ShiftRegistration } from '../types'
 
-const BAG_PRODUCTS = PRODUCTS.filter((p) => p.category === 'finished' && p.unit === 'túi')
-
-interface EmployeeGroup {
+interface SellerOption {
   key: string
   employeeName: string
   employeeId?: string
-  allocations: BagAllocation[]
 }
 
 export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (page: Page) => void }) {
-  const [allocations, setAllocations] = useState<BagAllocation[]>([])
-  const [sessions, setSessions] = useState<BagShiftSession[]>([])
+  const [registrations, setRegistrations] = useState<ShiftRegistration[]>([])
+  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([])
+  const [branchStaff, setBranchStaff] = useState<EmployeeProfile[]>([])
   const [cart, setCart] = useState<Record<string, number>>({})
-  const [selectedSellerKey, setSelectedSellerKey] = useState('')
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash')
-  const [receipts, setReceipts] = useState<SalesReceipt[]>(loadLocalReceipts)
+  const [selectedSellerKey, setSelectedSellerKey] = useState(user.id)
+  const [productTick, setProductTick] = useState(0)
+  const saleProducts = useMemo(() => getSaleProducts(), [productTick])
+  const [receipts, setReceipts] = useState<SalesReceipt[]>([])
   const [lastReceipt, setLastReceipt] = useState<SalesReceipt | null>(null)
   const [loading, setLoading] = useState(true)
   const [checkoutBusy, setCheckoutBusy] = useState(false)
@@ -40,18 +38,52 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   const [feedbackType, setFeedbackType] = useState<'ok' | 'err'>('ok')
   const canManageSales = user.role === 'shift_leader' || user.role === 'manager' || user.role === 'admin'
   const today = localDateKey()
-  const openSession = sessions.find((s) => s.status === 'open')
+  const [selectedDate, setSelectedDate] = useState(today)
+
+  useEffect(() => {
+    const update = () => setProductTick((tick) => tick + 1)
+    window.addEventListener('gustino-products-updated', update)
+    window.addEventListener('storage', update)
+    void fetchConfiguredProducts(user).then(update).catch(() => {})
+    return () => {
+      window.removeEventListener('gustino-products-updated', update)
+      window.removeEventListener('storage', update)
+    }
+  }, [user.id])
+
+  const activeAttendanceShift = useMemo(() => {
+    const now = new Date()
+    const todayRegistrations = registrations
+      .filter((registration) => registration.userId === user.id && registration.workDate === selectedDate && registration.status !== 'rejected')
+      .sort((a, b) => a.startTime.localeCompare(b.startTime))
+    return todayRegistrations.find((registration) => {
+      const record = findAttendanceRecordForRegistration(attendanceRecords, registration)
+      if (record && !record.checkOutTime) return true
+      const startsAt = new Date(`${registration.workDate}T${registration.startTime}:00`)
+      const endsAt = new Date(`${registration.workDate}T${registration.endTime}:00`)
+      if (registration.endTime <= registration.startTime) endsAt.setDate(endsAt.getDate() + 1)
+      return Boolean(record) && now >= startsAt && now <= endsAt
+    }) || todayRegistrations.find((registration) => findAttendanceRecordForRegistration(attendanceRecords, registration))
+  }, [attendanceRecords, registrations, selectedDate, user.id])
+
+  const shiftPillLabel = activeAttendanceShift
+    ? `Đã check-in ${activeAttendanceShift.startTime}-${activeAttendanceShift.endTime}`
+    : 'Chưa có ca'
+  const shiftPillOpen = Boolean(activeAttendanceShift)
 
   async function refresh(showLoading = false) {
     if (showLoading) setLoading(true)
     try {
-      const [nextAllocations, nextSessions] = await Promise.all([
-        fetchBagAllocations(user, { branchId: user.branchId, date: today }),
-        fetchBagShiftSessions(user, { branchId: user.branchId, date: today }),
+      const [nextReceipts, nextRegistrations, nextAttendanceRecords, nextStaff] = await Promise.all([
+        fetchSalesReceipts(user, { branchId: user.branchId, date: selectedDate }),
+        fetchShiftRegistrations(user, { branchId: user.branchId, from: selectedDate, to: selectedDate }),
+        fetchAttendanceRecords(user, { branchId: user.branchId, userId: canManageSales ? undefined : user.id, from: selectedDate, to: selectedDate }),
+        canManageSales ? fetchEmployees(user) : Promise.resolve([] as EmployeeProfile[]),
       ])
-      setAllocations(nextAllocations)
-      setSessions(nextSessions)
-      setReceipts(await fetchSalesReceipts(user, { branchId: user.branchId, date: today }))
+      setReceipts(dedupeReceipts(nextReceipts))
+      setRegistrations(nextRegistrations)
+      setAttendanceRecords(nextAttendanceRecords)
+      setBranchStaff(nextStaff)
       setFeedback('')
     } catch (error) {
       showFeedback(error instanceof Error ? error.message : 'Không thể tải sổ bán hàng.', 'err')
@@ -60,7 +92,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
     }
   }
 
-  useEffect(() => { void refresh(true) }, [user.id, user.branchId, today])
+  useEffect(() => { void refresh(true) }, [user.id, user.branchId, selectedDate])
 
   useEffect(() => {
     const client = supabase
@@ -68,83 +100,97 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
       const timer = window.setInterval(() => void refresh(), 5000)
       return () => window.clearInterval(timer)
     }
-    const channel = client.channel(`sales-pos:${user.branchId}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_allocations', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_shift_sessions', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
+    const channel = client.channel(uniqueChannelName(`sales-pos:${user.branchId}`))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, () => void refresh())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_registrations', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
       .subscribe()
     return () => { void client.removeChannel(channel) }
-  }, [user.branchId, user.id, today])
+  }, [user.branchId, user.id, selectedDate])
 
   function showFeedback(msg: string, type: 'ok' | 'err' = 'ok') {
     setFeedback(msg)
     setFeedbackType(type)
   }
 
-  const scopedAllocations = useMemo(() => {
-    const open = allocations
-      .filter((a) => !a.settledAt && BAG_PRODUCTS.some((p) => p.id === a.productId))
-      .sort((a, b) => a.employeeName.localeCompare(b.employeeName, 'vi') || a.productId.localeCompare(b.productId))
-    if (canManageSales) return open
-    const userNameKey = normalizeName(user.name)
-    return open.filter((a) => a.employeeId === user.id || normalizeName(a.employeeName) === userNameKey)
-  }, [allocations, canManageSales, user.id, user.name])
-
-  const employeeGroups: EmployeeGroup[] = useMemo(() => {
-    const map = new Map<string, EmployeeGroup>()
-    scopedAllocations.forEach((a) => {
-      const key = a.employeeId || normalizeName(a.employeeName)
-      const group = map.get(key) || { key, employeeName: a.employeeName, employeeId: a.employeeId, allocations: [] }
-      group.allocations.push(a)
-      map.set(key, group)
-    })
-    return Array.from(map.values())
-  }, [scopedAllocations])
+  const sellerOptions = useMemo(() => {
+    const map = new Map<string, SellerOption>()
+    const add = (option: SellerOption) => {
+      if (!option.key || !option.employeeName.trim()) return
+      if (!map.has(option.key)) map.set(option.key, option)
+    }
+    add({ key: user.id, employeeId: user.id, employeeName: user.name })
+    if (canManageSales) {
+      registrations
+        .filter((registration) => registration.branchId === user.branchId && registration.workDate === selectedDate && registration.status !== 'rejected')
+        .forEach((registration) => add({ key: registration.userId, employeeId: registration.userId, employeeName: registration.userName }))
+      branchStaff
+        .filter((person) => person.branchId === user.branchId && person.active !== false && (person.role === 'staff' || person.role === 'shift_leader'))
+        .forEach((person) => add({ key: person.id, employeeId: person.id, employeeName: person.name }))
+      receipts.forEach((receipt) => add({
+        key: receipt.sellerId || receipt.sellerKey || normalizeName(receipt.sellerName),
+        employeeId: receipt.sellerId,
+        employeeName: receipt.sellerName,
+      }))
+    }
+    return Array.from(map.values()).sort((a, b) => a.employeeName.localeCompare(b.employeeName, 'vi'))
+  }, [branchStaff, canManageSales, receipts, registrations, selectedDate, user.branchId, user.id, user.name])
 
   useEffect(() => {
-    if (!employeeGroups.length) return
-    if (!selectedSellerKey || !employeeGroups.some((group) => group.key === selectedSellerKey)) {
-      setSelectedSellerKey(employeeGroups[0].key)
+    if (!sellerOptions.length) return
+    if (!selectedSellerKey || !sellerOptions.some((seller) => seller.key === selectedSellerKey)) {
+      setSelectedSellerKey(canManageSales ? sellerOptions[0].key : user.id)
     }
-  }, [employeeGroups, selectedSellerKey])
+  }, [sellerOptions, selectedSellerKey, canManageSales, user.id])
 
-  const selectedGroup = employeeGroups.find((group) => group.key === selectedSellerKey) || employeeGroups[0]
-  const selectedAllocations = selectedGroup?.allocations || []
-  const stats = scopedAllocations.reduce((t, a) => {
-    const sold = soldBagQuantity(a)
-    const values = productSaleValues(a.productId, sold)
-    t.issued += a.issuedQuantity
-    t.sold += sold
-    t.remaining += remainingToSell(a)
-    t.revenue += values.revenue
-    return t
-  }, { issued: 0, sold: 0, remaining: 0, revenue: 0 })
-  const cartLines = useMemo(() => buildCartLines(selectedAllocations, cart), [selectedAllocations, cart])
+  const selectedSeller = sellerOptions.find((seller) => seller.key === selectedSellerKey) || sellerOptions[0] || {
+    key: user.id,
+    employeeId: user.id,
+    employeeName: user.name,
+  }
+  const sellerMenuProducts = useMemo(() => saleProducts.map((product) => ({
+    product,
+    inCart: cart[product.id] || 0,
+  })), [cart, saleProducts])
+  const todayReceipts = receipts.filter((receipt) => receipt.branchId === user.branchId && receipt.businessDate === selectedDate)
+  const sellerReceipts = todayReceipts.filter((receipt) =>
+    (receipt.sellerId && receipt.sellerId === selectedSeller.employeeId)
+    || receipt.sellerKey === selectedSeller.key
+    || normalizeName(receipt.sellerName) === normalizeName(selectedSeller.employeeName),
+  )
+  const visibleReceipts = canManageSales ? todayReceipts : sellerReceipts
+  const stats = visibleReceipts.reduce((sum, receipt) => ({
+    sold: sum.sold + receipt.totalQuantity,
+    revenue: sum.revenue + receipt.totalAmount,
+    receipts: sum.receipts + 1,
+  }), { sold: 0, revenue: 0, receipts: 0 })
+  const cartLines = useMemo(() => buildCartLines(cart), [cart])
   const bill = cartLines.reduce((sum, line) => ({
     quantity: sum.quantity + line.quantity,
     amount: sum.amount + line.total,
   }), { quantity: 0, amount: 0 })
-  const todayReceipts = receipts.filter((receipt) => receipt.branchId === user.branchId && receipt.createdAt.slice(0, 10) === today)
-  const sellerReceipts = selectedGroup ? todayReceipts.filter((receipt) => receipt.sellerKey === selectedGroup.key) : []
   const currentCartHasItems = cartLines.length > 0
+  const receiptsByDate = Array.from(
+    visibleReceipts.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).reduce((map, receipt) => {
+      const key = receipt.businessDate || receipt.createdAt.slice(0, 10)
+      map.set(key, [...(map.get(key) || []), receipt])
+      return map
+    }, new Map<string, SalesReceipt[]>()).entries(),
+  ).sort((a, b) => b[0].localeCompare(a[0]))
 
-  function addToCart(allocation: BagAllocation, quantity = 1) {
-    const available = remainingToSell(allocation)
-    if (available <= 0) return
-    setCart((current) => {
-      const currentQty = current[allocation.id] || 0
-      const nextQty = Math.min(available, currentQty + quantity)
-      return { ...current, [allocation.id]: nextQty }
-    })
+  function addProductToCart(productId: string, quantity = 1) {
+    setCart((current) => ({
+      ...current,
+      [productId]: Math.max(0, (current[productId] || 0) + quantity),
+    }))
   }
 
-  function setLineQuantity(allocationId: string, quantity: number) {
-    const allocation = selectedAllocations.find((item) => item.id === allocationId)
-    if (!allocation) return
-    const max = remainingToSell(allocation)
+  function setLineQuantity(productId: string, quantity: number) {
     setCart((current) => {
       const next = { ...current }
-      if (quantity <= 0) delete next[allocationId]
-      else next[allocationId] = Math.min(quantity, max)
+      if (quantity <= 0) delete next[productId]
+      else next[productId] = Math.max(1, quantity)
       return next
     })
   }
@@ -153,32 +199,47 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
     setCart({})
   }
 
+  // NV xóa hóa đơn của mình trong ngày; ca trưởng/quản lý/admin xóa mọi hóa đơn.
+  function canDeleteReceipt(receipt: SalesReceipt) {
+    if (canManageSales) return true
+    const isOwn = receipt.createdBy === user.id || receipt.sellerId === user.id
+    return isOwn && receipt.businessDate === today
+  }
+
+  async function handleDeleteReceipt(receipt: SalesReceipt) {
+    if (!canDeleteReceipt(receipt)) return
+    if (!window.confirm(`Xóa hóa đơn ${receipt.code} (${formatMoney(receipt.totalAmount)})? Doanh thu sẽ được trừ tương ứng.`)) return
+    try {
+      await deleteSalesReceipt(user, receipt)
+      setReceipts((items) => items.filter((item) => item.id !== receipt.id))
+      if (lastReceipt?.id === receipt.id) setLastReceipt(null)
+      showFeedback(`Đã xóa hóa đơn ${receipt.code}.`, 'ok')
+      await refresh()
+    } catch (error) {
+      showFeedback(error instanceof Error ? error.message : 'Không thể xóa hóa đơn.', 'err')
+    }
+  }
+
   async function checkout() {
-    if (!selectedGroup || !cartLines.length) {
+    if (!selectedSeller || !cartLines.length) {
       showFeedback('Hóa đơn chưa có món.', 'err')
+      return
+    }
+    if (selectedDate !== today) {
+      showFeedback('Chỉ tạo hóa đơn cho ngày hôm nay. Ngày cũ dùng để xem lại dữ liệu đã lưu.', 'err')
       return
     }
     setCheckoutBusy(true)
     try {
-      const updatedRows: BagAllocation[] = []
-      for (const line of cartLines) {
-        const allocation = selectedAllocations.find((item) => item.id === line.allocationId)
-        if (!allocation) throw new Error('Một món trong hóa đơn không còn hợp lệ. Hãy tải lại trang.')
-        if (line.quantity > remainingToSell(allocation)) {
-          throw new Error(`${line.productName} chỉ còn ${remainingToSell(allocation)} túi.`)
-        }
-        updatedRows.push(await recordBagSale(user, allocation, line.quantity))
-      }
-      setAllocations((items) => items.map((item) => updatedRows.find((row) => row.id === item.id) || item))
       const receipt: SalesReceipt = {
         id: createId(),
-        code: buildReceiptCode(todayReceipts.length + 1),
+        code: buildReceiptCode(selectedDate, todayReceipts.length + 1),
         branchId: user.branchId,
-        businessDate: today,
-        sellerKey: selectedGroup.key,
-        sellerId: selectedGroup.employeeId,
-        sellerName: selectedGroup.employeeName,
-        paymentMethod,
+        businessDate: selectedDate,
+        sellerKey: selectedSeller.key,
+        sellerId: selectedSeller.employeeId,
+        sellerName: selectedSeller.employeeName,
+        paymentMethod: 'cash',
         totalQuantity: bill.quantity,
         totalAmount: bill.amount,
         lines: cartLines,
@@ -187,15 +248,13 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
         createdByName: user.name,
       }
       await saveSalesReceipt(user, receipt)
-      const nextReceipts = [receipt, ...receipts].slice(0, 200)
-      setReceipts(nextReceipts)
-      if (!supabase) saveLocalReceipts(nextReceipts)
+      setReceipts((items) => dedupeReceipts([receipt, ...items]).slice(0, 200))
       setLastReceipt(receipt)
       setCart({})
-      showFeedback(`Đã thanh toán ${receipt.code} · ${formatMoney(receipt.totalAmount)}.`, 'ok')
+      showFeedback(`Đã tạo hóa đơn ${receipt.code} - ${formatMoney(receipt.totalAmount)}.`, 'ok')
       await refresh()
     } catch (error) {
-      showFeedback(error instanceof Error ? error.message : 'Không thể thanh toán hóa đơn.', 'err')
+      showFeedback(error instanceof Error ? error.message : 'Không thể tạo hóa đơn.', 'err')
     } finally {
       setCheckoutBusy(false)
     }
@@ -204,7 +263,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   if (loading) {
     return (
       <div className="page sales-page-v2 pos-page">
-        <div className="section-card" style={{ padding: 32, textAlign: 'center', color: 'var(--muted)' }}>Đang tải quầy bán hàng…</div>
+        <div className="section-card" style={{ padding: 32, textAlign: 'center', color: 'var(--muted)' }}>Đang tải quầy bán hàng...</div>
       </div>
     )
   }
@@ -214,15 +273,17 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
       <div className="pos-topbar">
         <div>
           <span className="eyebrow dark">BÁN HÀNG</span>
-          <h1>Thu ngân quầy</h1>
-          <p>Mỗi lượt khách là một hóa đơn. Chọn món, thanh toán, hệ thống tự trừ túi đã phát.</p>
+          <h1>POS bán hàng PG</h1>
+          <p>Chọn món, nhập số lượng và tạo hóa đơn nội bộ. Nhân viên bán trực tiếp theo menu đang hiển thị.</p>
         </div>
         <div className="pos-topbar-actions">
-          <span className={openSession ? 'sales-shift-pill open' : 'sales-shift-pill no-shift'}><i />{openSession ? `Ca ${openSession.sequence} đang mở` : 'Chưa có ca'}</span>
-          {onNavigate && (
-            <button className="sales-link-handover" onClick={() => onNavigate('handover')}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 014-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 01-4 4H3" /></svg>
-              Phát túi
+          <label className="pos-date-filter">Ngày
+            <input type="date" value={selectedDate} onChange={(event) => { setSelectedDate(event.target.value); setCart({}) }} />
+          </label>
+          <span className={shiftPillOpen ? 'sales-shift-pill open' : 'sales-shift-pill no-shift'}><i />{shiftPillLabel}</span>
+          {canManageSales && onNavigate && (
+            <button type="button" className="secondary-button sales-next-button" onClick={() => onNavigate('handover')}>
+              Chốt tồn ca
             </button>
           )}
         </div>
@@ -237,152 +298,140 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
 
       <div className="pos-summary-strip">
         <article><span>Đã bán</span><strong>{stats.sold}</strong><small>{formatMoney(stats.revenue)}</small></article>
-        <article><span>Còn giữ</span><strong>{stats.remaining}</strong><small>túi chưa bán</small></article>
-        <article><span>Hóa đơn</span><strong>{todayReceipts.length}</strong><small>trong ngày</small></article>
-        <article><span>Ca</span><strong>{openSession ? openSession.sequence : '-'}</strong><small>{openSession ? 'đang hoạt động' : 'chưa mở'}</small></article>
+        <article><span>Hóa đơn</span><strong>{stats.receipts}</strong><small>{formatDate(selectedDate)}</small></article>
+        <article><span>Menu</span><strong>{saleProducts.length}</strong><small>món đang hiển thị</small></article>
+        <article><span>Ca</span><strong>{activeAttendanceShift ? 'OK' : '-'}</strong><small>{activeAttendanceShift ? 'đã check-in' : 'chưa mở'}</small></article>
       </div>
 
-      {!scopedAllocations.length ? (
-        <div className="sales-empty-state">
-          <strong>Chưa có túi nào được phát hôm nay</strong>
-          <p>Ca trưởng cần vào <b>Phát túi</b> để phát túi trước, sau đó nhân viên mới tạo hóa đơn bán hàng được.</p>
-          {onNavigate && (
-            <button className="sales-link-handover" onClick={() => onNavigate('handover')}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 014-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 01-4 4H3" /></svg>
-              Đi đến Phát túi
-            </button>
+      <div className="pos-layout">
+        <section className="pos-menu-panel">
+          {canManageSales && sellerOptions.length > 0 && (
+            <div className="seller-tabs" aria-label="Chọn nhân viên bán">
+              {sellerOptions.map((seller) => {
+                const sold = todayReceipts
+                  .filter((receipt) => (receipt.sellerId && receipt.sellerId === seller.employeeId) || receipt.sellerKey === seller.key)
+                  .reduce((sum, receipt) => sum + receipt.totalQuantity, 0)
+                return (
+                  <button
+                    key={seller.key}
+                    className={seller.key === selectedSeller.key ? 'active' : ''}
+                    onClick={() => {
+                      if (currentCartHasItems && !window.confirm('Đổi nhân viên sẽ xóa hóa đơn đang nhập. Tiếp tục?')) return
+                      setSelectedSellerKey(seller.key)
+                      setCart({})
+                    }}
+                  >
+                    <strong>{seller.employeeName}</strong>
+                    <small>Đã bán {sold} sản phẩm</small>
+                  </button>
+                )
+              })}
+            </div>
           )}
-        </div>
-      ) : (
-        <div className="pos-layout">
-          <section className="pos-menu-panel">
-            {canManageSales && (
-              <div className="seller-tabs" aria-label="Chọn nhân viên bán">
-                {employeeGroups.map((group) => {
-                  const remaining = group.allocations.reduce((sum, item) => sum + remainingToSell(item), 0)
-                  return (
+
+          <div className="pos-panel-head">
+            <div>
+              <span className="eyebrow dark">MENU BÁN NHANH</span>
+              <h2>{selectedSeller.employeeName}</h2>
+            </div>
+            <span className="count-pill">{sellerMenuProducts.length} món</span>
+          </div>
+
+          <div className="pos-product-grid">
+            {sellerMenuProducts
+              .slice()
+              .sort((a, b) => a.product.name.localeCompare(b.product.name, 'vi'))
+              .map(({ product, inCart }) => {
+                const values = productSaleValues(product.id, 1)
+                return (
+                  <article key={product.id}>
                     <button
-                      key={group.key}
-                      className={group.key === selectedGroup?.key ? 'active' : ''}
-                      onClick={() => {
-                        if (currentCartHasItems && !window.confirm('Đổi nhân viên sẽ xóa hóa đơn đang nhập. Tiếp tục?')) return
-                        setSelectedSellerKey(group.key)
-                        setCart({})
-                      }}
+                      className="pos-product-main"
+                      disabled={checkoutBusy}
+                      onClick={() => addProductToCart(product.id, 1)}
                     >
-                      <strong>{group.employeeName}</strong>
-                      <small>Còn {remaining} túi</small>
+                      <span>{shortProductName(product.name)}</span>
+                      <strong>{formatMoney(values.price)}</strong>
+                      <small>Bán không giới hạn</small>
+                      {inCart > 0 && <b>{inCart}</b>}
                     </button>
-                  )
-                })}
-              </div>
+                    <div className="pos-product-quick">
+                      {[1, 2, 3].map((qty) => (
+                        <button key={qty} disabled={checkoutBusy} onClick={() => addProductToCart(product.id, qty)}>+{qty}</button>
+                      ))}
+                    </div>
+                  </article>
+                )
+              })}
+          </div>
+        </section>
+
+        <aside className="pos-bill-panel">
+          <div className="bill-head">
+            <div>
+              <span>HÓA ĐƠN MỚI</span>
+              <strong>{selectedSeller.employeeName}</strong>
+            </div>
+            <button disabled={!cartLines.length || checkoutBusy} onClick={clearCart}>Xóa</button>
+          </div>
+
+          <div className="bill-lines">
+            {cartLines.map((line) => (
+              <article key={line.productId}>
+                <div>
+                  <strong>{shortProductName(line.productName)}</strong>
+                  <small>{formatMoney(line.unitPrice)} / sản phẩm</small>
+                </div>
+                <div className="bill-qty">
+                  <button disabled={checkoutBusy} onClick={() => setLineQuantity(line.productId, line.quantity - 1)}>-</button>
+                  <b>{line.quantity}</b>
+                  <button disabled={checkoutBusy} onClick={() => setLineQuantity(line.productId, line.quantity + 1)}>+</button>
+                </div>
+                <span>{formatMoney(line.total)}</span>
+              </article>
+            ))}
+            {!cartLines.length && (
+              <p className="bill-empty">Chạm món bên trái để thêm vào hóa đơn cho khách.</p>
             )}
+          </div>
 
-            <div className="pos-panel-head">
-              <div>
-                <span className="eyebrow dark">MENU BÁN NHANH</span>
-                <h2>{selectedGroup?.employeeName || user.name}</h2>
-              </div>
-              <span className="count-pill">{selectedAllocations.length} loại túi</span>
+          <div className="bill-total">
+            <span>Tổng cộng</span>
+            <strong>{formatMoney(bill.amount)}</strong>
+            <small>{bill.quantity} sản phẩm - tạo mã đối soát</small>
+          </div>
+
+          <button className="checkout-button" disabled={!cartLines.length || checkoutBusy} onClick={() => void checkout()}>
+            {checkoutBusy ? 'Đang tạo hóa đơn...' : 'Tạo hóa đơn'}
+          </button>
+
+          <div className="receipt-history">
+            <div className="receipt-history-head">
+              <strong>{canManageSales ? 'Hóa đơn đã bán (cả chi nhánh)' : 'Hóa đơn của bạn'}</strong>
+              <span>{visibleReceipts.length}</span>
             </div>
-
-            <div className="pos-product-grid">
-              {selectedAllocations
-                .slice()
-                .sort((a, b) => remainingToSell(b) - remainingToSell(a))
-                .map((allocation) => {
-                  const product = PRODUCTS.find((item) => item.id === allocation.productId)
-                  const remaining = remainingToSell(allocation)
-                  const values = productSaleValues(allocation.productId, 1)
-                  const inCart = cart[allocation.id] || 0
-                  return (
-                    <article key={allocation.id} className={remaining <= 0 ? 'sold-out' : ''}>
-                      <button
-                        className="pos-product-main"
-                        disabled={remaining <= 0 || checkoutBusy}
-                        onClick={() => addToCart(allocation, 1)}
-                      >
-                        <span>{shortProductName(product?.name || allocation.productId)}</span>
-                        <strong>{formatMoney(values.price)}</strong>
-                        <small>{remaining > 0 ? `Còn ${remaining} túi` : 'Đã hết'}</small>
-                        {inCart > 0 && <b>{inCart}</b>}
-                      </button>
-                      <div className="pos-product-quick">
-                        {[1, 2, 3].filter((qty) => qty <= remaining).map((qty) => (
-                          <button key={qty} disabled={checkoutBusy} onClick={() => addToCart(allocation, qty)}>+{qty}</button>
-                        ))}
-                      </div>
-                    </article>
-                  )
-                })}
-            </div>
-          </section>
-
-          <aside className="pos-bill-panel">
-            <div className="bill-head">
-              <div>
-                <span>HÓA ĐƠN MỚI</span>
-                <strong>{selectedGroup?.employeeName || user.name}</strong>
-              </div>
-              <button disabled={!cartLines.length || checkoutBusy} onClick={clearCart}>Xóa</button>
-            </div>
-
-            <div className="bill-lines">
-              {cartLines.map((line) => (
-                <article key={line.allocationId}>
-                  <div>
-                    <strong>{shortProductName(line.productName)}</strong>
-                    <small>{formatMoney(line.unitPrice)} / túi</small>
+            {receiptsByDate.length ? receiptsByDate.map(([date, dayReceipts], index) => (
+              <details className="receipt-history-day" key={date} open={index === 0}>
+                <summary>
+                  <span><strong>{formatDate(date)}</strong><small>{dayReceipts.length} hóa đơn</small></span>
+                  <b>{formatMoney(dayReceipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0))}</b>
+                </summary>
+                {dayReceipts.map((receipt) => (
+                  <div className="receipt-history-row" key={receipt.id}>
+                    <button className="receipt-history-view" onClick={() => setLastReceipt(receipt)}>
+                      <span><strong>{receipt.code}</strong><small>{new Date(receipt.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} - {receipt.totalQuantity} sản phẩm{canManageSales ? ` - ${receipt.sellerName}` : ''}</small></span>
+                      <b>{formatMoney(receipt.totalAmount)}</b>
+                    </button>
+                    {canDeleteReceipt(receipt) && (
+                      <button className="receipt-history-delete" title="Xóa hóa đơn bấm nhầm" aria-label={`Xóa hóa đơn ${receipt.code}`} onClick={() => void handleDeleteReceipt(receipt)}>Xóa</button>
+                    )}
                   </div>
-                  <div className="bill-qty">
-                    <button disabled={checkoutBusy} onClick={() => setLineQuantity(line.allocationId, line.quantity - 1)}>−</button>
-                    <b>{line.quantity}</b>
-                    <button disabled={checkoutBusy} onClick={() => setLineQuantity(line.allocationId, line.quantity + 1)}>+</button>
-                  </div>
-                  <span>{formatMoney(line.total)}</span>
-                </article>
-              ))}
-              {!cartLines.length && (
-                <p className="bill-empty">Chạm món bên trái để thêm vào hóa đơn cho khách.</p>
-              )}
-            </div>
-
-            <div className="payment-methods" aria-label="Chọn hình thức thanh toán">
-              {([
-                ['cash', 'Tiền mặt'],
-                ['qr', 'QR'],
-                ['card', 'Thẻ'],
-              ] as Array<[PaymentMethod, string]>).map(([method, label]) => (
-                <button key={method} className={paymentMethod === method ? 'active' : ''} onClick={() => setPaymentMethod(method)}>{label}</button>
-              ))}
-            </div>
-
-            <div className="bill-total">
-              <span>Tổng cộng</span>
-              <strong>{formatMoney(bill.amount)}</strong>
-              <small>{bill.quantity} túi · {paymentLabel(paymentMethod)}</small>
-            </div>
-
-            <button className="checkout-button" disabled={!cartLines.length || checkoutBusy} onClick={() => void checkout()}>
-              {checkoutBusy ? 'Đang thanh toán…' : 'Thanh toán'}
-            </button>
-
-            <div className="receipt-history">
-              <div className="receipt-history-head">
-                <strong>Hóa đơn gần đây</strong>
-                <span>{sellerReceipts.length}</span>
-              </div>
-              {sellerReceipts.slice(0, 5).map((receipt) => (
-                <button key={receipt.id} onClick={() => setLastReceipt(receipt)}>
-                  <span><strong>{receipt.code}</strong><small>{new Date(receipt.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} · {receipt.totalQuantity} túi</small></span>
-                  <b>{formatMoney(receipt.totalAmount)}</b>
-                </button>
-              ))}
-              {!sellerReceipts.length && <small className="receipt-empty">Chưa có hóa đơn cho nhân viên này.</small>}
-            </div>
-          </aside>
-        </div>
-      )}
+                ))}
+              </details>
+            )) : <small className="receipt-empty">Chưa có hóa đơn nào.</small>}
+          </div>
+        </aside>
+      </div>
 
       {lastReceipt && (
         <div className="receipt-modal-backdrop" onClick={(event) => { if (event.currentTarget === event.target) setLastReceipt(null) }}>
@@ -397,11 +446,11 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
               <dl>
                 <div><dt>Thời gian</dt><dd>{new Date(lastReceipt.createdAt).toLocaleString('vi-VN', { hour12: false })}</dd></div>
                 <div><dt>Nhân viên</dt><dd>{lastReceipt.sellerName}</dd></div>
-                <div><dt>Thanh toán</dt><dd>{paymentLabel(lastReceipt.paymentMethod)}</dd></div>
+                <div><dt>Đối soát</dt><dd>Quầy Lotte</dd></div>
               </dl>
               <section>
                 {lastReceipt.lines.map((line) => (
-                  <div key={line.allocationId}>
+                  <div key={line.productId}>
                     <span>{shortProductName(line.productName)} x {line.quantity}</span>
                     <b>{formatMoney(line.total)}</b>
                   </div>
@@ -420,47 +469,50 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   )
 }
 
-function buildCartLines(allocations: BagAllocation[], cart: Record<string, number>): SalesReceiptLine[] {
-  return Object.entries(cart).flatMap(([allocationId, quantity]) => {
-    const allocation = allocations.find((item) => item.id === allocationId)
-    if (!allocation || quantity <= 0) return []
-    const product = PRODUCTS.find((item) => item.id === allocation.productId)
-    const values = productSaleValues(allocation.productId, quantity)
+function buildCartLines(cart: Record<string, number>): SalesReceiptLine[] {
+  return Object.entries(cart).flatMap(([productId, quantity]) => {
+    if (quantity <= 0) return []
+    const product = productById(productId)
+    const values = productSaleValues(productId, quantity)
     return [{
-      allocationId,
-      productId: allocation.productId,
-      productName: product?.name || allocation.productId,
+      productId,
+      productName: product?.name || productId,
       quantity,
-      unitPrice: productSaleValues(allocation.productId, 1).price,
+      unitPrice: productSaleValues(productId, 1).price,
       total: values.revenue,
     }]
   })
 }
 
-function remainingToSell(a: BagAllocation) {
-  return Math.max(0, a.issuedQuantity - soldBagQuantity(a) - a.returnedQuantity - a.damagedQuantity)
-}
-
-function buildReceiptCode(sequence: number) {
-  const now = new Date()
-  const date = `${String(now.getDate()).padStart(2, '0')}${String(now.getMonth() + 1).padStart(2, '0')}`
+function buildReceiptCode(businessDate: string, sequence: number) {
+  const date = `${businessDate.slice(8, 10)}${businessDate.slice(5, 7)}`
   return `HD${date}-${String(sequence).padStart(3, '0')}`
 }
 
-function paymentLabel(method: PaymentMethod) {
-  return method === 'cash' ? 'Tiền mặt' : method === 'qr' ? 'QR chuyển khoản' : 'Thẻ'
+function dedupeReceipts(receipts: SalesReceipt[]) {
+  const map = new Map<string, SalesReceipt>()
+  receipts.forEach((receipt) => map.set(receipt.id, receipt))
+  return Array.from(map.values()).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 
 function shortProductName(value: string) {
   return value
     .replace(/^Hạt dẻ\s*/i, '')
+    .replace(/^Hat de\s*/i, '')
     .replace(/^Khoai lang mật\s*/i, 'Khoai ')
+    .replace(/^Khoai lang mat\s*/i, 'Khoai ')
     .replace(/^Bánh hạt dẻ\s*/i, 'Bánh ')
+    .replace(/^Banh hat de\s*/i, 'Bánh ')
     .trim()
 }
 
 function formatMoney(value: number) {
-  return `${Math.round(value).toLocaleString('vi-VN')}đ`
+  return `${Math.round(value).toLocaleString('vi-VN')}d`
+}
+
+function formatDate(value: string) {
+  const [year, month, day] = value.split('-')
+  return day && month && year ? `${day}/${month}/${year}` : value
 }
 
 function normalizeName(value: string) {

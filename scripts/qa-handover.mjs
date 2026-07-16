@@ -2,11 +2,22 @@ import { chromium } from 'playwright-core'
 
 const baseUrl = process.env.QA_BASE_URL || 'http://127.0.0.1:5173'
 const now = new Date()
-const businessDate = [
-  now.getFullYear(),
-  String(now.getMonth() + 1).padStart(2, '0'),
-  String(now.getDate()).padStart(2, '0'),
-].join('-')
+const businessDate = localDateKey(now)
+const branchId = `qa-handover-${Date.now()}`
+const leader = {
+  id: `qa-leader-${Date.now()}`,
+  name: 'Ca truong QA',
+  email: 'qa-leader@gustino.local',
+  role: 'shift_leader',
+  branchId,
+  branchIds: [branchId],
+  authToken: 'qa-leader-token',
+}
+const staff = {
+  id: `qa-staff-${Date.now()}`,
+  name: 'Nhan vien QA',
+  role: 'staff',
+}
 
 const browser = await chromium.launch({
   headless: true,
@@ -15,92 +26,146 @@ const browser = await chromium.launch({
 
 try {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } })
-  await context.addInitScript(() => {
-    localStorage.setItem('gustino_demo_user_v1', JSON.stringify({
-      id: 'demo-shift-leader',
-      name: 'Ca trưởng Demo',
-      email: 'catruong@gustino.vn',
-      role: 'shift_leader',
-      branchId: 'gold-coast',
-      branchIds: ['gold-coast'],
-    }))
-  })
+  await context.addInitScript((account) => {
+    localStorage.setItem('gustino_user_v1', JSON.stringify(account))
+    localStorage.removeItem('gustino_demo_user_v1')
+    localStorage.setItem('gustino_lang', 'vi')
+  }, leader)
   const page = await context.newPage()
   await page.goto(`${baseUrl}/#handover`, { waitUntil: 'networkidle' })
-  await page.getByRole('button', { name: 'Trở lại' }).click()
-  await page.locator('.today-page').waitFor()
-  await page.goto(`${baseUrl}/#handover`, { waitUntil: 'networkidle' })
-  await page.getByRole('button', { name: /Thoát chức năng/ }).waitFor()
 
-  await page.request.post(`${baseUrl}/api/movements`, {
-    data: {
-      id: crypto.randomUUID(),
-      documentId: crypto.randomUUID(),
-      branchId: 'gold-coast',
-      productId: 'chestnut-110',
-      type: 'adjustment',
-      quantity: 30,
-      shiftDate: businessDate,
-      note: '[QA] Tạo tồn kiểm thử bàn giao',
-      createdBy: 'demo-shift-leader',
-      createdAt: new Date().toISOString(),
-    },
-  })
+  await seedShiftPrerequisites(page)
   await page.reload({ waitUntil: 'networkidle' })
+  await page.locator('.handover-page').waitFor()
 
   await page.getByRole('button', { name: 'Nhận ca', exact: true }).click()
-  await page.getByText('Ca 1 đang mở').waitFor()
+  await page.locator('.handover-shift-chip.open').waitFor()
 
-  const issueForm = page.locator('.handover-issue-form')
-  const availableText = await issueForm.locator('.issue-availability strong').textContent()
-  const availableQuantity = Number(String(availableText).replace(/[^\d.]/g, ''))
-  if (!availableQuantity || availableQuantity < 30) throw new Error('Tồn khả dụng chưa đồng bộ với lượng nhập.')
-  if (!String(await issueForm.getByLabel('Loại túi').locator('option:checked').textContent()).includes('còn')) {
-    throw new Error('Loại túi chưa hiển thị số lượng khả dụng.')
-  }
-  if (Number(await issueForm.getByLabel('Số lượng').getAttribute('max')) !== availableQuantity) {
-    throw new Error('Ô số lượng chưa giới hạn theo tồn khả dụng.')
-  }
-  await issueForm.getByLabel('Nhân viên').selectOption('demo-staff')
-  await issueForm.getByLabel('Loại túi').selectOption('chestnut-110')
-  await issueForm.getByLabel('Số lượng').fill('10')
-  await issueForm.getByRole('button', { name: 'Xác nhận phát túi' }).click()
+  await seedSalesReceipt(page)
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.locator('.handover-page').waitFor()
+  const staffSales = page.locator('.allocation-group').filter({ hasText: staff.name })
+  await staffSales.waitFor()
+  await staffSales.locator('.allocation-main').getByText(/3/).first().waitFor()
 
-  const employeeA = page.locator('.handover-employee-list article').filter({ hasText: 'Nhân viên Demo' })
-  await employeeA.getByLabel('Trả lại').fill('2')
-  await employeeA.getByLabel('Hỏng/mất').fill('1')
-  await employeeA.getByRole('button', { name: 'Thu & tính bán' }).click()
-  await employeeA.getByText('Bán').waitFor()
-
-  await issueForm.getByLabel('Nhân viên').selectOption('demo-shift-leader')
-  await issueForm.getByLabel('Số lượng').fill('5')
-  await issueForm.getByRole('button', { name: 'Xác nhận phát túi' }).click()
-  await page.getByText(/Hệ thống sẽ chuyển nguyên trạng sang ca sau/).waitFor()
+  const firstCountInput = page.locator('.handover-count-grid input').first()
+  await firstCountInput.fill('12')
   await page.getByRole('button', { name: 'Chốt & bàn giao ca' }).click()
-  await page.getByText(/Đã chốt Ca 1/).waitFor()
+  await page.locator('.handover-history').waitFor()
 
   await page.getByRole('button', { name: 'Nhận ca', exact: true }).click()
-  await page.getByText('Ca 2 đang mở').waitFor()
-  const employeeB = page.locator('.handover-employee-list article').filter({ hasText: 'Ca trưởng Demo' })
-  await employeeB.getByText('Chuyển từ ca trước').waitFor()
-  await employeeB.getByLabel('Trả lại').fill('1')
-  await employeeB.getByLabel('Hỏng/mất').fill('0')
-  await employeeB.getByRole('button', { name: 'Thu & tính bán' }).click()
-  await employeeB.getByText('Bán').waitFor()
-  await page.getByRole('button', { name: 'Chốt & bàn giao ca' }).click()
-  await page.getByText(/Đã chốt Ca 2/).waitFor()
-  await page.getByText('Các ca đã bàn giao').waitFor()
+  await page.locator('.handover-shift-chip.open').waitFor()
+  await page.locator('.handover-count-grid input').first().waitFor()
 
-  await page.getByRole('button', { name: /Cuối ca|Báo cáo cuối ca/ }).click()
-  const summary = page.locator('.report-bag-summary')
-  await summary.getByText('2 ca đã bàn giao').waitFor()
-  await summary.getByText('11', { exact: true }).waitFor()
-
-  await page.goto(`${baseUrl}/#handover`, { waitUntil: 'networkidle' })
-  await page.getByRole('button', { name: /Thoát chức năng/ }).click()
-  await page.locator('.launcher-page').waitFor()
+  await page.getByRole('button', { name: 'Báo cáo cuối ngày' }).click()
+  await page.locator('.report-page').waitFor()
 
   console.log('HANDOVER_QA_OK')
 } finally {
   await browser.close()
+}
+
+async function seedShiftPrerequisites(page) {
+  const headers = headersFor(leader)
+  await page.request.post(`${baseUrl}/api/movements`, {
+    headers,
+    data: {
+      id: crypto.randomUUID(),
+      documentId: crypto.randomUUID(),
+      branchId,
+      productId: 'chestnut-cooked-kg',
+      type: 'adjustment',
+      quantity: 12,
+      shiftDate: businessDate,
+      note: '[QA] Thanh pham dau ca',
+      createdBy: leader.id,
+      createdAt: now.toISOString(),
+    },
+  })
+  const leaderRegistration = buildRegistration(leader.id, leader.name)
+  const staffRegistration = buildRegistration(staff.id, staff.name)
+  for (const registration of [leaderRegistration, staffRegistration]) {
+    const response = await page.request.post(`${baseUrl}/api/attendance/registrations`, {
+      headers,
+      data: registration,
+    })
+    if (!response.ok()) throw new Error(`Khong the tao ca QA: ${await response.text()}`)
+  }
+  const recordResponse = await page.request.post(`${baseUrl}/api/attendance/records`, {
+    headers,
+    data: {
+      id: crypto.randomUUID(),
+      shiftRegistrationId: leaderRegistration.id,
+      userId: leader.id,
+      userName: leader.name,
+      branchId,
+      checkInTime: now.toISOString(),
+    },
+  })
+  if (!recordResponse.ok()) throw new Error(`Khong the check-in QA: ${await recordResponse.text()}`)
+}
+
+async function seedSalesReceipt(page) {
+  const response = await page.request.post(`${baseUrl}/api/sales-receipts`, {
+    headers: headersFor({ ...staff, branchId, branchIds: [branchId], authToken: 'qa-staff-token' }),
+    data: {
+      id: crypto.randomUUID(),
+      code: `HDQA-${Date.now()}`,
+      branchId,
+      businessDate,
+      sellerKey: staff.id,
+      sellerId: staff.id,
+      sellerName: staff.name,
+      paymentMethod: 'cash',
+      totalQuantity: 3,
+      totalAmount: 90000,
+      lines: [{
+        productId: 'chestnut-110',
+        productName: 'Hat de rang 110g',
+        quantity: 3,
+        unitPrice: 30000,
+        total: 90000,
+      }],
+      createdAt: new Date().toISOString(),
+      createdBy: staff.id,
+      createdByName: staff.name,
+    },
+  })
+  if (!response.ok()) throw new Error(`Khong the tao hoa don POS QA: ${await response.text()}`)
+}
+
+function buildRegistration(userId, userName) {
+  return {
+    id: crypto.randomUUID(),
+    userId,
+    userName,
+    branchId,
+    workDate: businessDate,
+    startTime: hhmm(new Date(now.getTime() - 30 * 60000)),
+    endTime: hhmm(new Date(now.getTime() + 6 * 3600000)),
+    status: 'approved',
+    note: '[QA] Ca kiem thu ban giao',
+    createdAt: now.toISOString(),
+  }
+}
+
+function headersFor(user) {
+  return {
+    'X-User-Id': user.id,
+    'X-User-Role': user.role,
+    'X-User-Branch': user.branchId,
+    'X-User-Branches': (user.branchIds || [user.branchId]).join(','),
+    ...(user.authToken ? { Authorization: `Bearer ${user.authToken}` } : {}),
+  }
+}
+
+function hhmm(date) {
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+function localDateKey(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }

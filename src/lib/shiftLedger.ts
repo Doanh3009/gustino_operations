@@ -1,17 +1,9 @@
 import { createId } from './browser'
-import { supabase } from './supabase'
+import { isDuplicateKey, isMissingRpc, mapBagAllocation, mapBagShiftSession, userHeaders } from './core'
+import { shouldUseLanApi, supabase } from './supabase'
 import type { AppUser, BagAllocation, BagShiftSession } from '../types'
 
-function authHeaders(user: AppUser) {
-  return {
-    'Content-Type': 'application/json',
-    ...(user.authToken ? { Authorization: `Bearer ${user.authToken}` } : {}),
-    'X-User-Id': user.id,
-    'X-User-Role': user.role,
-    'X-User-Branch': user.branchId,
-    'X-User-Branches': (user.branchIds || [user.branchId]).join(','),
-  }
-}
+const authHeaders = userHeaders
 
 async function ledgerApi<T>(user: AppUser, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/shift-ledger${path}`, {
@@ -23,33 +15,37 @@ async function ledgerApi<T>(user: AppUser, path: string, init?: RequestInit): Pr
     throw new Error('Máy chủ bàn giao ca chưa hoạt động. Hãy khởi động lại ứng dụng.')
   }
   const payload = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(payload?.error || 'Không thể xử lý sổ túi theo ca.')
+  if (!response.ok) throw new Error(payload?.error || 'Không thể xử lý bàn giao ca.')
   return payload as T
 }
 
 export async function fetchBagShiftSessions(
   user: AppUser,
-  filters: { branchId?: string; date?: string } = {},
+  filters: { branchId?: string; date?: string; from?: string; to?: string } = {},
 ): Promise<BagShiftSession[]> {
-  if (!supabase) {
+  if (shouldUseLanApi(user)) {
     const query = new URLSearchParams()
     if (filters.branchId) query.set('branchId', filters.branchId)
     if (filters.date) query.set('date', filters.date)
+    if (filters.from) query.set('from', filters.from)
+    if (filters.to) query.set('to', filters.to)
     return ledgerApi(user, `/sessions?${query}`)
   }
-  let request = supabase.from('bag_shift_sessions').select('*').order('started_at', { ascending: false })
+  let request = supabase!.from('bag_shift_sessions').select('*').order('started_at', { ascending: false })
   if (filters.branchId) request = request.eq('branch_id', filters.branchId)
   if (filters.date) request = request.eq('business_date', filters.date)
+  if (filters.from) request = request.gte('business_date', filters.from)
+  if (filters.to) request = request.lte('business_date', filters.to)
   const { data, error } = await request
   if (error) throw error
-  return (data || []).map(mapSession)
+  return (data || []).map(mapBagShiftSession)
 }
 
 export async function fetchBagAllocations(
   user: AppUser,
   filters: { branchId?: string; date?: string } = {},
 ): Promise<BagAllocation[]> {
-  if (!supabase) {
+  if (shouldUseLanApi(user)) {
     const query = new URLSearchParams()
     if (filters.branchId) query.set('branchId', filters.branchId)
     if (filters.date) query.set('date', filters.date)
@@ -58,7 +54,7 @@ export async function fetchBagAllocations(
   // When filtering by date, first resolve session IDs to avoid PostgREST
   // join-filter ambiguity with the !inner syntax.
   if (filters.date) {
-    let sessQuery = supabase
+    let sessQuery = supabase!
       .from('bag_shift_sessions')
       .select('id')
       .eq('business_date', filters.date)
@@ -67,7 +63,7 @@ export async function fetchBagAllocations(
     if (sessErr) throw sessErr
     const sessionIds = (sessions || []).map((s: { id: string }) => s.id)
     if (!sessionIds.length) return []
-    let request = supabase
+    let request = supabase!
       .from('bag_allocations')
       .select('*, bag_shift_sessions!bag_allocations_shift_id_fkey(business_date)')
       .in('shift_id', sessionIds)
@@ -75,16 +71,16 @@ export async function fetchBagAllocations(
     if (filters.branchId) request = request.eq('branch_id', filters.branchId)
     const { data, error } = await request
     if (error) throw error
-    return (data || []).map(mapAllocation)
+    return (data || []).map(mapBagAllocation)
   }
-  let request = supabase
+  let request = supabase!
     .from('bag_allocations')
     .select('*, bag_shift_sessions!bag_allocations_shift_id_fkey(business_date)')
     .order('issued_at', { ascending: false })
   if (filters.branchId) request = request.eq('branch_id', filters.branchId)
   const { data, error } = await request
   if (error) throw error
-  return (data || []).map(mapAllocation)
+  return (data || []).map(mapBagAllocation)
 }
 
 export async function startBagShift(
@@ -103,23 +99,30 @@ export async function startBagShift(
     openingBalances,
     startedAt: new Date().toISOString(),
   }
-  if (!supabase) return ledgerApi<BagShiftSession>(user, '/sessions', { method: 'POST', body: JSON.stringify(session) })
-  const { data: existing, error: readError } = await supabase
-    .from('bag_shift_sessions')
-    .select('id')
-    .eq('branch_id', user.branchId)
-    .eq('status', 'open')
-    .maybeSingle()
-  if (readError) throw readError
-  if (existing) throw new Error('Chi nhánh đang có một ca chưa bàn giao.')
-  const { count, error: countError } = await supabase
+  if (shouldUseLanApi(user)) return ledgerApi<BagShiftSession>(user, '/sessions', { method: 'POST', body: JSON.stringify(session) })
+  const { count, error: countError } = await supabase!
     .from('bag_shift_sessions')
     .select('id', { count: 'exact', head: true })
     .eq('branch_id', user.branchId)
     .eq('business_date', businessDate)
   if (countError) throw countError
+  if ((count || 0) >= 2) throw new Error('Hôm nay đã đủ 2 ca (Ca sáng và Ca tối). Không thể nhận thêm ca mới.')
+
+  const { data: openSessions, error: readError } = await supabase!
+    .from('bag_shift_sessions')
+    .select('id,business_date,started_at')
+    .eq('branch_id', user.branchId)
+    .eq('status', 'open')
+    .order('started_at', { ascending: true })
+    .limit(10)
+  if (readError) throw readError
+  const openToday = (openSessions || []).find((item: { business_date: string }) => item.business_date === businessDate)
+  if (openToday) throw new Error('Chi nhánh đang có một ca chưa bàn giao.')
+  for (const stale of openSessions || []) {
+    await closeStaleOpenBagShift(user, stale.id)
+  }
   session.sequence = (count || 0) + 1
-  const { error } = await supabase.from('bag_shift_sessions').insert({
+  const { error } = await supabase!.from('bag_shift_sessions').insert({
     id: session.id,
     branch_id: session.branchId,
     business_date: session.businessDate,
@@ -134,127 +137,43 @@ export async function startBagShift(
   return session
 }
 
-export async function issueBags(
-  user: AppUser,
-  session: BagShiftSession,
-  input: Pick<BagAllocation, 'employeeName' | 'employeeId' | 'productId' | 'issuedQuantity'>,
-) {
-  const allocation: BagAllocation = {
-    id: createId(),
-    branchId: session.branchId,
-    shiftId: session.id,
-    employeeName: input.employeeName.trim(),
-    employeeId: input.employeeId,
-    productId: input.productId,
-    issuedQuantity: input.issuedQuantity,
-    returnedQuantity: 0,
-    damagedQuantity: 0,
-    issuedBy: user.id,
-    issuedAt: new Date().toISOString(),
-  }
-  if (!allocation.employeeName || allocation.issuedQuantity <= 0) throw new Error('Hãy nhập nhân viên và số túi cần phát.')
-  if (!supabase) return ledgerApi<BagAllocation>(user, '/allocations', { method: 'POST', body: JSON.stringify(allocation) })
-  const { error } = await supabase.from('bag_allocations').insert({
-    id: allocation.id,
-    branch_id: allocation.branchId,
-    shift_id: allocation.shiftId,
-    employee_name: allocation.employeeName,
-    employee_id: allocation.employeeId || null,
-    product_id: allocation.productId,
-    issued_quantity: allocation.issuedQuantity,
-    issued_by: allocation.issuedBy,
-    issued_at: allocation.issuedAt,
-  })
-  if (error) throw error
-  return allocation
-}
-
-export async function settleBagAllocation(
-  user: AppUser,
-  session: BagShiftSession,
-  allocation: BagAllocation,
-  soldQuantity: number,
-  returnedQuantity: number,
-  damagedQuantity: number,
-) {
-  if (soldQuantity < 0 || returnedQuantity < 0 || damagedQuantity < 0 || soldQuantity + returnedQuantity + damagedQuantity > allocation.issuedQuantity) {
-    throw new Error('Số trả và số hỏng không được vượt quá số đã phát.')
-  }
-  const patch = {
-    soldQuantity,
-    returnedQuantity,
-    damagedQuantity,
-    settledBy: user.id,
-    settlementShiftId: session.id,
-    settledAt: new Date().toISOString(),
-  }
-  if (!supabase) {
-    return ledgerApi<BagAllocation>(user, `/allocations/${allocation.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    })
-  }
-  const { error } = await supabase.from('bag_allocations').update({
-    sold_quantity: soldQuantity,
-    returned_quantity: returnedQuantity,
-    damaged_quantity: damagedQuantity,
-    settled_by: patch.settledBy,
-    settlement_shift_id: patch.settlementShiftId,
-    settled_at: patch.settledAt,
-  }).eq('id', allocation.id).is('settled_at', null)
-  if (error) throw error
-  return { ...allocation, ...patch }
-}
-
-export async function recordBagSale(
-  user: AppUser,
-  allocation: BagAllocation,
-  quantity: number,
-) {
-  if (!Number.isInteger(quantity) || quantity <= 0) throw new Error('Số túi bán phải là số nguyên lớn hơn 0.')
-  const currentSold = typeof allocation.soldQuantity === 'number' ? allocation.soldQuantity : 0
-  if (currentSold + quantity + allocation.returnedQuantity + allocation.damagedQuantity > allocation.issuedQuantity) {
-    throw new Error('Số túi bán không được vượt quá số túi đang giữ.')
-  }
-  if (!supabase) {
-    return ledgerApi<BagAllocation>(user, `/allocations/${allocation.id}/sale`, {
-      method: 'POST',
-      body: JSON.stringify({ quantity }),
-    })
-  }
-  const { data, error } = await supabase.rpc('record_bag_sale', {
-    p_allocation_id: allocation.id,
-    p_quantity: quantity,
-  })
-  if (error) {
-    const message = String(error.message || '')
-    const code = String((error as any).code || '')
-    const missingRpc = code === 'PGRST202'
-      || message.includes('record_bag_sale')
-      || message.includes('Could not find the function')
-      || message.includes('404')
-    if (!missingRpc) throw error
-    return updateBagSaleDirect(allocation, quantity)
-  }
-  return mapAllocation(Array.isArray(data) ? data[0] : data)
-}
-
-async function updateBagSaleDirect(allocation: BagAllocation, quantity: number) {
-  if (!supabase) return allocation
-  const nextSoldQuantity = (allocation.soldQuantity || 0) + quantity
-  const { data, error } = await supabase
+async function closeStaleOpenBagShift(user: AppUser, sessionId: string) {
+  const endedAt = new Date().toISOString()
+  const { data: allocations, error: readAllocationsError } = await supabase!
     .from('bag_allocations')
-    .update({ sold_quantity: nextSoldQuantity })
-    .eq('id', allocation.id)
+    .select('id, issued_quantity, sold_quantity, damaged_quantity')
+    .eq('shift_id', sessionId)
     .is('settled_at', null)
-    .select('*, bag_shift_sessions!bag_allocations_shift_id_fkey(business_date)')
-    .single()
-  if (error) {
-    throw new Error(
-      'Chưa ghi được hóa đơn vì Supabase thiếu hàm record_bag_sale hoặc quyền cập nhật sold_quantity. Hãy chạy migration 20260627_pos_sales_rpc_repair.sql.',
-    )
+  if (readAllocationsError) throw readAllocationsError
+
+  for (const allocation of allocations || []) {
+    const issued = Number(allocation.issued_quantity || 0)
+    const sold = Number(allocation.sold_quantity || 0)
+    const damaged = Number(allocation.damaged_quantity || 0)
+    const returned = Math.max(0, issued - sold - damaged)
+    const { error } = await supabase!
+      .from('bag_allocations')
+      .update({
+        returned_quantity: returned,
+        settled_by: user.id,
+        settlement_shift_id: sessionId,
+        settled_at: endedAt,
+      })
+      .eq('id', allocation.id)
+      .is('settled_at', null)
+    if (error) throw error
   }
-  return mapAllocation(data)
+
+  const { error } = await supabase!
+    .from('bag_shift_sessions')
+    .update({
+      status: 'closed',
+      discrepancy_note: 'Auto closed when opening a new business day.',
+      ended_at: endedAt,
+    })
+    .eq('id', sessionId)
+    .eq('status', 'open')
+  if (error) throw error
 }
 
 export async function closeBagShift(
@@ -278,35 +197,128 @@ export async function closeBagShift(
   }> = [],
 ) {
   const endedAt = new Date().toISOString()
-  const patch = { closingBalances, discrepancyNote: discrepancyNote.trim(), endedAt, postedAllocationIds }
-  if (!supabase) {
+  const patch = { closingBalances, discrepancyNote: discrepancyNote.trim(), endedAt, postedAllocationIds, movements }
+  if (shouldUseLanApi(user)) {
     return ledgerApi<BagShiftSession>(user, `/sessions/${session.id}/close`, {
       method: 'POST',
       body: JSON.stringify(patch),
     })
   }
-  const { error: safeCloseError } = await supabase.rpc('close_bag_shift_safe', {
+  const { error: safeCloseError } = await supabase!.rpc('close_bag_shift_safe', {
     p_session_id: session.id,
     p_closing_balances: closingBalances,
     p_discrepancy_note: patch.discrepancyNote,
-    p_movements: movements,
+    p_movements: [],
     p_posted_allocation_ids: postedAllocationIds,
   })
   if (!safeCloseError) return
-  const { error } = await supabase.from('bag_shift_sessions').update({
+  if (!isMissingRpc(safeCloseError, 'close_bag_shift_safe') && !isRecoverableSafeCloseError(safeCloseError)) {
+    throw safeCloseError
+  }
+  await closeBagShiftDirect(user, session, closingBalances, patch.discrepancyNote, postedAllocationIds, movements, endedAt)
+}
+
+async function closeBagShiftDirect(
+  user: AppUser,
+  session: BagShiftSession,
+  closingBalances: Record<string, number>,
+  discrepancyNote: string,
+  postedAllocationIds: string[],
+  movements: Array<{
+    id: string
+    product_id: string
+    movement_type: string
+    quantity: number
+    shift_date: string
+    note: string
+    document_id?: string | null
+    source_product_id?: string | null
+    source_quantity?: number | null
+    measured_weight_kg?: number | null
+    created_at?: string
+  }>,
+  endedAt: string,
+) {
+  if (movements.length) {
+    const rows = movements.map((movement) => ({
+      id: movement.id,
+      branch_id: session.branchId,
+      product_id: movement.product_id,
+      movement_type: movement.movement_type,
+      quantity: movement.quantity,
+      shift_date: movement.shift_date,
+      note: movement.note,
+      document_id: movement.document_id || session.id,
+      source_product_id: movement.source_product_id || null,
+      source_quantity: movement.source_quantity || null,
+      measured_weight_kg: movement.measured_weight_kg || null,
+      created_by: user.id,
+      created_at: movement.created_at || endedAt,
+    }))
+    for (const row of rows) await insertStockMovementIfMissing(row)
+  }
+  const { error } = await supabase!.from('bag_shift_sessions').update({
     status: 'closed',
     closing_balances: closingBalances,
-    discrepancy_note: patch.discrepancyNote || null,
+    discrepancy_note: discrepancyNote || null,
     ended_at: endedAt,
   }).eq('id', session.id).eq('status', 'open')
   if (error) throw error
   if (postedAllocationIds.length) {
-    await supabase
+    const { data: postedRows, error: postedReadError } = await supabase!
+      .from('bag_allocations')
+      .select('id, sold_quantity, damaged_quantity')
+      .in('id', postedAllocationIds)
+    if (postedReadError) throw postedReadError
+    const quantityUpdates = (postedRows || []).map((row: any) => supabase!
+      .from('bag_allocations')
+      .update({
+        posted_at: endedAt,
+        posted_sold_quantity: Number(row.sold_quantity || 0),
+        posted_damaged_quantity: Number(row.damaged_quantity || 0),
+      })
+      .eq('id', row.id))
+    const quantityResults = await Promise.all(quantityUpdates)
+    const postedQuantityError = quantityResults.find((result) => result.error)?.error
+    if (!postedQuantityError) return
+    const message = String(postedQuantityError.message || '')
+    if (!/posted_sold_quantity|posted_damaged_quantity|column/i.test(message)) throw postedQuantityError
+    await supabase!
       .from('bag_allocations')
       .update({ posted_at: endedAt })
       .in('id', postedAllocationIds)
       .is('posted_at', null)
   }
+}
+
+async function insertStockMovementIfMissing(row: {
+  id: string
+  branch_id: string
+  product_id: string
+  movement_type: string
+  quantity: number
+  shift_date: string
+  note: string
+  document_id: string | null
+  source_product_id: string | null
+  source_quantity: number | null
+  measured_weight_kg: number | null
+  created_by: string
+  created_at: string
+}) {
+  if (row.document_id) {
+    const { data: existing, error: readError } = await supabase!
+      .from('stock_movements')
+      .select('id')
+      .eq('document_id', row.document_id)
+      .eq('product_id', row.product_id)
+      .eq('movement_type', row.movement_type)
+      .maybeSingle()
+    if (readError && !isConflictError(readError)) throw readError
+    if (existing) return
+  }
+  const { error } = await supabase!.from('stock_movements').insert(row)
+  if (error && !isDuplicateKey(error) && !isConflictError(error)) throw error
 }
 
 export async function uploadBagShiftPhoto(
@@ -316,7 +328,7 @@ export async function uploadBagShiftPhoto(
   dataUrl: string,
 ) {
   if (!dataUrl) return session
-  if (!supabase) {
+  if (shouldUseLanApi(user)) {
     return ledgerApi<BagShiftSession>(user, `/sessions/${session.id}/photo`, {
       method: 'POST',
       body: JSON.stringify({ kind, dataUrl }),
@@ -326,70 +338,60 @@ export async function uploadBagShiftPhoto(
   if (!blob.size) throw new Error('Ảnh bàn giao không hợp lệ.')
   const extension = blob.type.includes('png') ? 'png' : 'jpg'
   const path = `${user.branchId}/${session.businessDate}/${session.id}-${kind}-${Date.now()}.${extension}`
-  const { error: uploadError } = await supabase.storage.from('shift-proofs').upload(path, blob, {
+  const { error: uploadError } = await supabase!.storage.from('shift-proofs').upload(path, blob, {
     contentType: blob.type || (extension === 'png' ? 'image/png' : 'image/jpeg'),
     upsert: false,
   })
   let url = dataUrl
   if (!uploadError) {
-    const { data } = supabase.storage.from('shift-proofs').getPublicUrl(path)
+    const { data } = supabase!.storage.from('shift-proofs').getPublicUrl(path)
     url = data.publicUrl
+  } else if (isMissingShiftProofStorage(uploadError)) {
+    url = dataUrl
+  } else {
+    console.warn('Không thể upload ảnh bàn giao lên storage, lưu tạm vào sổ ca.', uploadError.message)
   }
   const column = kind === 'opening' ? 'opening_photo_url' : 'closing_photo_url'
-  const { data: updated, error } = await supabase
+  const { data: updated, error } = await supabase!
     .from('bag_shift_sessions')
     .update({ [column]: url })
     .eq('id', session.id)
     .select('*')
     .single()
   if (error) {
-    console.warn('Không thể lưu ảnh bàn giao vào ca, bỏ qua để không chặn chốt ca.', error.message)
-    return { ...session, [kind === 'opening' ? 'openingPhotoUrl' : 'closingPhotoUrl']: url }
+    // Không nuốt lỗi im lặng nữa: người dùng cần biết ảnh chưa vào báo cáo.
+    if (isMissingPhotoColumn(error)) {
+      throw new Error('Ảnh chưa lưu được vào sổ ca: Supabase thiếu cột ảnh. Hãy chạy migration 20260702_shift_proofs_and_master_products.sql.')
+    }
+    throw new Error(`Ảnh chưa lưu được vào sổ ca: ${error.message}`)
   }
-  return mapSession(updated)
+  return mapBagShiftSession(updated)
 }
 
-function mapSession(row: any): BagShiftSession {
-  return {
-    id: row.id,
-    branchId: row.branch_id,
-    businessDate: row.business_date,
-    sequence: row.sequence,
-    leaderId: row.leader_id,
-    leaderName: row.leader_name,
-    status: row.status,
-    openingBalances: numberMap(row.opening_balances),
-    closingBalances: row.closing_balances ? numberMap(row.closing_balances) : undefined,
-    discrepancyNote: row.discrepancy_note || undefined,
-    openingPhotoUrl: row.opening_photo_url || undefined,
-    closingPhotoUrl: row.closing_photo_url || undefined,
-    startedAt: row.started_at,
-    endedAt: row.ended_at || undefined,
-  }
+function isConflictError(error: unknown) {
+  const err = error as { code?: string; status?: number; message?: string } | null
+  return String(err?.code || '') === '409'
+    || Number(err?.status || 0) === 409
+    || /409|conflict/i.test(String(err?.message || ''))
 }
 
-function mapAllocation(row: any): BagAllocation {
-  return {
-    id: row.id,
-    branchId: row.branch_id,
-    shiftId: row.shift_id,
-    businessDate: row.business_date || row.bag_shift_sessions?.business_date || undefined,
-    employeeName: row.employee_name,
-    employeeId: row.employee_id || undefined,
-    productId: row.product_id,
-    issuedQuantity: Number(row.issued_quantity),
-    soldQuantity: row.sold_quantity === null || row.sold_quantity === undefined ? undefined : Number(row.sold_quantity || 0),
-    returnedQuantity: Number(row.returned_quantity || 0),
-    damagedQuantity: Number(row.damaged_quantity || 0),
-    issuedBy: row.issued_by,
-    issuedAt: row.issued_at,
-    settledBy: row.settled_by || undefined,
-    settlementShiftId: row.settlement_shift_id || undefined,
-    settledAt: row.settled_at || undefined,
-    postedAt: row.posted_at || undefined,
-  }
+function isRecoverableSafeCloseError(error: unknown) {
+  const err = error as { code?: string; status?: number; message?: string } | null
+  const message = String(err?.message || '')
+  return isConflictError(error)
+    || String(err?.code || '') === 'P0001'
+    || /duplicate key|already exists|stock_movements|schema cache/i.test(message)
 }
 
-function numberMap(value: Record<string, unknown> | null | undefined) {
-  return Object.fromEntries(Object.entries(value || {}).map(([key, quantity]) => [key, Number(quantity) || 0]))
+function isMissingShiftProofStorage(error: unknown) {
+  const err = error as { statusCode?: string; status?: number; message?: string; error?: string } | null
+  const message = `${err?.message || ''} ${err?.error || ''}`
+  return Number(err?.status || 0) === 400
+    || String(err?.statusCode || '') === '400'
+    || /bucket|storage|not found|does not exist|bad request/i.test(message)
+}
+
+function isMissingPhotoColumn(error: unknown) {
+  const message = String((error as { message?: string } | null)?.message || '')
+  return /opening_photo_url|closing_photo_url|schema cache|column/i.test(message)
 }

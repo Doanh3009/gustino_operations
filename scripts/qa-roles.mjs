@@ -1,6 +1,6 @@
 import { chromium } from 'playwright-core'
 
-const baseUrl = process.env.QA_BASE_URL || 'http://127.0.0.1:4173'
+const baseUrl = process.env.QA_BASE_URL || 'http://127.0.0.1:5173'
 const browser = await chromium.launch({
   headless: true,
   executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -9,78 +9,75 @@ const browser = await chromium.launch({
 async function contextFor(user) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } })
   await context.addInitScript((account) => {
-    localStorage.setItem('gustino_demo_user_v1', JSON.stringify(account))
+    localStorage.setItem('gustino_user_v1', JSON.stringify(account))
+    localStorage.removeItem('gustino_demo_user_v1')
   }, user)
   return context
 }
 
+async function assertRedirect(user, route, expectedSelector, label) {
+  const context = await contextFor(user)
+  const page = await context.newPage()
+  await page.goto(`${baseUrl}/#${route}`, { waitUntil: 'networkidle' })
+  await page.locator(expectedSelector).waitFor()
+  await context.close()
+  console.log(`ROLE_OK ${user.role} ${route} -> ${label}`)
+}
+
 try {
-  const staffContext = await contextFor({
+  const staff = {
     id: 'demo-staff',
     name: 'Nhân viên Demo',
     email: 'nhanvien@gustino.vn',
     role: 'staff',
     branchId: 'gold-coast',
     branchIds: ['gold-coast'],
-  })
-  const staffPage = await staffContext.newPage()
-  await staffPage.goto(`${baseUrl}/#launcher`, { waitUntil: 'networkidle' })
-  await staffPage.getByRole('button', { name: /Chấm công/ }).waitFor()
-  if (await staffPage.getByRole('button', { name: /Vận hành cửa hàng/ }).count()) {
-    throw new Error('Nhân viên vẫn nhìn thấy ứng dụng vận hành.')
+    authToken: 'qa-staff-token',
   }
-  if (await staffPage.getByRole('button', { name: /Tổng hợp quản lý/ }).count()) {
-    throw new Error('Nhân viên vẫn nhìn thấy màn hình tổng hợp quản lý.')
-  }
-  await staffPage.goto(`${baseUrl}/#management`, { waitUntil: 'networkidle' })
-  await staffPage.locator('.attendance-page').waitFor()
-  await staffContext.close()
+  await assertRedirect(staff, 'sales', '.pos-page', 'sales')
+  await assertRedirect(staff, 'my-records', '.my-records-page', 'my records')
+  await assertRedirect(staff, 'management', '.pos-page', 'sales fallback')
+  await assertRedirect(staff, 'dashboard', '.pos-page', 'dashboard denied')
 
-  const leaderContext = await contextFor({
+  const leader = {
     id: 'demo-shift-leader',
     name: 'Ca trưởng Demo',
     email: 'catruong@gustino.vn',
     role: 'shift_leader',
     branchId: 'gold-coast',
     branchIds: ['gold-coast'],
-  })
-  const leaderPage = await leaderContext.newPage()
-  await leaderPage.goto(`${baseUrl}/#launcher`, { waitUntil: 'networkidle' })
-  await leaderPage.getByRole('button', { name: /Vận hành cửa hàng/ }).waitFor()
-  if (await leaderPage.getByRole('button', { name: /Tổng hợp quản lý/ }).count()) {
-    throw new Error('Ca trưởng nhìn thấy màn hình tổng hợp quản lý.')
+    authToken: 'qa-leader-token',
   }
-  await leaderPage.goto(`${baseUrl}/#inventory`, { waitUntil: 'networkidle' })
-  await leaderPage.getByLabel('Chọn ngày').waitFor()
-  await leaderPage.getByText(/Tồn kho hôm nay/).waitFor()
-  await leaderPage.getByRole('alert').filter({ hasText: /Kho gần hết/ }).waitFor()
-  await leaderContext.close()
+  await assertRedirect(leader, 'today', '.today-page', 'today')
+  await assertRedirect(leader, 'inventory', '.inventory-page', 'inventory')
+  await assertRedirect(leader, 'sales', '.pos-page', 'sales')
+  await assertRedirect(leader, 'my-records', '.my-records-page', 'my records')
+  await assertRedirect(leader, 'dashboard', '.today-page', 'dashboard denied')
 
-  const managerContext = await contextFor({
+  const manager = {
     id: 'demo-manager',
     name: 'Quản lý Demo',
     email: 'quanly@gustino.vn',
     role: 'manager',
     branchId: 'gold-coast',
     branchIds: ['gold-coast', 'lotte-2310', 'lotte-vt'],
-  })
-  const managerPage = await managerContext.newPage()
-  await managerPage.goto(`${baseUrl}/#launcher`, { waitUntil: 'networkidle' })
-  if (await managerPage.getByRole('button', { name: /Vận hành cửa hàng/ }).count()) {
-    throw new Error('Quản lý vẫn nhìn thấy quy trình vận hành của ca trưởng.')
+    authToken: 'qa-manager-token',
   }
-  await managerPage.getByRole('button', { name: /Tổng hợp quản lý/ }).click()
-  await managerPage.getByRole('heading', { name: 'Quản lý GUSTINO' }).waitFor()
-  await managerPage.getByRole('heading', { name: 'Chấm công theo ngày, tháng' }).waitFor()
-  await managerPage.getByRole('heading', { name: 'Nhập, xuất, hao hụt và tồn kho trong kỳ' }).waitFor()
-  await managerPage.getByRole('heading', { name: 'Lịch sử báo cáo đã lưu' }).waitFor()
-  await managerPage.getByRole('heading', { name: 'Tạo và quản lý tài khoản nhân viên' }).waitFor()
-  if (await managerPage.getByText('Doanh thu', { exact: true }).count()) {
-    throw new Error('Màn hình Quản lý vẫn còn khối bán hàng/doanh thu.')
+  await assertRedirect(manager, 'dashboard', '.manager-dashboard-page', 'dashboard')
+  await assertRedirect(manager, 'today', '.manager-dashboard-page', 'operations denied')
+  await assertRedirect(manager, 'control', '.manager-dashboard-page', 'admin denied')
+
+  const admin = {
+    id: 'demo-admin',
+    name: 'Admin hệ thống',
+    email: 'admin@gustino.vn',
+    role: 'admin',
+    branchId: 'gold-coast',
+    branchIds: ['gold-coast', 'lotte-2310', 'lotte-vt'],
+    authToken: 'qa-admin-token',
   }
-  await managerPage.goto(`${baseUrl}/#today`, { waitUntil: 'networkidle' })
-  await managerPage.locator('.launcher-page').waitFor()
-  await managerContext.close()
+  await assertRedirect(admin, 'dashboard', '.manager-dashboard-page', 'dashboard')
+  await assertRedirect(admin, 'control', '.control-page', 'control center')
 
   console.log('ROLE_ACCESS_QA_OK')
 } finally {

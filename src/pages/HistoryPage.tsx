@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { MOVEMENT_LABELS, PRODUCTS } from '../lib/constants'
+import { MOVEMENT_LABELS, productById } from '../lib/constants'
 import { calculateStock, deleteMovements } from '../lib/store'
 import type { AppUser, StockMovement } from '../types'
 
@@ -53,7 +53,7 @@ export function HistoryPage({ user, movements, onChanged }: Props) {
     if (!window.confirm(`Xóa ${label}? Toàn bộ ${group.rows.length} dòng trong chứng từ sẽ bị xóa.`)) return
     setDeletingId(group.id)
     try {
-      await deleteMovements(user.branchId, group.rows.map((item) => item.id))
+      await deleteMovements(user.branchId, group.rows.map((item) => item.id), user)
       setFeedback(`Đã xóa ${label} và tính lại tồn kho.`)
       await onChanged()
     } catch (error) {
@@ -93,7 +93,7 @@ export function HistoryPage({ user, movements, onChanged }: Props) {
                   <div className="history-document-body">
                     <div className="history-lines">
                       {group.rows.map((item) => {
-                        const product = PRODUCTS.find((candidate) => candidate.id === item.productId)
+                        const product = productById(item.productId)
                         return <div className="history-line" key={item.id}>
                           <span className={`movement-badge ${item.type}`}>{MOVEMENT_LABELS[item.type]}</span>
                           <strong>{product?.name || item.productId}</strong>
@@ -134,7 +134,7 @@ function documentTitle(group: MovementGroup) {
 function summarizeProducts(rows: StockMovement[]) {
   const visibleRows = rows.filter((item) => ['inbound', 'sale_out', 'processing_out', 'processing_in', 'count'].includes(item.type))
   const summary = visibleRows.slice(0, 2).map((item) => {
-    const product = PRODUCTS.find((candidate) => candidate.id === item.productId)
+    const product = productById(item.productId)
     return `${product?.name || item.productId}: ${formatNumber(item.quantity)} ${product?.unit || ''}`
   })
   return <><span>{summary.join(' · ')}</span>{visibleRows.length > 2 && <small>+{visibleRows.length - 2} sản phẩm</small>}</>

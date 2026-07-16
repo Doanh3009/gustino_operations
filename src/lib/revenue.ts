@@ -1,4 +1,5 @@
 import { productSaleValues, soldBagQuantity } from './commission'
+import type { SalesReceipt } from './salesReceipts'
 import type { BagAllocation, ReportSnapshot, StockMovement } from '../types'
 
 export interface DailyRevenueRow {
@@ -23,17 +24,21 @@ export function buildDailyRevenueRows(
     branchId?: string
     from?: string
     to?: string
+    receipts?: SalesReceipt[]
   } = {},
 ) {
   const snapshotRows = latestSnapshotRows(snapshots, options)
   const snapshotKeys = new Set(snapshotRows.map((row) => `${row.branchId}|${row.reportDate}`))
-  const liveRows = liveAllocationRows(allocations, options)
+  const receiptRows = liveReceiptRows(options.receipts || [], options)
     .filter((row) => !snapshotKeys.has(`${row.branchId}|${row.reportDate}`))
-  const liveKeys = new Set([...snapshotKeys, ...liveRows.map((row) => `${row.branchId}|${row.reportDate}`)])
+  const receiptKeys = new Set([...snapshotKeys, ...receiptRows.map((row) => `${row.branchId}|${row.reportDate}`)])
+  const liveRows = liveAllocationRows(allocations, options)
+    .filter((row) => !receiptKeys.has(`${row.branchId}|${row.reportDate}`))
+  const liveKeys = new Set([...receiptKeys, ...liveRows.map((row) => `${row.branchId}|${row.reportDate}`)])
   const movementRows = liveMovementRows(movements, options)
     .filter((row) => !liveKeys.has(`${row.branchId}|${row.reportDate}`))
 
-  return [...snapshotRows, ...liveRows, ...movementRows]
+  return [...snapshotRows, ...receiptRows, ...liveRows, ...movementRows]
     .sort((a, b) => b.reportDate.localeCompare(a.reportDate) || b.createdAt.localeCompare(a.createdAt))
 }
 
@@ -62,6 +67,31 @@ function latestSnapshotRows(
     source: 'report' as const,
     createdAt: snap.createdAt,
   }))
+}
+
+function liveReceiptRows(
+  receipts: SalesReceipt[],
+  options: { branchId?: string; from?: string; to?: string },
+): DailyRevenueRow[] {
+  const rows = new Map<string, DailyRevenueRow>()
+  receipts.forEach((receipt) => {
+    if (!inScope(receipt.branchId, receipt.businessDate, options)) return
+    const key = `${receipt.branchId}|${receipt.businessDate}`
+    const current = rows.get(key) || {
+      id: `receipt-${key}`,
+      branchId: receipt.branchId,
+      reportDate: receipt.businessDate,
+      revenue: 0,
+      totalSold: 0,
+      source: 'live' as const,
+      createdAt: receipt.createdAt,
+    }
+    current.revenue += receipt.totalAmount
+    current.totalSold += receipt.totalQuantity
+    if (receipt.createdAt > current.createdAt) current.createdAt = receipt.createdAt
+    rows.set(key, current)
+  })
+  return Array.from(rows.values())
 }
 
 function liveAllocationRows(

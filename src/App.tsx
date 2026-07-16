@@ -1,26 +1,35 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { AppShell, type InventoryTab, type Page } from './components/AppShell'
 import { fetchMovements, loadLocalUser, saveLocalUser } from './lib/store'
-import { supabase } from './lib/supabase'
-import { InventoryPage } from './pages/InventoryPage'
+import { shouldUseLanApi, supabase, uniqueChannelName } from './lib/supabase'
 import { LauncherPage } from './pages/LauncherPage'
 import { LoginPage } from './pages/LoginPage'
-import { ReportPage } from './pages/ReportPage'
-import { RestaurantPage } from './pages/RestaurantPage'
-import { SalesPage } from './pages/SalesPage'
-import { TodayPage } from './pages/TodayPage'
-import { AttendancePage } from './pages/AttendancePage'
-import { ShiftHandoverPage } from './pages/ShiftHandoverPage'
-import { ManagementPage, type AdminSection } from './pages/AdminPage'
-import { canUseKitchen, canUseManagement, canUseOperations, canUseSales, normalizeRole } from './lib/access'
+import type { AdminSection } from './pages/AdminPage'
+import { canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseSales, normalizeRole } from './lib/access'
+import { fetchConfiguredProducts, subscribeConfiguredProducts } from './lib/products'
 import type { AppUser, StockMovement } from './types'
-import { KitchenPage } from './pages/KitchenPage'
-import { OrdersPage } from './pages/OrdersPage'
-import { ManagerDashboardPage } from './pages/ManagerDashboardPage'
+import { applyLanguageToDocument, useLang } from './lib/i18n'
+
+const InventoryPage = lazy(() => import('./pages/InventoryPage').then((module) => ({ default: module.InventoryPage })))
+const ReportPage = lazy(() => import('./pages/ReportPage').then((module) => ({ default: module.ReportPage })))
+const ReportArchivePage = lazy(() => import('./pages/ReportArchivePage').then((module) => ({ default: module.ReportArchivePage })))
+const RestaurantPage = lazy(() => import('./pages/RestaurantPage').then((module) => ({ default: module.RestaurantPage })))
+const SalesPage = lazy(() => import('./pages/SalesPage').then((module) => ({ default: module.SalesPage })))
+const MyRecordsPage = lazy(() => import('./pages/MyRecordsPage').then((module) => ({ default: module.MyRecordsPage })))
+const TodayPage = lazy(() => import('./pages/TodayPage').then((module) => ({ default: module.TodayPage })))
+const AttendancePage = lazy(() => import('./pages/AttendancePage').then((module) => ({ default: module.AttendancePage })))
+const ShiftHandoverPage = lazy(() => import('./pages/ShiftHandoverPage').then((module) => ({ default: module.ShiftHandoverPage })))
+const ManagementPage = lazy(() => import('./pages/AdminPage').then((module) => ({ default: module.ManagementPage })))
+const KitchenPage = lazy(() => import('./pages/KitchenPage').then((module) => ({ default: module.KitchenPage })))
+const OrdersPage = lazy(() => import('./pages/OrdersPage').then((module) => ({ default: module.OrdersPage })))
+const ManagerDashboardPage = lazy(() => import('./pages/ManagerDashboardPage').then((module) => ({ default: module.ManagerDashboardPage })))
+const ControlCenterPage = lazy(() => import('./pages/ControlCenterPage').then((module) => ({ default: module.ControlCenterPage })))
 
 function App() {
+  const lang = useLang()
   const [user, setUser] = useState<AppUser | null>(() => {
     const saved = loadLocalUser()
+    if (saved?.authToken && supabase && !shouldUseLanApi(saved)) return null
     return saved ? { ...saved, role: normalizeRole(saved.role) } : null
   })
   const [page, setPage] = useState<Page>(() => pageFromHash())
@@ -32,26 +41,38 @@ function App() {
 
   const refreshMovements = useCallback(async () => {
     if (!user) return
-    const data = await fetchMovements(user.branchId)
+    const data = await fetchMovements(user.branchId, user)
     setMovements((current) => movementSignature(current) === movementSignature(data) ? current : data)
   }, [user])
 
   useEffect(() => {
     if (!supabase) return
+    const saved = loadLocalUser()
+    if (saved?.authToken && shouldUseLanApi(saved)) {
+      setAuthReady(true)
+      return
+    }
+    if (saved?.authToken) saveLocalUser(null)
     let active = true
     void supabase.auth.getSession().then(({ data }) => {
       if (!active) return
       if (!data.session) {
-        saveLocalUser(null)
-        setUser(null)
+        setUser((current) => {
+          if (current?.authToken) return current
+          saveLocalUser(null)
+          return null
+        })
       }
       setAuthReady(true)
     })
     const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT' || (!session && event !== 'INITIAL_SESSION')) {
-        saveLocalUser(null)
-        setUser(null)
-        navigate('launcher')
+        setUser((current) => {
+          if (current?.authToken) return current
+          saveLocalUser(null)
+          navigate('launcher')
+          return null
+        })
       }
       setAuthReady(true)
     })
@@ -69,14 +90,134 @@ function App() {
     return () => window.clearInterval(timer)
   }, [refreshMovements, needsMovements, user])
   useEffect(() => {
+    if (!user || !needsMovements || !supabase || user.authToken) return
+    const client = supabase
+    const channel = client.channel(uniqueChannelName(`app-stock:${user.branchId}`))
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'stock_movements',
+        filter: `branch_id=eq.${user.branchId}`,
+      }, () => void refreshMovements())
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'operation_days',
+        filter: `branch_id=eq.${user.branchId}`,
+      }, () => void refreshMovements())
+      .subscribe()
+    return () => {
+      void client.removeChannel(channel)
+    }
+  }, [refreshMovements, needsMovements, user])
+  useEffect(() => {
+    // Menu/SKU dùng chung toàn hệ thống: kéo từ Supabase về và nghe realtime
+    // để mọi thiết bị (ca trưởng, POS, kho, admin) nhìn cùng một danh mục.
+    if (!user) return
+    void fetchConfiguredProducts(user).catch(() => null)
+    return subscribeConfiguredProducts(user, () => {
+      void fetchConfiguredProducts(user).catch(() => null)
+    })
+  }, [user?.id, user?.authToken])
+  useEffect(() => {
+    if (!user || !supabase || user.authToken) return
+    let active = true
+    void (async () => {
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('role, branch_id, active')
+        .eq('id', user.id)
+        .maybeSingle()
+      if (!active || error) return
+      const role = normalizeRole((profile?.role || user.role) as AppUser['role'])
+      const branchId = profile?.branch_id || user.branchId
+      let blocked = !profile || profile.active === false
+      if ((role === 'staff' || role === 'shift_leader') && !branchId) blocked = true
+      if (!blocked && (role === 'staff' || role === 'shift_leader')) {
+        const { data: branch } = await supabase
+          .from('branches')
+          .select('id, active')
+          .eq('id', branchId)
+          .maybeSingle()
+        blocked = !branch || branch.active === false
+      }
+      if (!active || !blocked) return
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => null)
+      saveLocalUser(null)
+      setUser(null)
+      navigate('launcher')
+    })()
+    return () => {
+      active = false
+    }
+  }, [user?.id, user?.branchId, user?.role, user?.authToken])
+  useEffect(() => {
+    if (!user || !supabase || user.authToken || !canUseManagement(user.role)) return
+    let active = true
+    void (async () => {
+      let nextBranchIds: string[] = []
+      if (user.role === 'admin') {
+        const { data } = await supabase
+          .from('branches')
+          .select('id')
+          .eq('active', true)
+        nextBranchIds = (data || []).map((item: { id: string }) => item.id)
+      } else {
+        const { data: assignments } = await supabase
+          .from('manager_branch_assignments')
+          .select('branch_id')
+          .eq('manager_id', user.id)
+        nextBranchIds = Array.from(new Set([
+          user.branchId,
+          ...((assignments || []) as Array<{ branch_id: string }>).map((item) => item.branch_id),
+        ].filter(Boolean)))
+      }
+      if (!active || !nextBranchIds.length) return
+      setUser((current) => {
+        if (!current || current.id !== user.id) return current
+        const nextBranchId = nextBranchIds.includes(current.branchId) ? current.branchId : nextBranchIds[0]
+        const currentIds = [...(current.branchIds || [])].sort().join('|')
+        const nextIds = [...nextBranchIds].sort().join('|')
+        if (current.branchId === nextBranchId && currentIds === nextIds) return current
+        const next = { ...current, branchId: nextBranchId, branchIds: nextBranchIds }
+        saveLocalUser(next)
+        return next
+      })
+    })()
+    return () => {
+      active = false
+    }
+  }, [user?.id, user?.role, user?.authToken])
+  useEffect(() => {
     const onHashChange = () => setPage(pageFromHash())
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
   useEffect(() => {
+    const onProfileUpdated = (event: Event) => {
+      const patch = (event as CustomEvent<Partial<AppUser> & { id?: string }>).detail
+      if (!patch?.id) return
+      setUser((current) => {
+        if (!current || current.id !== patch.id) return current
+        const next = { ...current, ...patch, role: normalizeRole(patch.role || current.role) }
+        saveLocalUser(next)
+        return next
+      })
+    }
+    window.addEventListener('gustino:user-profile-updated', onProfileUpdated)
+    return () => window.removeEventListener('gustino:user-profile-updated', onProfileUpdated)
+  }, [])
+  useEffect(() => {
     if (!user) return
-    if (!canAccessPage(user, page)) navigate(user.role === 'kitchen' ? 'kitchen' : user.role === 'staff' ? 'attendance' : canUseManagement(user.role) ? 'dashboard' : 'launcher')
+    if (page === 'launcher') {
+      navigate(defaultPageForRole(user))
+      return
+    }
+    if (!canAccessPage(user, page)) navigate(defaultPageForRole(user))
   }, [page, user])
+  useEffect(() => {
+    window.requestAnimationFrame(() => applyLanguageToDocument(lang))
+  }, [lang, page, user])
 
   function navigate(nextPage: Page, section?: string) {
     setPage(nextPage)
@@ -87,11 +228,10 @@ function App() {
 
   function handleLogin(nextUser: AppUser) {
     const normalizedUser = { ...nextUser, role: normalizeRole(nextUser.role) }
+    setMovements([])
     saveLocalUser(normalizedUser)
     setUser(normalizedUser)
-    if (normalizedUser.role === 'kitchen') navigate('kitchen')
-    else if (canUseManagement(normalizedUser.role)) navigate('dashboard')
-    else navigate('launcher')
+    navigate(defaultPageForRole(normalizedUser))
   }
 
   function openInventory(tab: InventoryTab) {
@@ -100,7 +240,7 @@ function App() {
   }
 
   async function logout() {
-    if (supabase) await supabase.auth.signOut().catch(() => null)
+    if (supabase) await supabase.auth.signOut({ scope: 'local' }).catch(() => null)
     saveLocalUser(null)
     setUser(null)
     navigate('launcher')
@@ -126,9 +266,12 @@ function App() {
   return (
     <AppShell user={user} page={page} currentSection={mgmtSection} onNavigate={navigate} onLogout={logout}>
       <div key={page} className="page-transition">
+        <Suspense fallback={<PageLoadFallback />}>
         {page === 'today' && <TodayPage user={user} movements={movements} onNavigate={navigate} onOpenInventory={openInventory} />}
         {page === 'dashboard' && canUseManagement(user.role) && <ManagerDashboardPage user={user} onNavigate={navigate} />}
         {page === 'sales' && <SalesPage user={user} onNavigate={navigate} />}
+        {page === 'my-records' && <MyRecordsPage user={user} onNavigate={navigate} />}
+        {page === 'report-archive' && <ReportArchivePage user={user} />}
         {page === 'restaurant' && <RestaurantPage user={user} movements={movements} />}
         {page === 'report' && <ReportPage user={user} movements={movements} onNavigate={navigate} onOpenInventory={openInventory} onRefresh={refreshMovements} />}
         {page === 'inventory' && (
@@ -136,8 +279,8 @@ function App() {
             user={user}
             movements={movements}
             onChanged={refreshMovements}
-            onOpenHandover={() => navigate('handover')}
             initialTab={inventoryTab}
+            onNavigate={navigate}
           />
         )}
         {page === 'handover' && (
@@ -149,11 +292,32 @@ function App() {
           />
         )}
         {page === 'orders' && <OrdersPage user={user} movements={movements} />}
-        {page === 'attendance' && <AttendancePage user={user} onNavigate={navigate} />}
+        {page === 'attendance' && <AttendancePage user={user} movements={movements} onNavigate={navigate} />}
         {page === 'management' && canUseManagement(user.role) && <ManagementPage user={user} initialSection={mgmtSection} />}
+        {page === 'manager-revenue' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="revenue" focused />}
+        {page === 'manager-business' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="commission" focused />}
+        {page === 'manager-inventory' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="inventory" focused />}
+        {page === 'manager-attendance' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="attendance" focused />}
+        {page === 'manager-payroll' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="payroll" focused />}
+        {page === 'manager-requests' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="requests" focused />}
+        {page === 'admin-accounts' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="accounts" focused />}
+        {page === 'control' && canUseAdmin(user.role) && <ControlCenterPage user={user} />}
         {page === 'kitchen' && canUseKitchen(user.role) && <KitchenPage user={user} />}
+        </Suspense>
       </div>
     </AppShell>
+  )
+}
+
+function PageLoadFallback() {
+  return (
+    <div className="page page-load-placeholder" aria-live="polite">
+      <section className="section-card">
+        <span className="eyebrow dark">GUSTINO</span>
+        <strong>Đang mở màn hình…</strong>
+        <small>Chỉ tải dữ liệu cần cho chức năng này.</small>
+      </section>
+    </div>
   )
 }
 
@@ -161,7 +325,30 @@ function pageFromHash(): Page {
   const candidate = window.location.hash.replace('#', '')
   if (candidate === 'history') return 'orders'
   if (candidate === 'admin') return 'management'
-  return ['launcher', 'dashboard', 'today', 'sales', 'restaurant', 'report', 'inventory', 'handover', 'orders', 'attendance', 'management', 'kitchen'].includes(candidate)
+  return [
+    'launcher',
+    'dashboard',
+    'today',
+    'sales',
+    'my-records',
+    'report-archive',
+    'restaurant',
+    'report',
+    'inventory',
+    'handover',
+    'orders',
+    'attendance',
+    'management',
+    'manager-revenue',
+    'manager-business',
+    'manager-inventory',
+    'manager-attendance',
+    'manager-payroll',
+    'manager-requests',
+    'admin-accounts',
+    'control',
+    'kitchen',
+  ].includes(candidate)
     ? candidate as Page
     : 'launcher'
 }
@@ -174,10 +361,26 @@ function movementSignature(items: StockMovement[]) {
 
 function canAccessPage(user: AppUser, page: Page) {
   if (page === 'launcher') return true
-  if (page === 'attendance') return user.role !== 'kitchen'
+  if (page === 'attendance') return user.role !== 'kitchen' && user.role !== 'manager'
   if (page === 'dashboard') return canUseManagement(user.role)
   if (page === 'sales') return canUseSales(user.role)
+  if (page === 'my-records') return user.role === 'staff' || user.role === 'shift_leader'
+  if (page === 'report-archive') return canUseAdmin(user.role)
+  if (page === 'inventory') return canUseOperations(user.role)
   if (page === 'management') return canUseManagement(user.role)
+  if (page === 'manager-attendance' || page === 'manager-payroll') return canUseAdmin(user.role)
+  if (page === 'manager-requests') return canUseAdmin(user.role)
+  if (['manager-revenue', 'manager-business', 'manager-inventory'].includes(page)) return canUseManagement(user.role)
+  if (page === 'admin-accounts') return canUseAdmin(user.role)
+  if (page === 'control') return canUseAdmin(user.role)
   if (page === 'kitchen') return canUseKitchen(user.role)
   return canUseOperations(user.role)
+}
+
+function defaultPageForRole(user: AppUser): Page {
+  if (user.role === 'kitchen') return 'kitchen'
+  if (user.role === 'staff') return 'sales'
+  if (canUseManagement(user.role)) return 'dashboard'
+  if (canUseOperations(user.role)) return 'today'
+  return 'attendance'
 }

@@ -1,4 +1,4 @@
-import { supabase } from './supabase'
+﻿import { shouldUseLanApi, supabase } from './supabase'
 import type { AppUser } from '../types'
 
 export type SupplyRequestStatus = 'pending' | 'acknowledged' | 'fulfilled' | 'cancelled'
@@ -39,7 +39,7 @@ async function supplyApi<T>(user: AppUser, path: string, init?: RequestInit): Pr
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => null)
-    throw new Error(payload?.error || 'Khong the xu ly yeu cau dat bep.')
+    throw new Error(payload?.error || 'Không thể xử lý yêu cầu đặt bếp.')
   }
   return response.json() as Promise<T>
 }
@@ -60,11 +60,26 @@ function mapSupplyRequest(row: any): SupplyRequest {
   }
 }
 
+const SUPPLY_REQUEST_PAGE_SIZE = 500
+
+async function fetchAllSupplyRequestRows(
+  loadPage: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }>,
+): Promise<any[]> {
+  const rows: any[] = []
+  for (let from = 0; ; from += SUPPLY_REQUEST_PAGE_SIZE) {
+    const { data, error } = await loadPage(from, from + SUPPLY_REQUEST_PAGE_SIZE - 1)
+    if (error) throw new Error(error.message)
+    const page = data || []
+    rows.push(...page)
+    if (page.length < SUPPLY_REQUEST_PAGE_SIZE) return rows
+  }
+}
+
 export async function createSupplyRequest(
   user: AppUser,
   data: { productName: string; quantity: number; unit: string; note: string },
 ) {
-  if (!supabase) {
+  if (shouldUseLanApi(user)) {
     await supplyApi<SupplyRequest>(user, '', {
       method: 'POST',
       body: JSON.stringify({
@@ -78,7 +93,7 @@ export async function createSupplyRequest(
     })
     return
   }
-  const { error } = await supabase.from('supply_requests').insert({
+  const { error } = await supabase!.from('supply_requests').insert({
     branch_id: user.branchId,
     product_name: data.productName,
     quantity: data.quantity,
@@ -90,14 +105,13 @@ export async function createSupplyRequest(
   })
   if (error) throw new Error(error.message)
 }
-
 export async function createSupplyRequests(
   user: AppUser,
   lines: Array<{ productName: string; quantity: number; unit: string; note: string }>,
 ) {
   const validLines = lines.filter((line) => line.productName.trim() && Number(line.quantity) > 0)
-  if (!validLines.length) throw new Error('Chua co mon hop le de gui bep.')
-  if (!supabase) {
+  if (!validLines.length) throw new Error('Chưa có món hợp lệ để gửi bếp.')
+  if (shouldUseLanApi(user)) {
     await supplyApi<SupplyRequest[]>(user, '', {
       method: 'POST',
       body: JSON.stringify({
@@ -108,7 +122,7 @@ export async function createSupplyRequests(
     })
     return
   }
-  const { error } = await supabase.from('supply_requests').insert(validLines.map((line) => ({
+  const { error } = await supabase!.from('supply_requests').insert(validLines.map((line) => ({
     branch_id: user.branchId,
     product_name: line.productName,
     quantity: line.quantity,
@@ -120,21 +134,22 @@ export async function createSupplyRequests(
   })))
   if (error) throw new Error(error.message)
 }
-
 export async function fetchSupplyRequests(user: AppUser, branchIds: string[]): Promise<SupplyRequest[]> {
-  if (!supabase) {
+  const authorizedBranchIds = Array.from(new Set(branchIds.filter(Boolean)))
+  if (!authorizedBranchIds.length) return []
+  if (shouldUseLanApi(user)) {
     const params = new URLSearchParams()
-    if (branchIds.length) params.set('branchIds', branchIds.join(','))
+    params.set('branchIds', authorizedBranchIds.join(','))
     return supplyApi<SupplyRequest[]>(user, `?${params.toString()}`)
   }
-  const { data, error } = await supabase
+  const rows = await fetchAllSupplyRequestRows((from, to) => supabase!
     .from('supply_requests')
     .select('*')
-    .in('branch_id', branchIds)
+    .in('branch_id', authorizedBranchIds)
     .order('created_at', { ascending: false })
-    .limit(80)
-  if (error) throw new Error(error.message)
-  return (data || []).map(mapSupplyRequest)
+    .order('id', { ascending: false })
+    .range(from, to))
+  return rows.map(mapSupplyRequest)
 }
 
 export async function updateSupplyRequestStatus(
@@ -142,14 +157,14 @@ export async function updateSupplyRequestStatus(
   requestId: string,
   status: SupplyRequestStatus,
 ): Promise<void> {
-  if (!supabase) {
+  if (shouldUseLanApi(user)) {
     await supplyApi<SupplyRequest>(user, `/${requestId}`, {
       method: 'PATCH',
       body: JSON.stringify({ status }),
     })
     return
   }
-  const { error } = await supabase
+  const { error } = await supabase!
     .from('supply_requests')
     .update({ status, updated_at: new Date().toISOString() })
     .eq('id', requestId)
@@ -158,4 +173,41 @@ export async function updateSupplyRequestStatus(
 
 export async function acknowledgeSupplyRequest(user: AppUser, requestId: string): Promise<void> {
   await updateSupplyRequestStatus(user, requestId, 'acknowledged')
+}
+
+export async function updateSupplyRequest(
+  user: AppUser,
+  requestId: string,
+  patch: Partial<Pick<SupplyRequest, 'productName' | 'quantity' | 'unit' | 'note' | 'status'>>,
+): Promise<void> {
+  if (shouldUseLanApi(user)) {
+    await supplyApi<SupplyRequest>(user, `/${requestId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    })
+    return
+  }
+  const row: Record<string, unknown> = { updated_at: new Date().toISOString() }
+  if (patch.productName !== undefined) row.product_name = patch.productName
+  if (patch.quantity !== undefined) row.quantity = patch.quantity
+  if (patch.unit !== undefined) row.unit = patch.unit
+  if (patch.note !== undefined) row.note = patch.note
+  if (patch.status !== undefined) row.status = patch.status
+  const { error } = await supabase!
+    .from('supply_requests')
+    .update(row)
+    .eq('id', requestId)
+  if (error) throw new Error(error.message)
+}
+
+export async function deleteSupplyRequest(user: AppUser, requestId: string): Promise<void> {
+  if (shouldUseLanApi(user)) {
+    await supplyApi<{ ok: true }>(user, `/${requestId}`, { method: 'DELETE' })
+    return
+  }
+  const { error } = await supabase!
+    .from('supply_requests')
+    .delete()
+    .eq('id', requestId)
+  if (error) throw new Error(error.message)
 }

@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BRANCHES } from '../lib/constants'
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { branchName as configuredBranchName } from '../lib/branches'
 import { permittedBranchIds } from '../lib/attendance'
 import { T, useLang } from '../lib/i18n'
-import { supabase } from '../lib/supabase'
+import { supabase, uniqueChannelName } from '../lib/supabase'
 import {
   fetchSupplyRequests,
   updateSupplyRequestStatus,
@@ -28,7 +28,7 @@ export function KitchenPage({ user }: Props) {
   const seenPendingIds = useRef<Set<string>>(new Set())
   const initialized = useRef(false)
   const branchIds = useMemo(
-    () => user.role === 'manager' ? permittedBranchIds(user) : [user.branchId],
+    () => permittedBranchIds(user),
     [user],
   )
 
@@ -70,7 +70,7 @@ export function KitchenPage({ user }: Props) {
     if (!supabase) return
     const client = supabase
     const channel = client
-      .channel(`kitchen-orders-${user.id}`)
+      .channel(uniqueChannelName(`kitchen-orders-${user.id}`))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'supply_requests' }, () => {
         void refresh().catch(() => {})
       })
@@ -119,7 +119,7 @@ export function KitchenPage({ user }: Props) {
       setFeedback(status === 'acknowledged'
         ? tx.kitchenAcceptedFeedback
         : status === 'cancelled'
-          ? 'Đã hủy đơn đặt bếp.'
+          ? cancelFeedback
           : tx.kitchenFinishedFeedback)
     } catch (reason) {
       setFeedback(reason instanceof Error ? reason.message : tx.kitchenUpdateError)
@@ -133,11 +133,19 @@ export function KitchenPage({ user }: Props) {
   const acknowledged = requests.filter((item) => item.status === 'acknowledged')
   const fulfilled = requests.filter((item) => item.status === 'fulfilled')
   const cancelled = requests.filter((item) => item.status === 'cancelled')
+  const cancelFeedback = lang === 'en' ? 'Kitchen order cancelled.' : 'Đã hủy đơn đặt bếp.'
+  const cancelLabel = lang === 'en' ? 'Cancel order' : 'Hủy đơn'
+  const cancelledTitle = lang === 'en' ? 'Cancelled' : 'Đã hủy'
+  const cancelledEmpty = lang === 'en' ? 'No cancelled orders.' : 'Chưa có đơn bị hủy.'
+  const alarmTitle = lang === 'en' ? `${pending.length} NEW KITCHEN ORDERS` : `CÓ ${pending.length} ĐƠN BẾP MỚI`
+  const alarmHint = lang === 'en'
+    ? 'Confirm quickly so the shift leader knows the order was received.'
+    : 'Bếp xác nhận ngay để ca trưởng biết đã nhận đơn.'
   const successFeedbacks: string[] = [
     tx.kitchenBellFeedback,
     tx.kitchenAcceptedFeedback,
     tx.kitchenFinishedFeedback,
-    'Đã hủy đơn đặt bếp.',
+    cancelFeedback,
   ]
   const isSuccessFeedback = successFeedbacks.includes(feedback)
 
@@ -157,8 +165,8 @@ export function KitchenPage({ user }: Props) {
 
       {pending.length > 0 && (
         <section className="kitchen-alarm-strip" role="status" aria-live="assertive">
-          <strong>CÓ {pending.length} ĐƠN BẾP MỚI</strong>
-          <span>Bếp xác nhận ngay để ca trưởng biết đã nhận đơn.</span>
+          <strong>{alarmTitle}</strong>
+          <span>{alarmHint}</span>
         </section>
       )}
 
@@ -176,7 +184,7 @@ export function KitchenPage({ user }: Props) {
           busyId={busyId}
           nextLabel={tx.kitchenAccept}
           savingLabel={tx.kitchenSaving}
-          cancelLabel="Hủy đơn"
+          cancelLabel={cancelLabel}
           onNext={(request) => void changeStatus(request, 'acknowledged')}
           onCancel={(request) => void changeStatus(request, 'cancelled')}
         />
@@ -187,7 +195,7 @@ export function KitchenPage({ user }: Props) {
           busyId={busyId}
           nextLabel={tx.kitchenFinish}
           savingLabel={tx.kitchenSaving}
-          cancelLabel="Hủy đơn"
+          cancelLabel={cancelLabel}
           onNext={(request) => void changeStatus(request, 'fulfilled')}
           onCancel={(request) => void changeStatus(request, 'cancelled')}
         />
@@ -199,8 +207,8 @@ export function KitchenPage({ user }: Props) {
           savingLabel={tx.kitchenSaving}
         />
         <KitchenColumn
-          title="Đã hủy"
-          emptyText="Chưa có đơn bị hủy."
+          title={cancelledTitle}
+          emptyText={cancelledEmpty}
           requests={cancelled}
           busyId={busyId}
           savingLabel={tx.kitchenSaving}
@@ -343,7 +351,7 @@ function playFallbackBell() {
 }
 
 function branchName(branchId: string) {
-  return BRANCHES.find((branch) => branch.id === branchId)?.name || branchId
+  return configuredBranchName(branchId) || branchId
 }
 
 function formatTime(value: string) {

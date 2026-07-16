@@ -11,6 +11,7 @@ export interface AppUser {
   authToken?: string
   employmentType?: EmploymentType
   positionTitle?: string
+  avatarUrl?: string
 }
 
 export interface EmployeeProfile {
@@ -20,8 +21,10 @@ export interface EmployeeProfile {
   role: Role
   branchId?: string
   active?: boolean
+  hasLoginAccount?: boolean
   employmentType?: EmploymentType
   positionTitle?: string
+  avatarUrl?: string
 }
 
 export interface WorkShift {
@@ -88,11 +91,16 @@ export interface AttendanceRecord {
   checkInTime: string
   checkOutTime?: string
   selfieUrl: string
+  checkOutSelfieUrl?: string
   selfiePreviewUrl?: string
   checkInLatitude?: number
   checkInLongitude?: number
   checkInAccuracy?: number
   checkInAddress?: string
+  checkOutLatitude?: number
+  checkOutLongitude?: number
+  checkOutAccuracy?: number
+  checkOutAddress?: string
   createdAt: string
   updatedAt: string
 }
@@ -103,10 +111,37 @@ export interface AttendanceReportRow {
   branchId: string
   totalShifts: number
   totalHours: number
+  overtimeHours: number
   workDays: number
   lateCount: number
   absentCount: number
   missingCheckoutCount: number
+}
+
+export type AttendanceAdjustmentKind = 'late_arrival' | 'early_leave'
+
+export interface AttendanceAdjustmentRequest {
+  id: string
+  userId: string
+  userName: string
+  branchId: string
+  kind: AttendanceAdjustmentKind
+  workDate: string
+  scheduledTime: string
+  actualTime: string
+  reason: string
+  evidenceNote: string
+  createdBy: string
+  createdAt: string
+}
+
+export interface ActiveUserSession {
+  userId: string
+  userName: string
+  role: Role
+  branchId: string
+  page: string
+  lastSeenAt: string
 }
 
 export type BagShiftStatus = 'open' | 'closed'
@@ -146,6 +181,8 @@ export interface BagAllocation {
   settlementShiftId?: string
   settledAt?: string
   postedAt?: string
+  postedSoldQuantity?: number
+  postedDamagedQuantity?: number
 }
 
 export interface CommissionRule {
@@ -180,11 +217,21 @@ export interface Product {
   unit: string
   category: 'raw' | 'finished' | 'packaging'
   lowStock: number
+  price?: number
+  active?: boolean
+  source?: 'system' | 'custom'
+  recipe?: ProductRecipeLine[]
   weightKg?: number
   countsForYield?: boolean
   inboundPackKg?: number
   inboundUnit?: string
   inboundPackQuantity?: number
+}
+
+export interface ProductRecipeLine {
+  productId: string
+  quantity: number
+  role: 'source' | 'packaging' | 'ingredient'
 }
 
 export interface StockMovement {
@@ -215,6 +262,7 @@ export interface InventoryCountLine {
   freezerQty: number
   stockRoomQty: number
   orderNeeded: number
+  varianceReason?: string
   note: string
 }
 
@@ -255,6 +303,19 @@ export interface ReportSnapshot {
     wasteImage?: string
     bugImage?: string
     summary?: ReportSummary
+    dailyReport?: Record<string, unknown>
+    bagShiftSummary?: Record<string, unknown>
+    shiftReports?: Record<string, {
+      shiftId: string
+      sequence: number
+      scope: string
+      leaderId: string
+      leaderName: string
+      finalizedAt: string
+      report: Record<string, unknown>
+      zaloDelivery?: Record<string, unknown>
+      n8nDelivery?: Record<string, unknown>
+    }>
   }
   createdAt: string
 }

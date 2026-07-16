@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BRANCHES, PRODUCTS } from '../lib/constants'
-import { calculateStock } from '../lib/store'
+import { getProducts } from '../lib/constants'
+import { branchName } from '../lib/branches'
+import { fetchConfiguredProducts } from '../lib/products'
+import { canvasToBlob, shareOrDownloadBlob } from '../lib/browser'
 import {
   createSupplyRequests,
+  deleteSupplyRequest,
   fetchSupplyRequests,
+  updateSupplyRequestStatus,
   type SupplyRequest,
 } from '../lib/supplyRequests'
 import type { AppUser, StockMovement } from '../types'
@@ -21,7 +25,7 @@ interface OrderDraftLine {
   note: string
 }
 
-const ORDER_DRAFT_KEY = 'gustino_supply_order_page_draft'
+type OrderStatusFilter = 'all' | SupplyRequest['status']
 
 const emptyOrderLine = (): OrderDraftLine => ({
   id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -31,45 +35,59 @@ const emptyOrderLine = (): OrderDraftLine => ({
   note: '',
 })
 
-function loadOrderDraft(): OrderDraftLine[] {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(ORDER_DRAFT_KEY) || '[]') as OrderDraftLine[]
-    const lines = parsed
-      .filter((line) => line && typeof line === 'object')
-      .map((line) => ({
-        id: line.id || emptyOrderLine().id,
-        productName: line.productName || '',
-        quantity: line.quantity || '',
-        unit: line.unit || 'kg',
-        note: line.note || '',
-      }))
-    return lines.length ? lines : [emptyOrderLine()]
-  } catch {
-    return [emptyOrderLine()]
-  }
-}
-
-export function OrdersPage({ user, movements }: Props) {
-  const [lines, setLines] = useState<OrderDraftLine[]>(loadOrderDraft)
+export function OrdersPage({ user }: Props) {
+  const [lines, setLines] = useState<OrderDraftLine[]>(() => [emptyOrderLine()])
   const [requests, setRequests] = useState<SupplyRequest[]>([])
   const [busy, setBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [feedback, setFeedback] = useState('')
+  const [productTick, setProductTick] = useState(0)
+  const [statusFilter, setStatusFilter] = useState<OrderStatusFilter>('all')
+  const [dateFilter, setDateFilter] = useState('')
+  const [searchFilter, setSearchFilter] = useState('')
   const firstInputRef = useRef<HTMLInputElement>(null)
-  const branch = BRANCHES.find((item) => item.id === user.branchId)
+  const reportRef = useRef<HTMLDivElement>(null)
+  const currentBranchName = branchName(user.branchId)
   const branchIds = useMemo(() => [user.branchId], [user.branchId])
-  const stock = useMemo(() => calculateStock(movements), [movements])
-  const lowStock = stock
-    .filter((line) => line.expected <= line.product.lowStock && line.product.lowStock > 0)
-    .sort((a, b) => a.expected - b.expected)
-    .slice(0, 8)
   const pending = requests.filter((item) => item.status === 'pending')
   const activeRequests = requests.filter((item) => item.status !== 'fulfilled' && item.status !== 'cancelled')
   const doneRequests = requests.filter((item) => item.status === 'fulfilled' || item.status === 'cancelled')
+  const filteredRequests = useMemo(() => {
+    const keyword = searchFilter.trim().toLowerCase()
+    return requests.filter((item) => {
+      const createdDate = (item.createdAt || '').slice(0, 10)
+      if (statusFilter !== 'all' && item.status !== statusFilter) return false
+      if (dateFilter && createdDate !== dateFilter) return false
+      if (keyword && !`${item.productName} ${item.note} ${item.requestedByName}`.toLowerCase().includes(keyword)) return false
+      return true
+    })
+  }, [requests, statusFilter, dateFilter, searchFilter])
+  // Gom đơn đã gửi theo ngày để coi lại theo ngày/tháng/năm — bấm ngày mới xổ danh sách của ngày đó.
+  const requestsByDate = useMemo(() => {
+    const map = new Map<string, SupplyRequest[]>()
+    filteredRequests.forEach((item) => {
+      const key = (item.createdAt || '').slice(0, 10) || 'khác'
+      map.set(key, [...(map.get(key) || []), item])
+    })
+    return Array.from(map.entries())
+      .map(([date, rows]) => [date, rows.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt))] as const)
+      .sort((a, b) => b[0].localeCompare(a[0]))
+  }, [filteredRequests])
+  const orderProducts = useMemo(
+    () => getProducts().filter((product) => product.active !== false),
+    [productTick],
+  )
 
   useEffect(() => {
-    localStorage.setItem(ORDER_DRAFT_KEY, JSON.stringify(lines))
-  }, [lines])
+    const update = () => setProductTick((tick) => tick + 1)
+    window.addEventListener('gustino-products-updated', update)
+    window.addEventListener('storage', update)
+    void fetchConfiguredProducts(user).then(update).catch(() => {})
+    return () => {
+      window.removeEventListener('gustino-products-updated', update)
+      window.removeEventListener('storage', update)
+    }
+  }, [user.id, user.authToken])
 
   async function refresh() {
     setLoading(true)
@@ -88,23 +106,22 @@ export function OrdersPage({ user, movements }: Props) {
     setLines((items) => items.map((line) => line.id === id ? { ...line, ...patch } : line))
   }
 
+  function updateLineProduct(id: string, value: string) {
+    const selected = orderProducts.find((product) =>
+      product.name === value || product.sku === value || `${product.sku} · ${product.name}` === value,
+    )
+    updateLine(id, {
+      productName: selected?.name || value,
+      unit: selected?.inboundUnit || selected?.unit || lines.find((line) => line.id === id)?.unit || 'kg',
+    })
+  }
+
   function addLine() {
     setLines((items) => [...items, emptyOrderLine()])
   }
 
   function removeLine(id: string) {
     setLines((items) => items.length === 1 ? items : items.filter((line) => line.id !== id))
-  }
-
-  function addLowStockLine(productName: string, unit: string) {
-    setLines((items) => {
-      const blank = items.find((line) => !line.productName.trim() && !line.quantity.trim())
-      if (blank) {
-        return items.map((line) => line.id === blank.id ? { ...line, productName, unit } : line)
-      }
-      return [...items, { ...emptyOrderLine(), productName, unit }]
-    })
-    window.setTimeout(() => firstInputRef.current?.focus(), 50)
   }
 
   async function submitOrder(event: React.FormEvent) {
@@ -126,12 +143,74 @@ export function OrdersPage({ user, movements }: Props) {
       await createSupplyRequests(user, validLines)
       const blank = emptyOrderLine()
       setLines([blank])
-      localStorage.setItem(ORDER_DRAFT_KEY, JSON.stringify([blank]))
       setFeedback(`Đã gửi ${validLines.length} món đến bếp/quản lý.`)
       await refresh()
     } catch (reason) {
       setFeedback(reason instanceof Error ? reason.message : 'Không thể gửi yêu cầu đặt hàng.')
     } finally {
+      setBusy(false)
+    }
+  }
+
+  async function cancelRequest(request: SupplyRequest) {
+    if (request.status === 'cancelled') return
+    if (!window.confirm(`Hủy đơn "${request.productName}"? Đơn sẽ chuyển sang trạng thái Đã hủy.`)) return
+    setBusy(true)
+    try {
+      await updateSupplyRequestStatus(user, request.id, 'cancelled')
+      setFeedback(`Đã hủy đơn "${request.productName}".`)
+      await refresh()
+    } catch (reason) {
+      setFeedback(reason instanceof Error ? reason.message : 'Không thể hủy đơn đặt hàng.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeRequest(request: SupplyRequest) {
+    if (!window.confirm(`Xóa vĩnh viễn đơn "${request.productName}"? Thao tác này không thể hoàn tác.`)) return
+    setBusy(true)
+    try {
+      await deleteSupplyRequest(user, request.id)
+      setFeedback(`Đã xóa đơn "${request.productName}".`)
+      await refresh()
+    } catch (reason) {
+      setFeedback(reason instanceof Error ? reason.message : 'Không thể xóa đơn đặt hàng.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function exportOrderReportImage() {
+    const target = reportRef.current
+    if (!target) {
+      setFeedback('Báo cáo chưa sẵn sàng để xuất ảnh. Hãy thử lại sau khi trang tải xong.')
+      return
+    }
+    setBusy(true)
+    try {
+      target.classList.add('order-report-sheet-export')
+      if (activeRequests.length > 14) target.classList.add('dense')
+      await waitForPaint()
+      const { default: html2canvas } = await import('html2canvas')
+      const canvas = await html2canvas(target, {
+        scale: 2,
+        backgroundColor: '#fffdf4',
+        useCORS: true,
+        logging: false,
+        width: 1080,
+        height: 1350,
+        windowWidth: 1080,
+        windowHeight: 1350,
+      })
+      const fileName = `GUSTINO-dat-hang-${user.branchId}-${new Date().toISOString().slice(0, 10)}.png`
+      const blob = await canvasToBlob(canvas, 'image/png')
+      const result = await shareOrDownloadBlob(blob, fileName, { title: `Phiếu đặt hàng ${currentBranchName}` })
+      setFeedback(result === 'shared' ? 'Đã mở chia sẻ phiếu đặt hàng.' : 'Đã tải ảnh phiếu đặt hàng.')
+    } catch (reason) {
+      setFeedback(reason instanceof Error ? reason.message : 'Không thể xuất ảnh báo cáo đặt hàng.')
+    } finally {
+      target.classList.remove('order-report-sheet-export', 'dense')
       setBusy(false)
     }
   }
@@ -142,7 +221,7 @@ export function OrdersPage({ user, movements }: Props) {
         <div>
           <span className="eyebrow dark">ĐẶT HÀNG</span>
           <h1>Báo hàng cần nhập</h1>
-          <p>{branch?.name || user.branchId} · Gửi nhiều món một lần, bếp và quản lý cùng nhìn thấy trạng thái xử lý.</p>
+          <p>{currentBranchName || user.branchId} · Gửi nhiều món một lần, bếp và quản lý cùng nhìn thấy trạng thái xử lý.</p>
         </div>
         <span className={pending.length ? 'date-chip warning' : 'date-chip'}>{pending.length} đơn chờ nhận</span>
       </div>
@@ -155,36 +234,25 @@ export function OrdersPage({ user, movements }: Props) {
             <div><span className="eyebrow dark">PHIẾU MỚI</span><h2>Danh sách hàng cần đặt</h2></div>
             <button className="secondary-button" type="button" onClick={addLine}>+ Thêm món</button>
           </div>
-          {lowStock.length > 0 && (
-            <div className="order-low-stock-strip">
-              {lowStock.map((line) => (
-                <button type="button" key={line.product.id} onClick={() => addLowStockLine(line.product.name, line.product.unit)}>
-                  <strong>{line.product.name}</strong>
-                  <small>Còn {formatNumber(line.expected)} {line.product.unit}</small>
-                </button>
-              ))}
-            </div>
-          )}
           <form onSubmit={submitOrder}>
-            <div className="supply-order-lines page-order-lines">
+            <div className="order-entry-table page-order-lines">
+              <div className="order-entry-head" aria-hidden="true">
+                <span>#</span><span>Hàng cần đặt</span><span>Số lượng</span><span>Đơn vị</span><span>Ghi chú</span><span></span>
+              </div>
               {lines.map((line, index) => (
-                <div className="supply-order-line" key={line.id}>
-                  <div className="supply-order-line-head">
-                    <strong>Món {index + 1}</strong>
-                    {lines.length > 1 && <button type="button" onClick={() => removeLine(line.id)}>Xóa</button>}
-                  </div>
-                  <label>Hàng cần đặt
+                <div className="order-entry-row" key={line.id}>
+                  <strong className="order-entry-index">{index + 1}</strong>
+                  <label className="order-entry-product"><span>Hàng cần đặt</span>
                     <input
                       ref={index === 0 ? firstInputRef : undefined}
                       list="order-product-suggestions"
                       value={line.productName}
-                      onChange={(event) => updateLine(line.id, { productName: event.target.value })}
-                      placeholder="Hạt dẻ, đường, túi 110g..."
+                      onChange={(event) => updateLineProduct(line.id, event.target.value)}
+                      placeholder="Chọn từ danh sách SKU..."
                       required={index === 0}
                     />
                   </label>
-                  <div className="supply-order-qty">
-                    <label>Số lượng
+                  <label className="order-entry-quantity"><span>Số lượng</span>
                       <input
                         type="number"
                         min="0.1"
@@ -194,8 +262,8 @@ export function OrdersPage({ user, movements }: Props) {
                         placeholder="10"
                         required={index === 0}
                       />
-                    </label>
-                    <label>Đơn vị
+                  </label>
+                  <label className="order-entry-unit"><span>Đơn vị</span>
                       <select value={line.unit} onChange={(event) => updateLine(line.id, { unit: event.target.value })}>
                         <option value="kg">kg</option>
                         <option value="túi">túi</option>
@@ -206,23 +274,28 @@ export function OrdersPage({ user, movements }: Props) {
                         <option value="phần">phần</option>
                         <option value="lít">lít</option>
                       </select>
-                    </label>
-                  </div>
-                  <label>Ghi chú
+                  </label>
+                  <label className="order-entry-note"><span>Ghi chú</span>
                     <input
                       value={line.note}
                       onChange={(event) => updateLine(line.id, { note: event.target.value })}
                       placeholder="Cần trước 9 giờ sáng, loại A..."
                     />
                   </label>
+                  <div className="order-entry-remove">
+                    {lines.length > 1 && <button type="button" onClick={() => removeLine(line.id)} aria-label={`Xóa món ${index + 1}`}>×</button>}
+                  </div>
                 </div>
               ))}
             </div>
             <datalist id="order-product-suggestions">
-              {PRODUCTS.map((product) => <option key={product.id} value={product.name} />)}
+              {orderProducts.map((product) => (
+                <option key={product.id} value={product.name} label={`${product.sku} · ${product.name}`} />
+              ))}
             </datalist>
             <div className="supply-modal-actions orders-actions">
               <button type="button" className="secondary-button" onClick={() => setLines([emptyOrderLine()])}>Làm lại</button>
+              <button type="button" className="secondary-button" onClick={() => void exportOrderReportImage()} disabled={busy}>{busy ? 'Đang xuất…' : 'Xuất báo cáo'}</button>
               <button type="submit" className="primary-button" disabled={busy}>{busy ? 'Đang gửi…' : 'Gửi yêu cầu →'}</button>
             </div>
           </form>
@@ -233,25 +306,121 @@ export function OrdersPage({ user, movements }: Props) {
             <div><span className="eyebrow dark">TRẠNG THÁI</span><h2>Đơn đã gửi</h2></div>
             <button className="text-button" onClick={() => void refresh()}>{loading ? 'Đang tải…' : 'Tải lại'}</button>
           </div>
-          <div className="supply-request-list">
-            {activeRequests.map((request) => <OrderRequestItem key={request.id} request={request} />)}
-            {!activeRequests.length && <p className="empty-copy">{loading ? 'Đang tải đơn đặt hàng…' : 'Chưa có đơn đang xử lý.'}</p>}
-          </div>
-          {doneRequests.length > 0 && (
-            <details className="orders-done-list">
-              <summary>Đơn đã xong / đã hủy ({doneRequests.length})</summary>
-              <div className="supply-request-list">
-                {doneRequests.slice(0, 20).map((request) => <OrderRequestItem key={request.id} request={request} />)}
+          {/* Phiếu xuất ảnh — tên hàng TỰ ĐIỀN từ đơn đã gửi (không lấy từ ô đang nhập). */}
+          <div className="order-report-sheet" ref={reportRef}>
+            <div className="order-report-head">
+              <div>
+                <span>GUSTINO · PHIẾU ĐẶT HÀNG</span>
+                <strong>{currentBranchName || user.branchId}</strong>
+                <small>{formatDateTime(new Date().toISOString())} · Người lập: {user.name}</small>
               </div>
-            </details>
-          )}
+              <b>{pending.length} chờ nhận</b>
+            </div>
+            <div className="order-report-grid">
+              <article>
+                <span>Đơn đã gửi</span>
+                <strong>{activeRequests.length}</strong>
+                <small>đang xử lý</small>
+              </article>
+              <article>
+                <span>Chờ nhận</span>
+                <strong>{pending.length}</strong>
+                <small>yêu cầu</small>
+              </article>
+              <article>
+                <span>Đã xong / hủy</span>
+                <strong>{doneRequests.length}</strong>
+                <small>yêu cầu</small>
+              </article>
+            </div>
+            <table className="order-report-table">
+              <thead>
+                <tr><th>#</th><th>Tên hàng</th><th>SL</th><th>Trạng thái</th><th>Người đặt</th></tr>
+              </thead>
+              <tbody>
+                {activeRequests.length ? activeRequests.map((request, index) => (
+                  <tr key={request.id}>
+                    <td>{index + 1}</td>
+                    <td>
+                      <strong>{request.productName}</strong>
+                      {request.note ? <small>{request.note}</small> : null}
+                    </td>
+                    <td className="num">{formatNumber(request.quantity)} {request.unit}</td>
+                    <td><span className={`order-report-status ${request.status}`}>{statusLabel(request.status)}</span></td>
+                    <td>{request.requestedByName}</td>
+                  </tr>
+                )) : (
+                  <tr><td colSpan={5} className="order-report-empty">Chưa có đơn nào đang xử lý. Gửi yêu cầu đặt hàng để phiếu tự điền tên hàng.</td></tr>
+                )}
+              </tbody>
+            </table>
+            <footer className="order-report-footer">
+              <span>Người lập: <strong>{user.name}</strong></span>
+              <span>GUSTINO · PHIẾU ĐẶT HÀNG NỘI BỘ</span>
+            </footer>
+          </div>
+
+          {/* Đơn đã gửi — danh sách gọn, gom theo ngày; bấm ngày mới xổ ra. */}
+          <div className="orders-filter-bar">
+            <label>Trạng thái
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as OrderStatusFilter)}>
+                <option value="all">Tất cả</option>
+                <option value="pending">Chờ nhận</option>
+                <option value="acknowledged">Đã nhận</option>
+                <option value="fulfilled">Hoàn thành</option>
+                <option value="cancelled">Đã hủy</option>
+              </select>
+            </label>
+            <label>Ngày gửi
+              <input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} />
+            </label>
+            <label>Tìm đơn
+              <input value={searchFilter} onChange={(event) => setSearchFilter(event.target.value)} placeholder="Tên hàng, ghi chú..." />
+            </label>
+            {(statusFilter !== 'all' || dateFilter || searchFilter) && (
+              <button type="button" className="mini-button ghost" onClick={() => { setStatusFilter('all'); setDateFilter(''); setSearchFilter('') }}>Xóa lọc</button>
+            )}
+          </div>
+          <div className="orders-history">
+            {requestsByDate.length ? requestsByDate.map(([date, rows], index) => {
+              const dayPending = rows.filter((row) => row.status === 'pending').length
+              return (
+                <details className="orders-day" key={date} open={index === 0}>
+                  <summary>
+                    <span><strong>{date === 'khác' ? 'Khác' : formatDay(date)}</strong><small>{rows.length} đơn{dayPending ? ` · ${dayPending} chờ nhận` : ''}</small></span>
+                    <b className={dayPending ? 'warn' : ''}>{dayPending || '✓'}</b>
+                  </summary>
+                  <div className="supply-request-list compact">
+                    {rows.map((request) => <OrderRequestItem
+                      key={request.id}
+                      request={request}
+                      busy={busy}
+                      onCancel={() => void cancelRequest(request)}
+                      onDelete={() => void removeRequest(request)}
+                    />)}
+                  </div>
+                </details>
+              )
+            }) : <p className="empty-copy">{loading ? 'Đang tải đơn đặt hàng…' : 'Chưa có đơn đặt hàng nào.'}</p>}
+          </div>
         </section>
       </div>
     </div>
   )
 }
 
-function OrderRequestItem({ request }: { request: SupplyRequest }) {
+function OrderRequestItem({
+  request,
+  busy,
+  onCancel,
+  onDelete,
+}: {
+  request: SupplyRequest
+  busy: boolean
+  onCancel: () => void
+  onDelete: () => void
+}) {
+  const canCancel = request.status === 'pending' || request.status === 'acknowledged'
   return (
     <article className={`supply-request-item${request.status === 'pending' ? ' pending' : ''}`}>
       <span className="supply-request-icon">↑</span>
@@ -259,7 +428,13 @@ function OrderRequestItem({ request }: { request: SupplyRequest }) {
         <strong>{request.productName} · {formatNumber(request.quantity)} {request.unit}</strong>
         <small>{formatDateTime(request.createdAt)} · {request.requestedByName}{request.note ? ` · "${request.note}"` : ''}</small>
       </span>
-      <span className={`supply-status-badge ${request.status}`}>{statusLabel(request.status)}</span>
+      <span className="supply-request-tail">
+        <span className={`supply-status-badge ${request.status}`}>{statusLabel(request.status)}</span>
+        <span className="supply-request-actions">
+          {canCancel && <button type="button" className="mini-button ghost" disabled={busy} onClick={onCancel}>Hủy</button>}
+          <button type="button" className="mini-button danger" disabled={busy} onClick={onDelete}>Xóa</button>
+        </span>
+      </span>
     </article>
   )
 }
@@ -275,6 +450,18 @@ function formatDateTime(value: string) {
   return new Date(value).toLocaleString('vi-VN', { hour12: false, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
+function formatDay(value: string) {
+  const [year, month, day] = value.split('-')
+  if (!day) return value
+  return `${day}/${month}/${year}`
+}
+
 function formatNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
+function waitForPaint() {
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()))
+  })
 }

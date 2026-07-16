@@ -1,6 +1,7 @@
-import { BRANCHES, PRODUCTS } from './constants'
+import { PRODUCTS } from './constants'
+import { branchName } from './branches'
 import {
-  COMMISSION_MIN_BAGS,
+  DEFAULT_REVENUE_TARGET,
   soldBagQuantity,
   summarizeEmployeeBagSales,
 } from './commission'
@@ -67,7 +68,7 @@ export function buildOperationalReportPatch(
     })
     .join('\n')
 
-  const branch = BRANCHES.find((item) => item.id === user.branchId)
+  const branch = { name: branchName(user.branchId) || user.branchId }
   const [year, month, day] = businessDate.split('-')
   const packed = (productId: string) => todayItems
     .filter((item) => item.type === 'packing_in' && item.productId === productId)
@@ -196,7 +197,7 @@ export function mergeBagSalesIntoReportState(
     logs: [...manualLogs, ...autoLogs],
     matrixInputs,
     bagCommissionSummary: {
-      minimumBags: COMMISSION_MIN_BAGS,
+      minimumRevenue: DEFAULT_REVENUE_TARGET,
       employees: summarizeEmployeeBagSales(reportable),
       reconciledAt: new Date().toISOString(),
     },

@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { BRANCHES } from '../lib/constants'
 import { isSupabaseConfigured, supabase } from '../lib/supabase'
 import type { AppUser, Role } from '../types'
 import { normalizeRole } from '../lib/access'
@@ -16,7 +15,7 @@ export function LoginPage({ onLogin }: Props) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [branchId] = useState(BRANCHES[0].id)
+  const [branchId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -50,26 +49,69 @@ export function LoginPage({ onLogin }: Props) {
         const metadata = data.user.user_metadata
         const { data: profile } = await supabase
           .from('profiles')
-          .select('full_name, role, branch_id, employment_type, position_title')
+          .select('full_name, role, branch_id, active, employment_type, position_title, avatar_url')
           .eq('id', data.user.id)
           .maybeSingle()
+        if (!profile || profile.active === false) {
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined)
+          throw new Error('Tài khoản này đã bị khóa hoặc chưa được cấp hồ sơ nhân sự.')
+        }
+        const role = normalizeRole((profile?.role || metadata.role || 'shift_leader') as Role)
+        const profileBranchId = profile?.branch_id || metadata.branch_id || branchId
         let branchIds: string[] = []
-        if ((profile?.role || metadata.role) === 'manager') {
+        if (role === 'admin') {
+          const { data: activeBranches } = await supabase
+            .from('branches')
+            .select('id')
+            .eq('active', true)
+          branchIds = Array.from(new Set([
+            profileBranchId,
+            ...((activeBranches || []) as Array<{ id: string }>).map((item) => item.id),
+          ].filter(Boolean)))
+        } else if (role === 'manager') {
           const { data: assignments } = await supabase
             .from('manager_branch_assignments')
             .select('branch_id')
             .eq('manager_id', data.user.id)
-          branchIds = (assignments || []).map((item) => item.branch_id)
+          branchIds = Array.from(new Set([
+            profileBranchId,
+            ...((assignments || []) as Array<{ branch_id: string }>).map((item) => item.branch_id),
+          ].filter(Boolean)))
+        }
+        if ((role === 'staff' || role === 'shift_leader') && !profileBranchId) {
+          await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined)
+          throw new Error('Tài khoản nhân viên chưa được gán chi nhánh. Liên hệ Admin để cập nhật trước khi đăng nhập.')
+        }
+        if ((role === 'staff' || role === 'shift_leader') && profileBranchId) {
+          const { data: branch } = await supabase
+            .from('branches')
+            .select('id, active')
+            .eq('id', profileBranchId)
+            .maybeSingle()
+          if (!branch || branch.active === false) {
+            await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined)
+            throw new Error('Chi nhánh của tài khoản này đã bị xóa hoặc tạm ngưng. Liên hệ Admin để chuyển chi nhánh trước khi đăng nhập.')
+          }
+        }
+        if (branchIds.length) {
+          const { data: activeBranches } = await supabase
+            .from('branches')
+            .select('id')
+            .in('id', branchIds)
+            .eq('active', true)
+          const activeIds = new Set((activeBranches || []).map((item: { id: string }) => item.id))
+          branchIds = branchIds.filter((id) => activeIds.has(id))
         }
         onLogin({
           id: data.user.id,
           name: profile?.full_name || metadata.full_name || username,
           email,
-          role: normalizeRole((profile?.role || metadata.role || 'shift_leader') as Role),
-          branchId: profile?.branch_id || metadata.branch_id || branchId,
+          role,
+          branchId: profileBranchId,
           branchIds,
           employmentType: profile?.employment_type || undefined,
           positionTitle: profile?.position_title || undefined,
+          avatarUrl: profile?.avatar_url || undefined,
         })
       } else {
         const response = await fetch('/api/attendance/login', {
@@ -82,16 +124,18 @@ export function LoginPage({ onLogin }: Props) {
           const apiOffline = !account?.error && response.status >= 500
           throw new Error(apiOffline ? apiOfflineMessage() : account?.error || 'Tên đăng nhập hoặc mật khẩu không đúng.')
         }
+        const role = normalizeRole(account.role as Role)
         onLogin({
           id: account.id,
           name: account.name,
           email: account.email,
-          role: normalizeRole(account.role as Role),
+          role,
           branchId: account.branchId,
-          branchIds: account.branchIds || [account.branchId],
+          branchIds: account.branchIds || [account.branchId].filter(Boolean),
           authToken: account.authToken,
           employmentType: account.employmentType,
           positionTitle: account.positionTitle,
+          avatarUrl: account.avatarUrl,
         })
       }
     } catch (reason) {
@@ -111,7 +155,7 @@ export function LoginPage({ onLogin }: Props) {
       <section className="login-hero">
         <div className="hero-glow" />
         <div className="login-brand">
-          <span className="brand-mark large">G</span>
+          <span className="brand-mark large"><img src="/gustino-logo.jpg" alt="GUSTINO" /></span>
           <div><strong>GUSTINO</strong><small>VẬN HÀNH CHÍNH THỨC</small></div>
         </div>
         <div className="hero-copy">

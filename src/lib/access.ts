@@ -3,10 +3,14 @@ import { getLang, T, type Lang } from './i18n'
 
 export const OPERATION_ROLES: Role[] = ['shift_leader']
 export const MANAGEMENT_ROLES: Role[] = ['admin', 'manager']
-export const KITCHEN_ROLES: Role[] = ['admin', 'manager', 'kitchen']
+export const KITCHEN_ROLES: Role[] = ['admin', 'kitchen']
 
-export function canUseSales(_role: Role) {
-  return true
+export function canUseAdmin(role: Role) {
+  return role === 'admin'
+}
+
+export function canUseSales(role: Role) {
+  return ['shift_leader', 'staff'].includes(role)
 }
 
 export function canUseOperations(role: Role) {
@@ -22,15 +26,36 @@ export function canUseKitchen(role: Role) {
 }
 
 export function normalizeRole(role: Role): Role {
-  return role === 'admin' ? 'manager' : role
+  return role
+}
+
+// Vị trí nhân viên cho bảng công/Excel: ưu tiên positionTitle (Ca trưởng/Ca phó/Full-time/Part-time),
+// fallback theo employmentType, cuối cùng theo role.
+export function employeePositionLabel(employee?: { positionTitle?: string; employmentType?: string; role?: string }) {
+  const title = employee?.positionTitle?.trim()
+  if (title) return title
+  const type = employee?.employmentType
+  if (type === 'leader') return 'Ca trưởng'
+  if (type === 'full_time') return 'Full-time'
+  if (type === 'part_time') return 'Part-time'
+  return employee?.role === 'shift_leader' ? 'Ca trưởng' : 'Nhân viên'
 }
 
 export function displayUserName(user: { name: string }) {
   const trimmed = user.name.trim()
-  return trimmed.toLowerCase() === 'quản lý' ? 'Admin' : trimmed
+  return trimmed
 }
 
 export function roleLabel(role: Role, lang: Lang = getLang()) {
+  if (lang === 'en') {
+    return {
+      admin: 'System Admin',
+      manager: 'Manager',
+      shift_leader: 'Shift Leader',
+      staff: 'Staff',
+      kitchen: 'Kitchen',
+    }[role]
+  }
   const tx = T[lang]
   return {
     admin: tx.roleAdmin,

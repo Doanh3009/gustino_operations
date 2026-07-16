@@ -1,6 +1,8 @@
 node_modules
 dist
 data/*.json
+data/attendance-selfies/
+artifacts/
 .qa-account-data*/
 .env
 .env.local
@@ -10,3 +12,4 @@ vite.config.js
 vite.config.d.ts
 
 .vercel
+supabase/.temp/

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { BRANCHES, MOVEMENT_LABELS, PRODUCTS } from '../lib/constants'
+import { MOVEMENT_LABELS, PRODUCTS } from '../lib/constants'
+import { useConfiguredBranches } from '../lib/branches'
 import { calculateStock, fetchMovements, fetchReportSnapshots } from '../lib/store'
 import { fetchBagAllocations } from '../lib/shiftLedger'
 import { buildDailyRevenueRows } from '../lib/revenue'
@@ -10,14 +11,15 @@ export function RestaurantPage({ user, movements }: { user: AppUser; movements: 
   const [reports, setReports] = useState<ReportSnapshot[]>([])
   const [bagAllocations, setBagAllocations] = useState<BagAllocation[]>([])
   const [dashboardMovements, setDashboardMovements] = useState(movements)
-  const branch = BRANCHES.find((item) => item.id === branchId)
+  const branches = useConfiguredBranches({ user })
+  const branch = branches.find((item) => item.id === branchId)
   const branchMovements = dashboardMovements.filter((item) => item.branchId === branchId)
   const stock = useMemo(() => calculateStock(branchMovements), [branchMovements])
 
   useEffect(() => {
-    void fetchReportSnapshots(branchId).then(setReports)
+    void fetchReportSnapshots(branchId, user).then(setReports)
     void fetchBagAllocations(user, { branchId }).then(setBagAllocations)
-    void fetchMovements(branchId).then(setDashboardMovements)
+    void fetchMovements(branchId, user).then(setDashboardMovements)
   }, [branchId, user.id])
 
   const last7 = new Date()
@@ -39,7 +41,7 @@ export function RestaurantPage({ user, movements }: { user: AppUser; movements: 
       <div className="page-heading">
         <div><span className="eyebrow dark">NHÀ HÀNG / CHI NHÁNH</span><h1>Tổng quan hoạt động</h1><p>Doanh thu từ báo cáo ca kết hợp với dữ liệu nhập – xuất – tồn kho.</p></div>
         <select className="branch-dashboard-select" value={branchId} onChange={(e) => setBranchId(e.target.value)} disabled>
-          {BRANCHES.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          {branches.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select>
       </div>
 

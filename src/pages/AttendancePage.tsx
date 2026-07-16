@@ -1,14 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
+﻿import { useEffect, useMemo, useState } from 'react'
 import {
   buildAttendanceReport,
   buildAttendanceDetailRows,
   checkIn,
   checkOut,
   createManualShiftRegistration,
-  createSchedulePerson,
   createShiftRegistration,
   createWorkShift,
+  canManageShiftSetup,
+  DEFAULT_WORK_SHIFT_TEMPLATES,
   deleteSchedulePerson,
+  ensureDefaultWorkShifts,
   archiveWorkShift,
   fetchAttendanceRecords,
   fetchEmployees,
@@ -16,14 +18,26 @@ import {
   fetchSchedulePeople,
   fetchShiftRegistrations,
   fetchWorkShifts,
+  findAttendanceRecordForRegistration,
+  isOvertimeRegistration,
   permittedBranchIds,
   setScheduleEntry,
+  setScheduleRegistration,
 } from '../lib/attendance'
-import { BRANCHES } from '../lib/constants'
-import { supabase } from '../lib/supabase'
-import { roleLabel as accessRoleLabel } from '../lib/access'
+import { useRef } from 'react'
+import { branchName as configuredBranchName, useConfiguredBranches } from '../lib/branches'
+import { downloadBlob, shareOrDownloadBlob } from '../lib/browser'
+import { calculateStock, ensureOperationDay } from '../lib/store'
+import { getFinishedBulkProducts, getSaleProducts } from '../lib/constants'
+import { fetchBagShiftSessions, startBagShift } from '../lib/shiftLedger'
+import { supabase, uniqueChannelName } from '../lib/supabase'
+import { employeePositionLabel, roleLabel as accessRoleLabel } from '../lib/access'
+import { useLang } from '../lib/i18n'
+import { createAttendanceAdjustment } from '../lib/attendanceAdjustments'
+import { AttendanceAdjustmentArchive } from '../components/AttendanceAdjustmentArchive'
 import type {
   AppUser,
+  AttendanceAdjustmentRequest,
   AttendanceRecord,
   EmployeeProfile,
   EmploymentType,
@@ -31,14 +45,36 @@ import type {
   SchedulePerson,
   ShiftRegistration,
   WorkShift,
+  StockMovement,
 } from '../types'
 import type { Page } from '../components/AppShell'
 
-type AttendanceTab = 'schedule' | 'board' | 'report'
+type AttendanceTab = 'schedule' | 'board' | 'report' | 'documents'
+type AttendanceDataKey = 'shifts' | 'registrations' | 'records' | 'employees' | 'schedulePeople'
+const CUSTOM_SHIFT_VALUE = '__custom'
+const FALLBACK_SHIFT_PREFIX = 'fallback-shift:'
 
-export function AttendancePage({ user, onNavigate }: { user: AppUser; onNavigate: (page: Page) => void }) {
+function attendanceDataNeeds(tab: AttendanceTab, canAdjustSchedule: boolean) {
+  const byTab: Record<AttendanceTab, AttendanceDataKey[]> = {
+    schedule: ['registrations', 'records'],
+    board: [
+      'shifts',
+      'registrations',
+      'records',
+      'schedulePeople',
+      ...(canAdjustSchedule ? ['employees' as const] : []),
+    ],
+    report: ['shifts', 'registrations', 'records', 'employees'],
+    documents: [],
+  }
+  return new Set<AttendanceDataKey>(byTab[tab])
+}
+
+export function AttendancePage({ user, movements, onNavigate }: { user: AppUser; movements: StockMovement[]; onNavigate: (page: Page) => void }) {
   const isManager = user.role === 'manager' || user.role === 'admin'
-  const [tab, setTab] = useState<AttendanceTab>(isManager ? 'board' : 'schedule')
+  const canViewAttendanceDocuments = user.role === 'admin' || user.role === 'shift_leader'
+  const canAdjustSchedule = canManageShiftSetup(user)
+  const [tab, setTab] = useState<AttendanceTab>(isManager ? 'report' : 'schedule')
   const [shifts, setShifts] = useState<WorkShift[]>([])
   const [registrations, setRegistrations] = useState<ShiftRegistration[]>([])
   const [records, setRecords] = useState<AttendanceRecord[]>([])
@@ -46,37 +82,100 @@ export function AttendancePage({ user, onNavigate }: { user: AppUser; onNavigate
   const [schedulePeople, setSchedulePeople] = useState<SchedulePerson[]>([])
   const [loading, setLoading] = useState(true)
   const [feedback, setFeedback] = useState('')
+  const [reportRange, setReportRange] = useState(() => attendanceMonthRange())
+  const refreshInFlightRef = useRef<Promise<void> | null>(null)
+  const refreshQueuedRef = useRef(false)
+  const attendanceRefreshContextRef = useRef({ tab, reportRange })
+  attendanceRefreshContextRef.current = { tab, reportRange }
 
   async function refresh(showLoading = false) {
+    if (refreshInFlightRef.current) {
+      refreshQueuedRef.current = true
+      return refreshInFlightRef.current
+    }
     if (showLoading) setLoading(true)
+    const run = (async () => {
+      try {
+        const refreshContext = attendanceRefreshContextRef.current
+        const needs = attendanceDataNeeds(refreshContext.tab, canAdjustSchedule)
+        const attendanceFilters = isManager && refreshContext.tab === 'report' ? refreshContext.reportRange : {}
+        const results = await Promise.allSettled([
+          needs.has('shifts') ? fetchWorkShifts(user) : Promise.resolve(undefined),
+          needs.has('registrations') ? fetchShiftRegistrations(user, attendanceFilters) : Promise.resolve(undefined),
+          needs.has('records') ? fetchAttendanceRecords(user, attendanceFilters) : Promise.resolve(undefined),
+          needs.has('employees') ? fetchEmployees(user) : Promise.resolve(undefined),
+          needs.has('schedulePeople') ? fetchSchedulePeople(user) : Promise.resolve(undefined),
+        ])
+        const [nextShifts, nextRegistrations, nextRecords, nextEmployees, nextSchedulePeople] = results
+        if (nextShifts.status === 'fulfilled' && nextShifts.value) setShifts(nextShifts.value)
+        if (nextRegistrations.status === 'fulfilled' && nextRegistrations.value) setRegistrations(nextRegistrations.value)
+        if (nextRecords.status === 'fulfilled' && nextRecords.value) setRecords(nextRecords.value)
+        if (nextEmployees.status === 'fulfilled' && nextEmployees.value) setEmployees(nextEmployees.value)
+        if (nextSchedulePeople.status === 'fulfilled' && nextSchedulePeople.value) setSchedulePeople(nextSchedulePeople.value)
+        const failed = results.find((result) => result.status === 'rejected') as PromiseRejectedResult | undefined
+        if (failed) throw failed.reason
+      } catch (error) {
+        setFeedback(error instanceof Error ? error.message : 'Không thể tải dữ liệu chấm công.')
+      } finally {
+        if (showLoading) setLoading(false)
+      }
+    })()
+    refreshInFlightRef.current = run
     try {
-      const results = await Promise.allSettled([
-        fetchWorkShifts(user),
-        fetchShiftRegistrations(user),
-        fetchAttendanceRecords(user),
-        isManager ? fetchEmployees(user) : Promise.resolve([]),
-        fetchSchedulePeople(user),
-      ])
-      const [nextShifts, nextRegistrations, nextRecords, nextEmployees, nextSchedulePeople] = results
-      if (nextShifts.status === 'fulfilled') setShifts(nextShifts.value)
-      if (nextRegistrations.status === 'fulfilled') setRegistrations(nextRegistrations.value)
-      if (nextRecords.status === 'fulfilled') setRecords(nextRecords.value)
-      if (nextEmployees.status === 'fulfilled') setEmployees(nextEmployees.value)
-      if (nextSchedulePeople.status === 'fulfilled') setSchedulePeople(nextSchedulePeople.value)
-      const failed = results.find((result) => result.status === 'rejected') as PromiseRejectedResult | undefined
-      if (failed) throw failed.reason
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Không thể tải dữ liệu chấm công.')
+      await run
     } finally {
-      if (showLoading) setLoading(false)
+      refreshInFlightRef.current = null
+      if (refreshQueuedRef.current) {
+        refreshQueuedRef.current = false
+        void refresh(false)
+      }
     }
   }
 
-  useEffect(() => { void refresh(true) }, [user.id])
+  useEffect(() => { void refresh(true) }, [user.id, user.branchId])
+
+  useEffect(() => {
+    if (loading) return
+    void refresh(false)
+  }, [tab, reportRange.from, reportRange.to])
+
+  useEffect(() => {
+    const reload = () => void refresh(false)
+    const reloadWhenVisible = () => {
+      if (document.visibilityState === 'visible') reload()
+    }
+    const timer = window.setInterval(reload, 15000)
+    window.addEventListener('gustino-attendance-updated', reload)
+    window.addEventListener('focus', reload)
+    document.addEventListener('visibilitychange', reloadWhenVisible)
+    const client = supabase
+    if (!client) {
+      return () => {
+        window.clearInterval(timer)
+        window.removeEventListener('gustino-attendance-updated', reload)
+        window.removeEventListener('focus', reload)
+        document.removeEventListener('visibilitychange', reloadWhenVisible)
+      }
+    }
+    const channel = client.channel(uniqueChannelName(`attendance-live:${user.id}`))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_registrations' }, reload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records' }, reload)
+      .subscribe()
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('gustino-attendance-updated', reload)
+      window.removeEventListener('focus', reload)
+      document.removeEventListener('visibilitychange', reloadWhenVisible)
+      void client.removeChannel(channel)
+    }
+  }, [user.id, user.branchId])
 
   const tabs: Array<{ id: AttendanceTab; label: string; show: boolean }> = [
     { id: 'schedule', label: 'Hôm nay', show: !isManager },
-    { id: 'board', label: isManager ? 'Bảng lịch' : 'Đăng ký tuần', show: true },
+    // Tab bảng lịch phải hiện CẢ cho manager/admin: SharedScheduleBoard là nơi duy nhất
+    // lập/sửa lịch tuần (heading manager cũng hứa "Lập lịch theo tuần").
+    { id: 'board', label: canAdjustSchedule ? 'Bảng lịch' : 'Đăng ký tuần', show: true },
+    { id: 'documents', label: 'Chứng từ', show: canViewAttendanceDocuments },
     { id: 'report', label: 'Bảng công', show: isManager },
   ]
 
@@ -93,28 +192,41 @@ export function AttendancePage({ user, onNavigate }: { user: AppUser; onNavigate
       <div className="page-heading attendance-heading">
         <div>
           <span className="eyebrow dark">QUY TRÌNH CA LÀM</span>
-          <h1>{isManager ? 'Lập lịch, kiểm tra công, xuất bảng công' : 'Đăng ký lịch, check-in, check-out'}</h1>
-          <p>{isManager
+          <h1>{canAdjustSchedule ? 'Lập lịch, kiểm tra công, xuất bảng công' : 'Đăng ký lịch, check-in, check-out'}</h1>
+          <p>{canAdjustSchedule
             ? '1) Lập lịch theo tuần. 2) Theo dõi check-in/out. 3) Xuất bảng công khi cần.'
             : '1) Đăng ký ca trong tuần. 2) Đến ca chụp selfie check-in. 3) Kết thúc ca check-out để tự tính công.'}</p>
         </div>
-        <span className="attendance-role">{roleLabel(user.role)}</span>
+        <div className="attendance-heading-status">
+          <span className="attendance-sync-status" title={supabase ? 'Thay đổi được nhận trực tiếp từ máy chủ' : 'Dữ liệu được kiểm tra lại mỗi 15 giây'}>
+            <i aria-hidden="true" />
+            {supabase ? 'Đồng bộ realtime' : 'Tự đồng bộ 15 giây'}
+          </span>
+          <span className="attendance-role">{roleLabel(user.role)}</span>
+        </div>
       </div>
 
       {feedback && <div className="feedback-bar">{feedback}<button onClick={() => setFeedback('')}>×</button></div>}
 
       <div className="attendance-tabs">
         {tabs.filter((item) => item.show).map((item) => (
-          <button key={item.id} className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}>{item.label}</button>
+          <button key={item.id} className={tab === item.id ? 'active' : ''} disabled={loading} onClick={() => setTab(item.id)}>{item.label}</button>
         ))}
       </div>
 
-      {loading && <section className="section-card attendance-loading">Đang tải dữ liệu ca làm…</section>}
+      {loading && (
+        <section className="section-card attendance-loading" aria-busy="true" aria-live="polite">
+          <div className="attendance-loading-skeleton" aria-hidden="true"><i /><i /><i /></div>
+          <strong>Đang đồng bộ dữ liệu cần thiết</strong>
+          <small>Chỉ tải nội dung của mục đang mở.</small>
+        </section>
+      )}
       {!loading && tab === 'schedule' && (
         <SchedulePanel
           user={user}
           registrations={registrations}
           records={records}
+          movements={movements}
           onChanged={refresh}
           onFeedback={setFeedback}
         />
@@ -125,23 +237,37 @@ export function AttendancePage({ user, onNavigate }: { user: AppUser; onNavigate
           shifts={shifts}
           registrations={registrations}
           people={schedulePeople}
+          employees={employees}
           onChanged={refresh}
           onFeedback={setFeedback}
         />
       )}
       {!loading && tab === 'report' && isManager && (
-        <AttendanceReportPanel user={user} shifts={shifts} registrations={registrations} records={records} employees={employees} />
+        <AttendanceReportPanel
+          user={user}
+          shifts={shifts}
+          registrations={registrations}
+          records={records}
+          employees={employees}
+          from={reportRange.from}
+          to={reportRange.to}
+          onRangeChange={setReportRange}
+        />
+      )}
+      {!loading && tab === 'documents' && canViewAttendanceDocuments && (
+        <AttendanceAdjustmentArchive user={user} />
       )}
     </div>
   )
 }
 
 function SchedulePanel({
-  user, registrations, records, onChanged, onFeedback,
+  user, registrations, records, movements, onChanged, onFeedback,
 }: {
   user: AppUser
   registrations: ShiftRegistration[]
   records: AttendanceRecord[]
+  movements: StockMovement[]
   onChanged: () => Promise<void>
   onFeedback: (message: string) => void
 }) {
@@ -149,8 +275,22 @@ function SchedulePanel({
   const [selfieLocalPreviews, setSelfieLocalPreviews] = useState<Record<string, string>>({})
   const [selfiePreviews, setSelfiePreviews] = useState<Record<string, string>>({})
   const [busyId, setBusyId] = useState('')
+  const [busyPhase, setBusyPhase] = useState<'locating' | 'saving' | ''>('')
+  const [now, setNow] = useState(() => new Date())
   const ownRegistrations = registrations.filter((item) => item.userId === user.id && item.status !== 'rejected')
-  const today = localDateKey()
+  const today = localDateKey(now)
+
+  useEffect(() => {
+    const updateClock = () => setNow(new Date())
+    const timer = window.setInterval(updateClock, 15000)
+    window.addEventListener('focus', updateClock)
+    document.addEventListener('visibilitychange', updateClock)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', updateClock)
+      document.removeEventListener('visibilitychange', updateClock)
+    }
+  }, [])
 
   // Ảnh xem trước cục bộ để PG kiểm tra trước khi check-in (cho phép chụp lại)
   function pickSelfie(registration: ShiftRegistration, file?: File) {
@@ -172,50 +312,62 @@ function SchedulePanel({
       return
     }
     setBusyId(registration.id)
+    setBusyPhase('locating')
     try {
-      const record = await checkIn(user, registration, selfie)
+      const record = await checkIn(user, registration, selfie, setBusyPhase)
       if (record.selfiePreviewUrl) {
         setSelfiePreviews((current) => ({ ...current, [registration.id]: record.selfiePreviewUrl! }))
       }
       pickSelfie(registration, undefined)
-      onFeedback('Check-in thành công. Chúc bạn một ca làm việc tốt!')
+      let autoShiftMessage = ''
+      if (user.role === 'shift_leader') {
+        try {
+          autoShiftMessage = await openShiftAfterLeaderCheckIn(user, registration, movements)
+        } catch (error) {
+          autoShiftMessage = ` Check-in đã lưu, nhưng ca vận hành chưa tự mở: ${error instanceof Error ? error.message : 'hãy thử tải lại trang.'}`
+        }
+      }
+      onFeedback(`Check-in thành công.${autoShiftMessage || ' Chúc bạn một ca làm việc tốt!'}`)
       await onChanged()
     } catch (error) {
-      onFeedback(error instanceof Error ? error.message : 'Không thể check-in.')
+      onFeedback(error instanceof Error ? error.message : 'Không thể check-in. Hãy thử lại.')
+      await onChanged().catch(() => undefined)
     } finally {
       setBusyId('')
+      setBusyPhase('')
     }
   }
 
   async function handleCheckOut(record: AttendanceRecord, registration: ShiftRegistration) {
-    const window = getCheckInWindow(registration)
-    const now = new Date()
-    if (now < window.checkOutOpensAt) {
-      onFeedback(`Chưa được check-out sớm. Check-out mở từ ${window.checkOutOpensAt.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} (30 phút trước giờ ra).`)
+    const selfie = selfies[registration.id]
+    if (!selfie) {
+      onFeedback('Bạn cần chụp ảnh bàn giao trước khi check-out.')
       return
     }
     setBusyId(record.id)
+    setBusyPhase('locating')
     try {
-      await checkOut(user, record)
-      onFeedback('Check-out thành công. Thời gian làm việc đã được ghi nhận.')
+      await checkOut(user, record, registration, selfie, setBusyPhase)
+      pickSelfie(registration, undefined)
+      onFeedback('Check-out thành công. Ảnh, GPS và địa chỉ bàn giao đã được lưu.')
       await onChanged()
     } catch (error) {
-      onFeedback(error instanceof Error ? error.message : 'Không thể check-out.')
+      onFeedback(error instanceof Error ? error.message : 'Không thể check-out. Hãy thử lại.')
+      await onChanged().catch(() => undefined)
     } finally {
       setBusyId('')
+      setBusyPhase('')
     }
   }
 
   // Phân loại: ca cần chấm (chưa hoàn tất) lên đầu, ca đã chấm xong tách riêng
-  const now = new Date()
   const decorated = ownRegistrations.map((registration) => {
-    const record = records.find((item) => item.shiftRegistrationId === registration.id)
+    const record = findAttendanceRecordForRegistration(records, registration)
     const checkInWindow = getCheckInWindow(registration)
     const canCheckIn = registration.workDate === today && !record
-      && now >= checkInWindow.opensAt && now <= checkInWindow.closesAt
     const isCheckedOut = Boolean(record?.checkOutTime)
-    const canCheckOut = Boolean(record && !record.checkOutTime) && now >= checkInWindow.checkOutOpensAt
-    const checkOutTooEarly = Boolean(record && !record.checkOutTime) && now < checkInWindow.checkOutOpensAt
+    const canCheckOut = Boolean(record && !record.checkOutTime)
+    const checkOutTooEarly = false
     return { registration, record, checkInWindow, canCheckIn, canCheckOut, isCheckedOut, checkOutTooEarly }
   })
   function sortKey(d: typeof decorated[number]) {
@@ -224,28 +376,39 @@ function SchedulePanel({
     if (d.record && !d.record.checkOutTime) return 2 // đang làm, chưa tới giờ ra
     return 3
   }
-  const pending = decorated.filter((d) => !d.isCheckedOut)
+  const missed = decorated.filter((d) => !d.record && d.registration.workDate < today)
+    .sort((a, b) => b.registration.workDate.localeCompare(a.registration.workDate))
+  const pending = decorated.filter((d) =>
+    !d.isCheckedOut
+    && !(d.registration.workDate < today && !d.record)
+    && (d.registration.workDate === today || Boolean(d.record && !d.record.checkOutTime)),
+  )
     .sort((a, b) => sortKey(a) - sortKey(b) || a.registration.workDate.localeCompare(b.registration.workDate))
   const completed = decorated.filter((d) => d.isCheckedOut)
     .sort((a, b) => b.registration.workDate.localeCompare(a.registration.workDate))
 
   function renderCard(d: typeof decorated[number], readOnly: boolean) {
     const { registration, record, checkInWindow, canCheckIn, canCheckOut, checkOutTooEarly } = d
+    const isOvertime = isOvertimeRegistration(registration)
     const localPreview = selfieLocalPreviews[registration.id]
     return (
-      <article className={`shift-card ${registration.status}${d.isCheckedOut ? ' done' : ''}`} key={registration.id}>
+      <article className={`shift-card ${registration.status}${d.isCheckedOut ? ' done' : ''}${isOvertime ? ' overtime' : ''}`} key={registration.id}>
         <div className="shift-date">
           <strong>{new Date(`${registration.workDate}T00:00:00`).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}</strong>
           <small>{new Date(`${registration.workDate}T00:00:00`).toLocaleDateString('vi-VN', { weekday: 'short' })}</small>
         </div>
         <div className="shift-main">
-          <span className={`attendance-status ${d.isCheckedOut ? 'done' : registration.status}`}>{d.isCheckedOut ? 'Đã chấm xong' : statusLabel(registration.status)}</span>
+          <span className={`attendance-status ${d.isCheckedOut ? 'done' : registration.status}`}>
+            {d.isCheckedOut ? (isOvertime ? 'Đã chấm tăng ca' : 'Đã chấm xong') : `${isOvertime ? 'Tăng ca · ' : ''}${statusLabel(registration.status)}`}
+          </span>
           <h3>{registration.startTime} – {registration.endTime}</h3>
           <p>{branchName(registration.branchId)}{registration.note ? ` · ${registration.note}` : ''}</p>
           {record && <div className="attendance-times">
             <span>Vào: <strong>{formatTime(record.checkInTime)}</strong></span>
             <span>Ra: <strong>{record.checkOutTime ? formatTime(record.checkOutTime) : 'Chưa check-out'}</strong></span>
+            {isOvertime && record.checkOutTime && <span>Giờ tăng ca: <strong>{workedHours(record)} giờ</strong></span>}
             {record.checkInAddress && <span className="attendance-location">Vị trí: <strong>{record.checkInAddress}</strong></span>}
+            {record.checkOutAddress && <span className="attendance-location">Vị trí ra: <strong>{record.checkOutAddress}</strong></span>}
           </div>}
           {record && selfiePreviews[registration.id] && (
             <figure className="attendance-selfie-preview">
@@ -253,16 +416,16 @@ function SchedulePanel({
               <figcaption>Ảnh chấm công vừa lưu</figcaption>
             </figure>
           )}
-          {!record && localPreview && (
+          {localPreview && (
             <figure className="attendance-selfie-preview">
-              <img src={localPreview} alt="Ảnh chuẩn bị check-in" />
-              <figcaption>Ảnh sắp chấm — chụp lại nếu bị rung/mờ</figcaption>
+              <img src={localPreview} alt="Ảnh chuẩn bị chấm công" />
+              <figcaption>Ảnh sắp chấm - chụp lại nếu bị rung/mờ</figcaption>
             </figure>
           )}
         </div>
         {!readOnly && (
-          <div className="shift-actions">
-            {canCheckIn && <>
+            <div className="shift-actions">
+              {canCheckIn && <>
               <label className="selfie-button">
                 <input
                   type="file"
@@ -273,10 +436,25 @@ function SchedulePanel({
                 {selfies[registration.id] ? '🔄 Chụp lại' : '📷 Chụp ảnh chấm công'}
               </label>
               <button className="primary-button" disabled={busyId === registration.id || !selfies[registration.id]} onClick={() => handleCheckIn(registration)}>
-                {busyId === registration.id ? 'Đang định vị…' : 'Check-in'}
+                {busyId === registration.id ? busyLabel(busyPhase) : 'Check-in'}
               </button>
+              {busyId === registration.id && <small className="attendance-busy-hint">Đang xử lý, vui lòng giữ máy vài giây…</small>}
             </>}
-            {canCheckOut && <button className="primary-button checkout-button" disabled={busyId === record?.id} onClick={() => handleCheckOut(record!, registration)}>Check-out</button>}
+            {canCheckOut && <>
+              <label className="selfie-button checkout-selfie-button">
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(event) => pickSelfie(registration, event.target.files?.[0])}
+                />
+                {selfies[registration.id] ? 'Chụp lại ảnh check-out' : 'Chụp ảnh check-out'}
+              </label>
+              <button className="primary-button checkout-button" disabled={busyId === record?.id || !selfies[registration.id]} onClick={() => handleCheckOut(record!, registration)}>
+                {busyId === record?.id ? busyLabel(busyPhase) : 'Check-out'}
+              </button>
+              {busyId === record?.id && <small className="attendance-busy-hint">Đang xử lý, vui lòng giữ máy vài giây…</small>}
+            </>}
             {checkOutTooEarly && (
               <small>Check-out mở lúc {checkInWindow.checkOutOpensAt.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} (30 phút trước giờ ra).</small>
             )}
@@ -285,6 +463,31 @@ function SchedulePanel({
             )}
           </div>
         )}
+      </article>
+    )
+  }
+
+  function renderCompletedRow(d: typeof decorated[number]) {
+    const { registration, record } = d
+    const isOvertime = isOvertimeRegistration(registration)
+    return (
+      <article className={`completed-shift-row${isOvertime ? ' overtime' : ''}`} key={registration.id}>
+        <time>{formatDate(registration.workDate)}</time>
+        <strong>{registration.startTime} - {registration.endTime}</strong>
+        <span>{branchName(registration.branchId)}</span>
+        <span>{isOvertime ? 'Tăng ca · ' : ''}Vào <b>{record ? formatTime(record.checkInTime) : '-'}</b> · Ra <b>{record?.checkOutTime ? formatTime(record.checkOutTime) : '-'}</b>{isOvertime && record?.checkOutTime ? ` · ${workedHours(record)} giờ tăng ca` : ''}</span>
+      </article>
+    )
+  }
+
+  function renderMissedRow(d: typeof decorated[number]) {
+    const { registration } = d
+    return (
+      <article className="completed-shift-row missed" key={registration.id}>
+        <time>{formatDate(registration.workDate)}</time>
+        <strong>{registration.startTime} - {registration.endTime}</strong>
+        <span>{branchName(registration.branchId)}</span>
+        <span>Chưa chấm công</span>
       </article>
     )
   }
@@ -301,18 +504,101 @@ function SchedulePanel({
           {!pending.length && <p className="empty-copy">Không có ca nào cần chấm công lúc này.</p>}
         </div>
       </section>
+      <AttendanceAdjustmentForm user={user} onFeedback={onFeedback} />
       {completed.length > 0 && (
         <section className="section-card attendance-schedule attendance-done">
           <div className="section-title">
             <div><span className="eyebrow dark">ĐÃ CHẤM CÔNG</span><h2>Ca đã hoàn tất</h2></div>
             <span className="date-chip">{completed.length} ca</span>
           </div>
+          <div className="completed-shift-list">
+            {completed.map(renderCompletedRow)}
+          </div>
+        </section>
+      )}
+      {missed.length > 0 && (
+        <section className="section-card attendance-schedule attendance-done">
+          <div className="section-title">
+            <div><span className="eyebrow dark">QUÁ HẠN</span><h2>Ca đã qua chưa chấm</h2></div>
+            <span className="date-chip">{missed.length} ca</span>
+          </div>
           <div className="shift-card-list">
-            {completed.map((d) => renderCard(d, true))}
+            {missed.map(renderMissedRow)}
           </div>
         </section>
       )}
     </>
+  )
+}
+
+function AttendanceAdjustmentForm({ user, onFeedback }: { user: AppUser; onFeedback: (message: string) => void }) {
+  const [kind, setKind] = useState<AttendanceAdjustmentRequest['kind']>('late_arrival')
+  const [workDate, setWorkDate] = useState(localDateKey())
+  const [scheduledTime, setScheduledTime] = useState('08:00')
+  const [actualTime, setActualTime] = useState('08:15')
+  const [reason, setReason] = useState('')
+  const [evidenceNote, setEvidenceNote] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault()
+    if (!reason.trim()) {
+      onFeedback('Cần nhập lý do để lưu chứng từ.')
+      return
+    }
+    setSaving(true)
+    try {
+      await createAttendanceAdjustment(user, {
+        kind,
+        workDate,
+        scheduledTime,
+        actualTime,
+        reason,
+        evidenceNote,
+      })
+      setReason('')
+      setEvidenceNote('')
+      onFeedback('Đã lưu chứng từ đi trễ/về sớm.')
+    } catch (error) {
+      onFeedback(error instanceof Error ? error.message : 'Không thể lưu chứng từ.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="section-card attendance-adjustment-card">
+      <div className="section-title">
+        <div>
+          <span className="eyebrow dark">CHỨNG TỪ CÔNG</span>
+          <h2>Đơn xác nhận đi trễ / về sớm</h2>
+        </div>
+      </div>
+      <form className="attendance-adjustment-form" onSubmit={submit}>
+        <label>Loại đơn
+          <select value={kind} onChange={(event) => setKind(event.target.value as AttendanceAdjustmentRequest['kind'])}>
+            <option value="late_arrival">Đi trễ</option>
+            <option value="early_leave">Xin về sớm</option>
+          </select>
+        </label>
+        <label>Ngày
+          <input type="date" value={workDate} onChange={(event) => setWorkDate(event.target.value)} />
+        </label>
+        <label>Giờ theo ca
+          <input type="time" value={scheduledTime} onChange={(event) => setScheduledTime(event.target.value)} />
+        </label>
+        <label>Giờ thực tế / xin phép
+          <input type="time" value={actualTime} onChange={(event) => setActualTime(event.target.value)} />
+        </label>
+        <label className="span-2">Lý do
+          <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="VD: kẹt xe, việc gia đình, sức khỏe..." />
+        </label>
+        <label className="span-2">Ghi chú chứng từ
+          <input value={evidenceNote} onChange={(event) => setEvidenceNote(event.target.value)} placeholder="VD: đã báo ca trưởng lúc 08:05, kèm tin nhắn Zalo..." />
+        </label>
+        <button className="primary-button" disabled={saving}>{saving ? 'Đang lưu...' : 'Lưu đơn'}</button>
+      </form>
+    </section>
   )
 }
 
@@ -326,6 +612,7 @@ function RegistrationPanel({
   onFeedback: (message: string) => void
 }) {
   const branchIds = user.role === 'manager' || user.role === 'admin' ? permittedBranchIds(user) : [user.branchId]
+  const branches = useConfiguredBranches({ user })
   const [branchId, setBranchId] = useState(user.branchId)
   const [workDate, setWorkDate] = useState(localDateKey())
   const [shiftId, setShiftId] = useState('')
@@ -351,6 +638,14 @@ function RegistrationPanel({
     : matchingRegistrations.length === recommendedStaff
       ? 'balanced'
       : 'crowded'
+
+  useEffect(() => {
+    if (shiftId || !availableShifts.length) return
+    const firstShift = availableShifts[0]
+    setShiftId(firstShift.id)
+    setStartTime(firstShift.startTime)
+    setEndTime(firstShift.endTime)
+  }, [availableShifts, shiftId])
 
   function selectShift(id: string) {
     setShiftId(id)
@@ -389,7 +684,7 @@ function RegistrationPanel({
         <div className="form-grid">
           <label>Chi nhánh
             <select value={branchId} disabled={branchIds.length === 1} onChange={(event) => { setBranchId(event.target.value); setShiftId('') }}>
-              {BRANCHES.filter((item) => branchIds.includes(item.id)).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+              {branches.filter((item) => branchIds.includes(item.id)).map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
             </select>
           </label>
           <label>Ngày làm việc
@@ -431,19 +726,20 @@ function RegistrationPanel({
 }
 
 function SharedScheduleBoard({
-  user, shifts, registrations, people, onChanged, onFeedback,
+  user, shifts, registrations, people, employees, onChanged, onFeedback,
 }: {
   user: AppUser
   shifts: WorkShift[]
   registrations: ShiftRegistration[]
   people: SchedulePerson[]
+  employees: EmployeeProfile[]
   onChanged: () => Promise<void>
   onFeedback: (message: string) => void
 }) {
+  const isScheduleManager = canManageShiftSetup(user)
   const [branchId, setBranchId] = useState(user.branchId)
-  const [from, setFrom] = useState(registrationWeekStartKey())
+  const [from, setFrom] = useState(isScheduleManager ? registrationWeekStartKey() : localDateKey())
   const [liveUsers, setLiveUsers] = useState<string[]>([])
-  const [selectedPersonId, setSelectedPersonId] = useState(user.id)
   const [savingCell, setSavingCell] = useState('')
   const [entries, setEntries] = useState<ScheduleEntry[]>([])
   const [setupOpen, setSetupOpen] = useState(false)
@@ -452,27 +748,108 @@ function SharedScheduleBoard({
   const [overtimeDate, setOvertimeDate] = useState(localDateKey())
   const [overtimeStart, setOvertimeStart] = useState('18:00')
   const [overtimeEnd, setOvertimeEnd] = useState('22:00')
-  const [overtimeNote, setOvertimeNote] = useState('Ca tăng ca')
+  const [overtimeNote, setOvertimeNote] = useState('')
   const [overtimeBusy, setOvertimeBusy] = useState(false)
-  const [personName, setPersonName] = useState('')
-  const [personType, setPersonType] = useState<EmploymentType>('part_time')
-  const [personPosition, setPersonPosition] = useState('Part-time')
   const [shiftName, setShiftName] = useState('')
   const [shiftStart, setShiftStart] = useState('08:00')
   const [shiftEnd, setShiftEnd] = useState('16:00')
-  const [shiftType, setShiftType] = useState<EmploymentType>('part_time')
+  const [shiftType, setShiftType] = useState<EmploymentType | ''>('')
+  const [customDrafts, setCustomDrafts] = useState<Record<string, { startTime: string; endTime: string }>>({})
+  const [savedCustomCells, setSavedCustomCells] = useState<Record<string, string>>({})
+  const [bootstrappedBranches, setBootstrappedBranches] = useState<Record<string, boolean>>({})
   const days = Array.from({ length: 7 }, (_, index) => {
     const date = new Date(`${from}T00:00:00`)
     date.setDate(date.getDate() + index)
     return localDateKey(date)
   })
-  const branchIds = user.role === 'manager' || user.role === 'admin' ? permittedBranchIds(user) : [user.branchId]
+  function moveWeek(deltaDays: number) {
+    const base = new Date(`${from}T00:00:00`)
+    base.setDate(base.getDate() + deltaDays)
+    let next = localDateKey(base)
+    if (!isScheduleManager && next < localDateKey()) next = localDateKey()
+    setFrom(next)
+  }
+  function resetWeek() {
+    setFrom(isScheduleManager ? registrationWeekStartKey() : localDateKey())
+  }
+  const canSetupShifts = canManageShiftSetup(user)
+  const branchIds = isScheduleManager ? permittedBranchIds(user) : [user.branchId]
+  const branches = useConfiguredBranches({ user })
   const branchShifts = shifts.filter((shift) => shift.branchId === branchId)
-  const sheetShiftOptions = Array.from(new Map(
-    branchShifts
-      .map((shift) => [`${shift.startTime}-${shift.endTime}`, shift]),
-  ).values()).sort((a, b) => a.startTime.localeCompare(b.startTime))
-  const schedulePeople = people
+  const fallbackShiftOptions: WorkShift[] = DEFAULT_WORK_SHIFT_TEMPLATES.map((template, index) => ({
+    id: `${FALLBACK_SHIFT_PREFIX}${index}`,
+    branchId,
+    name: template.name,
+    startTime: template.startTime,
+    endTime: template.endTime,
+    graceMinutes: 5,
+    recommendedStaff: 3,
+    employmentTypes: template.employmentTypes,
+    active: true,
+  }))
+  const sheetShiftOptions = (branchShifts.length ? branchShifts : fallbackShiftOptions)
+    .slice()
+    .sort((a, b) => a.startTime.localeCompare(b.startTime) || a.endTime.localeCompare(b.endTime) || a.name.localeCompare(b.name, 'vi'))
+  const usingFallbackShifts = !branchShifts.length && fallbackShiftOptions.length > 0
+
+  useEffect(() => {
+    if (!isScheduleManager && from < localDateKey()) setFrom(localDateKey())
+  }, [from, isScheduleManager])
+
+  useEffect(() => {
+    if (!canSetupShifts || branchShifts.length || bootstrappedBranches[branchId]) return
+    const branch = branches.find((item) => item.id === branchId)
+    if (!branch) return
+    setBootstrappedBranches((items) => ({ ...items, [branchId]: true }))
+    void ensureDefaultWorkShifts(user, branch)
+      .then(async (created) => {
+        if (!created.length) return
+        await onChanged()
+        onFeedback('Đã khởi tạo khung ca mặc định cho chi nhánh này.')
+      })
+      .catch((error) => {
+        onFeedback(error instanceof Error ? error.message : 'Không thể khởi tạo khung ca mặc định.')
+      })
+  }, [bootstrappedBranches, branchId, branchShifts.length, branches, canSetupShifts, onChanged, onFeedback, user])
+  // Gộp tài khoản thật vào danh sách: trigger DB lẽ ra tự đồng bộ profiles → schedule_people,
+  // nhưng nếu thiếu (chưa chạy migration / account chưa gắn chi nhánh) thì account vẫn hiện ở đây.
+  const mergedPeople = useMemo(() => {
+    const byProfile = new Map<string, SchedulePerson>()
+    const unlinked: SchedulePerson[] = []
+    for (const person of people) {
+      if (person.profileId) byProfile.set(person.profileId, person)
+      else unlinked.push(person)
+    }
+    let order = people.length
+    if (!byProfile.has(user.id)) {
+      byProfile.set(user.id, {
+        id: user.id,
+        profileId: user.id,
+        name: user.name,
+        branchId: user.branchId,
+        employmentType: user.employmentType,
+        positionTitle: user.positionTitle,
+        active: true,
+        sortOrder: -1,
+      })
+    }
+    for (const employee of employees) {
+      if (!employee.branchId || employee.active === false) continue
+      if (byProfile.has(employee.id)) continue
+      byProfile.set(employee.id, {
+        id: employee.id,
+        profileId: employee.id,
+        name: employee.name,
+        branchId: employee.branchId,
+        employmentType: employee.employmentType,
+        positionTitle: employee.positionTitle,
+        active: true,
+        sortOrder: order++,
+      })
+    }
+    return [...byProfile.values(), ...unlinked]
+  }, [people, employees, user.id, user.name, user.branchId, user.employmentType, user.positionTitle])
+  const schedulePeople = mergedPeople
     .filter((person) => person.branchId === branchId && person.active)
     .sort((a, b) => {
       const aIsMe = a.profileId === user.id ? 0 : 1
@@ -486,11 +863,13 @@ function SharedScheduleBoard({
   const displayEntries = useMemo(() => {
     const merged = new Map<string, ScheduleEntry>()
     entries.forEach((entry) => merged.set(`${entry.personId}|${entry.workDate}`, entry))
-    for (const registration of registrations) {
+    const mainRegistrations = registrations
+      .filter((registration) => !isSupplementalScheduleRegistration(registration))
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+    for (const registration of mainRegistrations) {
       if (
         registration.branchId !== branchId
         || registration.status === 'rejected'
-        || !registration.shiftId
         || registration.workDate < days[0]
         || registration.workDate > days[6]
       ) continue
@@ -529,60 +908,139 @@ function SharedScheduleBoard({
       const timer = window.setInterval(() => void onChanged(), 10000)
       return () => window.clearInterval(timer)
     }
-    const channel = client.channel('schedule:company', { config: { presence: { key: user.id } } })
-      .on('postgres_changes', {
-        event: '*', schema: 'public', table: 'schedule_entries',
-      }, () => void Promise.all([loadEntries(), onChanged()]))
-      .on('postgres_changes', {
-        event: '*', schema: 'public', table: 'schedule_people',
-      }, () => void onChanged())
-      .on('postgres_changes', {
-        event: '*', schema: 'public', table: 'shifts',
-      }, () => void onChanged())
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState<{ name: string; branchId: string }>()
-        setLiveUsers(Object.values(state).flat().map((entry) =>
-          `${entry.name} · ${branchName(entry.branchId)}`,
-        ).filter(Boolean))
-      })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') await channel.track({
-          name: user.name,
-          branchId: user.branchId,
-          page: 'schedule',
-          at: new Date().toISOString(),
-        })
-      })
-    return () => { void client.removeChannel(channel) }
+    // Topic presence phải GIỮ CHUNG giữa các client ('schedule:company') để thấy nhau
+    // online — không được đổi tên duy nhất như các channel postgres_changes khác.
+    // supabase-js mới tái sử dụng channel trùng topic và .on() sau subscribe sẽ THROW,
+    // nên nếu channel cũ chưa gỡ xong (StrictMode/đổi tuần) thì gỡ nó rồi thử lại.
+    let channel: ReturnType<typeof client.channel> | null = null
+    let retryTimer: number | null = null
+    let cancelled = false
+    const connect = (attempt = 0) => {
+      if (cancelled) return
+      try {
+        const next = client.channel('schedule:company', { config: { presence: { key: user.id } } })
+          .on('postgres_changes', {
+            event: '*', schema: 'public', table: 'schedule_entries',
+          }, () => void Promise.all([loadEntries(), onChanged()]))
+          .on('postgres_changes', {
+            event: '*', schema: 'public', table: 'schedule_people',
+          }, () => void onChanged())
+          .on('postgres_changes', {
+            event: '*', schema: 'public', table: 'shifts',
+          }, () => void onChanged())
+          .on('presence', { event: 'sync' }, () => {
+            const state = next.presenceState<{ name: string; branchId: string }>()
+            setLiveUsers(Object.values(state).flat().map((entry) =>
+              `${entry.name} · ${branchName(entry.branchId)}`,
+            ).filter(Boolean))
+          })
+          .subscribe(async (status) => {
+            if (status === 'SUBSCRIBED') await next.track({
+              name: user.name,
+              branchId: user.branchId,
+              page: 'schedule',
+              at: new Date().toISOString(),
+            })
+          })
+        channel = next
+      } catch {
+        const stale = client.getChannels().find((item) => item.topic === 'realtime:schedule:company')
+        if (stale) void client.removeChannel(stale).catch(() => null)
+        if (attempt < 3) retryTimer = window.setTimeout(() => connect(attempt + 1), 500)
+      }
+    }
+    connect()
+    return () => {
+      cancelled = true
+      if (retryTimer) window.clearTimeout(retryTimer)
+      if (channel) void client.removeChannel(channel)
+    }
   }, [user.id, user.name, user.branchId, branchId, from])
 
   useEffect(() => {
-    if (user.role !== 'manager' && ownPerson) setSelectedPersonId(ownPerson.id)
-  }, [branchId, user.id, user.role, ownPerson?.id])
-
-  useEffect(() => {
     if (!overtimePersonId && ownPerson) setOvertimePersonId(ownPerson.id)
-    if (user.role !== 'manager' && ownPerson && overtimePersonId !== ownPerson.id) setOvertimePersonId(ownPerson.id)
-    if (user.role === 'manager' || user.role === 'admin' && overtimePersonId && !schedulePeople.some((person) => person.id === overtimePersonId)) {
+    if (!isScheduleManager && ownPerson && overtimePersonId !== ownPerson.id) setOvertimePersonId(ownPerson.id)
+    if (isScheduleManager && overtimePersonId && !schedulePeople.some((person) => person.id === overtimePersonId)) {
       setOvertimePersonId(schedulePeople[0]?.id || '')
     }
-  }, [ownPerson?.id, overtimePersonId, schedulePeople, user.role])
+  }, [isScheduleManager, ownPerson?.id, overtimePersonId, schedulePeople, user.role])
 
   useEffect(() => {
     if (!branchIds.includes(branchId)) setBranchId(branchIds[0] || user.branchId)
   }, [branchId, branchIds, user.branchId])
 
+  function customDraftKey(person: SchedulePerson, date: string) {
+    return `${person.id}|${date}`
+  }
+
+  function openCustomDraft(person: SchedulePerson, date: string, registration?: ScheduleEntry) {
+    const key = customDraftKey(person, date)
+    setCustomDrafts((current) => ({
+      ...current,
+      [key]: current[key] || {
+        startTime: registration?.startTime || '09:00',
+        endTime: registration?.endTime || '17:00',
+      },
+    }))
+  }
+
+  function closeCustomDraft(person: SchedulePerson, date: string) {
+    const key = customDraftKey(person, date)
+    setCustomDrafts((current) => {
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+  }
+
+  async function selectCellShift(person: SchedulePerson, date: string, value: string, registration?: ScheduleEntry) {
+    if (value === CUSTOM_SHIFT_VALUE) {
+      openCustomDraft(person, date, registration)
+      return
+    }
+    closeCustomDraft(person, date)
+    await changeCell(person, date, value)
+  }
+
   async function changeCell(person: SchedulePerson, date: string, shiftId: string) {
-    if (person.profileId !== user.id && user.role !== 'manager') return
+    if (person.profileId !== user.id && !isScheduleManager) return
+    const shift = shifts.find((item) => item.id === shiftId)
+    const fallbackShift = sheetShiftOptions.find((item) => item.id === shiftId && item.id.startsWith(FALLBACK_SHIFT_PREFIX))
     const key = `${person.id}-${date}`
     setSavingCell(key)
     try {
-      await setScheduleEntry(user, {
-        personId: person.id,
-        branchId,
-        workDate: date,
-        shiftId: shiftId || undefined,
-      })
+      if (person.profileId) {
+        if (fallbackShift) {
+          await setScheduleRegistration(user, {
+            userId: person.profileId,
+            userName: person.name,
+            branchId,
+            workDate: date,
+            startTime: fallbackShift.startTime,
+            endTime: fallbackShift.endTime,
+            note: fallbackShift.name,
+            employmentType: person.employmentType,
+            positionTitle: person.positionTitle,
+          })
+        } else {
+          await setScheduleRegistration(user, {
+            userId: person.profileId,
+            userName: person.name,
+            branchId,
+            workDate: date,
+            shift,
+            employmentType: person.employmentType,
+            positionTitle: person.positionTitle,
+          })
+        }
+      } else {
+        await setScheduleEntry(user, {
+          personId: person.id,
+          branchId,
+          workDate: date,
+          shiftId: shiftId || undefined,
+        })
+      }
       await Promise.all([loadEntries(), onChanged()])
       onFeedback(`Đã cập nhật ca của ${person.name}.`)
     } catch (error) {
@@ -592,20 +1050,43 @@ function SharedScheduleBoard({
     }
   }
 
-  async function addPerson(event: React.FormEvent) {
-    event.preventDefault()
+  async function saveCustomCell(person: SchedulePerson, date: string) {
+    if (person.profileId !== user.id && !isScheduleManager) return
+    const key = customDraftKey(person, date)
+    const draft = customDrafts[key]
+    if (!draft) return
+    setSavingCell(`${person.id}-${date}`)
     try {
-      await createSchedulePerson(user, {
-        name: personName,
+      if (!person.profileId) {
+        onFeedback('Nhân viên này chưa có tài khoản đăng nhập nên chưa thể lưu giờ tùy chỉnh.')
+        return
+      }
+      await setScheduleRegistration(user, {
+        userId: person.profileId,
+        userName: person.name,
         branchId,
-        employmentType: personType,
-        positionTitle: personPosition,
+        workDate: date,
+        startTime: draft.startTime,
+        endTime: draft.endTime,
+        note: 'Ca tùy chỉnh',
+        employmentType: person.employmentType,
+        positionTitle: person.positionTitle,
       })
-      setPersonName('')
-      await onChanged()
-      onFeedback('Đã thêm nhân sự vào bảng lịch.')
+      await Promise.all([loadEntries(), onChanged()])
+      setSavedCustomCells((current) => ({ ...current, [key]: `${draft.startTime}-${draft.endTime}` }))
+      window.setTimeout(() => {
+        setSavedCustomCells((current) => {
+          const next = { ...current }
+          delete next[key]
+          return next
+        })
+      }, 2400)
+      closeCustomDraft(person, date)
+      onFeedback(`Đã cập nhật giờ làm ${draft.startTime}-${draft.endTime} cho ${person.name}.`)
     } catch (error) {
-      onFeedback(error instanceof Error ? error.message : 'Không thể thêm nhân sự.')
+      onFeedback(error instanceof Error ? error.message : 'Không thể lưu giờ tùy chỉnh.')
+    } finally {
+      setSavingCell('')
     }
   }
 
@@ -627,13 +1108,23 @@ function SharedScheduleBoard({
         name: shiftName || `${shiftStart}-${shiftEnd}`,
         startTime: shiftStart,
         endTime: shiftEnd,
-        employmentTypes: [shiftType],
+        employmentTypes: shiftType ? [shiftType] : [],
       })
       setShiftName('')
       await onChanged()
       onFeedback('Đã thêm khung ca mới.')
     } catch (error) {
       onFeedback(error instanceof Error ? error.message : 'Không thể thêm khung ca.')
+    }
+  }
+
+  async function removeShift(shift: WorkShift) {
+    try {
+      await archiveWorkShift(user, shift.id)
+      await onChanged()
+      onFeedback(`Đã xóa khung ca ${shift.startTime}-${shift.endTime}.`)
+    } catch (error) {
+      onFeedback(error instanceof Error ? error.message : 'Không thể xóa khung ca.')
     }
   }
 
@@ -653,15 +1144,15 @@ function SharedScheduleBoard({
         workDate: overtimeDate,
         startTime: overtimeStart,
         endTime: overtimeEnd,
-        note: overtimeNote || 'Ca tăng ca',
+        note: overtimeNote.trim() ? `Tăng ca · ${overtimeNote.trim()}` : 'Tăng ca',
         employmentType: person.employmentType,
         positionTitle: person.positionTitle,
       })
-      setOvertimeNote('Ca tăng ca')
+      setOvertimeNote('')
       await onChanged()
-      onFeedback(`Đã thêm ca làm cho ${person.name}.`)
+      onFeedback(`Đã đăng ký tăng ca cho ${person.name}. Ca tăng ca sẽ check-in/check-out riêng.`)
     } catch (error) {
-      onFeedback(error instanceof Error ? error.message : 'Không thể thêm ca làm.')
+      onFeedback(error instanceof Error ? error.message : 'Không thể đăng ký tăng ca.')
     } finally {
       setOvertimeBusy(false)
     }
@@ -672,47 +1163,54 @@ function SharedScheduleBoard({
       <section className="section-card shared-schedule-toolbar">
         <div>
           <span className="eyebrow dark">LỊCH CHUNG THEO CHI NHÁNH</span>
-          <h2>Ai đã đăng ký ca nào?</h2>
-          <p>Chọn tên ở cột trái, sau đó chọn khung giờ trong từng ô. Nhân viên chỉ sửa được hàng của mình; Quản lý được chỉnh toàn bảng.</p>
+          <h2>Đăng ký ca trong tuần</h2>
+          <p>Thẻ của bạn được ghim lên đầu — chọn khung giờ cho từng ngày là xong. Nhân viên chỉ sửa thẻ của mình; Quản lý chỉnh được toàn bảng.</p>
           <div className="schedule-live-users"><i />{liveUsers.length ? `${liveUsers.join(', ')} đang xem lịch` : 'Lịch tự đồng bộ khi có người đăng ký'}</div>
-          {user.role === 'manager' || user.role === 'admin' && <button className="secondary-button schedule-setup-button" onClick={() => setSetupOpen((value) => !value)}>
-            {setupOpen ? 'Đóng thiết lập' : '⚙ Thiết lập nhân sự & ca'}
-          </button>}
+          {canSetupShifts && (
+            <button className="secondary-button schedule-setup-button" onClick={() => setSetupOpen((value) => !value)}>
+              {setupOpen ? 'Đóng thiết lập' : '⚙ Thiết lập nhân sự & ca'}
+            </button>
+          )}
         </div>
         <div className="shared-schedule-filters">
           <label>Chi nhánh
             <select value={branchId} disabled={branchIds.length === 1} onChange={(event) => setBranchId(event.target.value)}>
-              {BRANCHES.filter((branch) => branchIds.includes(branch.id)).map((branch) =>
+              {branches.filter((branch) => branchIds.includes(branch.id)).map((branch) =>
                 <option key={branch.id} value={branch.id}>{branch.name}</option>,
               )}
             </select>
           </label>
           <label>Tuần bắt đầu
-            <input type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
+            <input type="date" value={from} min={isScheduleManager ? undefined : localDateKey()} onChange={(event) => setFrom(event.target.value)} />
           </label>
+          <div className="schedule-week-nav" role="group" aria-label="Chuyển tuần">
+            <button type="button" onClick={() => moveWeek(-7)} disabled={!isScheduleManager && from <= localDateKey()}>‹ Tuần trước</button>
+            <button type="button" onClick={resetWeek}>Tuần này</button>
+            <button type="button" onClick={() => moveWeek(7)}>Tuần sau ›</button>
+          </div>
         </div>
       </section>
 
       <section className="section-card overtime-panel">
         <div>
-          <span className="eyebrow dark">CA BỔ SUNG</span>
-          <h2>+ Ca làm</h2>
-          <p>Thêm ca tăng ca hoặc ca phát sinh. Ca này sẽ được tính công sau khi nhân viên check-in và check-out.</p>
+          <span className="eyebrow dark">TĂNG CA</span>
+          <h2>Đăng ký tăng ca</h2>
+          <p>Tăng ca là một phiên chấm công riêng: nhân viên phải check-in và check-out riêng, sau đó hệ thống ghi nhận số giờ tăng ca thực tế.</p>
         </div>
         <button className="secondary-button" type="button" onClick={() => setOvertimeOpen((value) => !value)}>
-          {overtimeOpen ? 'Đóng' : '+ Thêm ca'}
+          {overtimeOpen ? 'Đóng' : '+ Tăng ca'}
         </button>
         {overtimeOpen && (
           <form className="overtime-form" onSubmit={addOvertime}>
             <label>Nhân viên
-              <select value={overtimePersonId} onChange={(event) => setOvertimePersonId(event.target.value)} disabled={user.role !== 'manager'}>
+              <select value={overtimePersonId} onChange={(event) => setOvertimePersonId(event.target.value)} disabled={!isScheduleManager}>
                 {schedulePeople.map((person) => (
                   <option key={person.id} value={person.id}>{person.name}{person.profileId === user.id ? ' · Tôi' : ''}</option>
                 ))}
               </select>
             </label>
             <label>Ngày làm
-              <input type="date" min={user.role === 'manager' || user.role === 'admin' ? undefined : localDateKey()} value={overtimeDate} onChange={(event) => setOvertimeDate(event.target.value)} />
+              <input type="date" min={isScheduleManager ? undefined : localDateKey()} value={overtimeDate} onChange={(event) => setOvertimeDate(event.target.value)} />
             </label>
             <label>Bắt đầu
               <input type="time" value={overtimeStart} onChange={(event) => setOvertimeStart(event.target.value)} />
@@ -720,37 +1218,23 @@ function SharedScheduleBoard({
             <label>Kết thúc
               <input type="time" value={overtimeEnd} onChange={(event) => setOvertimeEnd(event.target.value)} />
             </label>
-            <label className="overtime-note">Ghi chú
-              <input value={overtimeNote} onChange={(event) => setOvertimeNote(event.target.value)} placeholder="Ví dụ: tăng ca hỗ trợ quầy" />
+            <label className="overtime-note">Lý do tăng ca
+              <input value={overtimeNote} onChange={(event) => setOvertimeNote(event.target.value)} placeholder="Ví dụ: hỗ trợ quầy giờ cao điểm" />
             </label>
-            <button className="primary-button" disabled={overtimeBusy || !overtimePersonId}>{overtimeBusy ? 'Đang lưu...' : 'Lưu ca làm'}</button>
+            <button className="primary-button" disabled={overtimeBusy || !overtimePersonId}>{overtimeBusy ? 'Đang lưu...' : 'Lưu tăng ca'}</button>
           </form>
         )}
       </section>
 
-      {setupOpen && user.role === 'manager' || user.role === 'admin' && (
+      {setupOpen && canSetupShifts && (
         <section className="schedule-setup-panel">
-          <form onSubmit={addPerson}>
-            <strong>Thêm tên vào bảng</strong>
-            <input value={personName} onChange={(event) => setPersonName(event.target.value)} placeholder="Họ và tên nhân viên" required />
-            <select value={personType} onChange={(event) => {
-              const type = event.target.value as EmploymentType
-              setPersonType(type)
-              setPersonPosition(employmentLabel(type))
-            }}>
-              <option value="leader">Ca trưởng / Ca phó</option>
-              <option value="full_time">Full-time</option>
-              <option value="part_time">Part-time</option>
-            </select>
-            <input value={personPosition} onChange={(event) => setPersonPosition(event.target.value)} placeholder="Vị trí" required />
-            <button className="primary-button">+ Thêm dòng</button>
-          </form>
           <form onSubmit={addShift}>
             <strong>Tạo khung ca</strong>
             <input value={shiftName} onChange={(event) => setShiftName(event.target.value)} placeholder="Tên ca (không bắt buộc)" />
             <input type="time" value={shiftStart} onChange={(event) => setShiftStart(event.target.value)} required />
             <input type="time" value={shiftEnd} onChange={(event) => setShiftEnd(event.target.value)} required />
-            <select value={shiftType} onChange={(event) => setShiftType(event.target.value as EmploymentType)}>
+            <select value={shiftType} onChange={(event) => setShiftType(event.target.value as EmploymentType | '')}>
+              <option value="">Mọi vai trò</option>
               <option value="leader">Ca trưởng</option>
               <option value="full_time">Full-time</option>
               <option value="part_time">Part-time</option>
@@ -761,147 +1245,67 @@ function SharedScheduleBoard({
             {branchShifts.map((shift) => <span key={shift.id}>
               <b>{shift.startTime}-{shift.endTime}</b>
               <small>{shift.name}</small>
-              <button onClick={() => void archiveWorkShift(user, shift.id).then(onChanged)}>×</button>
+              {canSetupShifts && <button type="button" onClick={() => void removeShift(shift)}>×</button>}
             </span>)}
           </div>
         </section>
       )}
 
-      {/* Vertical per-employee layout */}
-      <div className="vertical-shift-grid" style={{ marginBottom: 18 }}>
+      {/* Vertical registration board — mỗi người một thẻ, 7 ngày xếp dọc, không cuộn ngang */}
+      <section className="schedule-vboard" aria-label="Bảng đăng ký ca theo chiều dọc">
+        {!sheetShiftOptions.length && (
+          <p className="schedule-vboard-empty">
+            Chi nhánh chưa có khung ca nào nên chưa đăng ký được.{' '}
+            {setupOpen
+              ? 'Tạo ít nhất một khung giờ trong phần thiết lập đang mở ở trên.'
+              : 'Mở “Thiết lập nhân sự & ca” ở trên để tạo khung giờ trước.'}
+          </p>
+        )}
         {schedulePeople.map((person) => {
-          const editable = person.profileId === user.id || user.role === 'manager' || user.role === 'admin'
-          const personEntries = days.map((date) => {
-            const registration = displayEntries.find((item) => item.personId === person.id && item.workDate === date)
-            return { date, registration }
-          }).filter(({ registration }) => registration)
-          if (!editable && person.profileId !== user.id) return null
+          const editable = person.profileId === user.id || isScheduleManager
+          const isMe = person.profileId === user.id
           return (
-            <div className="vertical-employee-card" key={person.id}>
-              <div className="vec-head">
+            <article className={`schedule-vcard ${isMe ? 'me' : ''}`} key={person.id}>
+              <header className="schedule-vcard-head">
                 <span className="vec-avatar">{person.name.trim().slice(0, 1).toUpperCase()}</span>
                 <div>
-                  <span className="vec-name">{person.name}{person.profileId === user.id ? ' · Tôi' : ''}</span>
-                  <span className="vec-role">{person.positionTitle || employmentLabel(person.employmentType)}</span>
-                </div>
-              </div>
-              <div className="vec-shifts">
-                {personEntries.length ? personEntries.map(({ date, registration }) => (
-                  <div className="vec-shift-row registered" key={date}>
-                    <span className="vec-shift-time">{new Date(`${date}T00:00:00`).toLocaleDateString('vi-VN', { weekday: 'short', day: '2-digit', month: '2-digit' })}</span>
-                    <span className="vec-shift-status ok">{registration!.startTime}–{registration!.endTime}</span>
-                  </div>
-                )) : (
-                  <div className="vec-shift-row" style={{ color: 'var(--muted)', fontSize: 11 }}>Chưa đăng ký tuần này</div>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      <div className="schedule-scroll-hint">Bảng lịch chi tiết (kéo ngang để xem 7 ngày):</div>
-      <div className="schedule-sheet-scroll">
-        <section className="weekly-schedule-matrix" aria-label="Bảng đăng ký ca chung">
-          <div className="weekly-schedule-row header">
-            <strong>Họ và tên</strong><strong>Vị trí</strong>
-            {days.map((date) => <strong key={date}>{new Date(`${date}T00:00:00`).toLocaleDateString('vi-VN', { weekday: 'short', day: '2-digit', month: '2-digit' })}</strong>)}
-          </div>
-          {schedulePeople.map((person) => {
-            const editable = person.profileId === user.id || user.role === 'manager' || user.role === 'admin'
-            const selected = selectedPersonId === person.id
-            return (
-            <div className={`weekly-schedule-row ${selected ? 'selected' : ''}`} key={person.id}>
-              <button
-                type="button"
-                className="schedule-person-button"
-                disabled={!editable}
-                onClick={() => editable && setSelectedPersonId(person.id)}
-              >
-                {person.name}{person.profileId === user.id ? ' · Tôi' : ''}
-              </button>
-              <span className="schedule-position-cell">
-                {person.positionTitle || employmentLabel(person.employmentType)}
-                {user.role === 'manager' || user.role === 'admin' && person.profileId !== user.id && (
-                  <button title="Xóa khỏi bảng lịch" onClick={() => void removePerson(person)}>×</button>
-                )}
-              </span>
-              {days.map((date) => {
-                const registration = displayEntries.find((item) => item.personId === person.id && item.workDate === date)
-                const value = sheetShiftOptions.find((shift) =>
-                  shift.id === registration?.shiftId
-                  || (shift.startTime === registration?.startTime && shift.endTime === registration?.endTime),
-                )?.id || ''
-                const canChange = editable
-                  && (user.role === 'manager' || user.role === 'admin' || date >= localDateKey())
-                const extraRegistrations = registrations.filter((item) =>
-                  person.profileId
-                  && item.userId === person.profileId
-                  && item.branchId === branchId
-                  && item.workDate === date
-                  && item.status !== 'rejected'
-                  && (!registration || item.shiftId !== registration.shiftId || item.startTime !== registration.startTime || item.endTime !== registration.endTime)
-                )
-                return (
-                  <div className={`schedule-day-cell ${canChange ? 'editable' : 'readonly'}`} key={date}>
-                    <select
-                      aria-label={`${person.name} ${formatDate(date)}`}
-                      className={`schedule-cell ${registration ? shiftColor(registration.startTime) : 'off'}`}
-                      value={value}
-                      disabled={!canChange || savingCell === `${person.id}-${date}`}
-                      onChange={(event) => void changeCell(person, date, event.target.value)}
-                    >
-                      <option value="">OFF</option>
-                      {sheetShiftOptions.map((shift) =>
-                        <option key={shift.id} value={shift.id}>{shift.startTime}-{shift.endTime}</option>,
-                      )}
-                    </select>
-                    {extraRegistrations.map((item) => (
-                      <span className="extra-shift-chip" key={item.id}>+ {item.startTime}-{item.endTime}</span>
-                    ))}
-                  </div>
-                )
-              })}
-            </div>
-          )})}
-          {!schedulePeople.length && <p className="empty-copy">Chưa có nhân viên hoặc đăng ký ca trong tuần này.</p>}
-        </section>
-      </div>
-      <section className="mobile-schedule-list" aria-label="Bảng đăng ký ca trên điện thoại">
-        {schedulePeople.map((person) => {
-          const editable = person.profileId === user.id || user.role === 'manager' || user.role === 'admin'
-          return (
-            <article className="mobile-schedule-card" key={person.id}>
-              <header>
-                <div>
-                  <strong>{person.name}{person.profileId === user.id ? ' · Tôi' : ''}</strong>
+                  <strong>{person.name}{isMe ? ' · Tôi' : ''}</strong>
                   <span>{person.positionTitle || employmentLabel(person.employmentType)}</span>
                 </div>
-                {user.role === 'manager' || user.role === 'admin' && person.profileId !== user.id && (
-                  <button title="Xóa khỏi bảng lịch" onClick={() => void removePerson(person)}>×</button>
+                {(user.role === 'manager' || user.role === 'admin') && !isMe && (
+                  <button className="schedule-vcard-remove" title="Xóa khỏi bảng lịch" onClick={() => void removePerson(person)}>×</button>
                 )}
               </header>
-              <div className="mobile-schedule-days">
+              <div className="schedule-vcard-days">
                 {days.map((date) => {
                   const registration = displayEntries.find((item) => item.personId === person.id && item.workDate === date)
-                  const value = sheetShiftOptions.find((shift) =>
+                  const matchedShift = sheetShiftOptions.find((shift) =>
                     shift.id === registration?.shiftId
                     || (shift.startTime === registration?.startTime && shift.endTime === registration?.endTime),
-                  )?.id || ''
+                  )
+                  const draftKey = customDraftKey(person, date)
+                  const customDraft = customDrafts[draftKey] || (registration && !matchedShift
+                    ? { startTime: registration.startTime, endTime: registration.endTime }
+                    : undefined)
+                  const value = customDraft ? CUSTOM_SHIFT_VALUE : (registration ? (matchedShift?.id || CUSTOM_SHIFT_VALUE) : '')
+                  const selectedCustomLabel = customDraft ? `${customDraft.startTime}-${customDraft.endTime}` : 'Tùy chỉnh giờ'
+                  const savedCustomLabel = savedCustomCells[draftKey]
                   const canChange = editable
-                    && (user.role === 'manager' || user.role === 'admin' || date >= localDateKey())
+                    && (isScheduleManager || date >= localDateKey())
                   const extraRegistrations = registrations.filter((item) =>
                     person.profileId
+                    && isSupplementalScheduleRegistration(item)
                     && item.userId === person.profileId
                     && item.branchId === branchId
                     && item.workDate === date
                     && item.status !== 'rejected'
                     && (!registration || item.shiftId !== registration.shiftId || item.startTime !== registration.startTime || item.endTime !== registration.endTime)
+                    && (!customDraft || item.startTime !== customDraft.startTime || item.endTime !== customDraft.endTime)
                   )
                   return (
-                    <label className={`mobile-schedule-day ${canChange ? 'editable' : 'readonly'}`} key={date}>
-                      <span>
-                        <b>{new Date(`${date}T00:00:00`).toLocaleDateString('vi-VN', { weekday: 'short' })}</b>
+                    <label className={`schedule-vday ${canChange ? 'editable' : 'readonly'} ${registration ? 'on' : ''}`} key={date}>
+                      <span className="schedule-vday-date">
+                        <b>{new Date(`${date}T00:00:00`).toLocaleDateString('vi-VN', { weekday: 'long' })}</b>
                         <small>{formatDate(date)}</small>
                       </span>
                       <select
@@ -909,13 +1313,48 @@ function SharedScheduleBoard({
                         className={`schedule-cell ${registration ? shiftColor(registration.startTime) : 'off'}`}
                         value={value}
                         disabled={!canChange || savingCell === `${person.id}-${date}`}
-                        onChange={(event) => void changeCell(person, date, event.target.value)}
+                        onChange={(event) => void selectCellShift(person, date, event.target.value, registration)}
                       >
                         <option value="">OFF</option>
+                        {value === CUSTOM_SHIFT_VALUE && (
+                          <option value={CUSTOM_SHIFT_VALUE}>{selectedCustomLabel}</option>
+                        )}
                         {sheetShiftOptions.map((shift) =>
                           <option key={shift.id} value={shift.id}>{shift.startTime}-{shift.endTime}</option>,
                         )}
+                        {person.profileId && value !== CUSTOM_SHIFT_VALUE && <option value={CUSTOM_SHIFT_VALUE}>Tùy chỉnh giờ</option>}
                       </select>
+                      {canChange && customDrafts[draftKey] && (
+                        <div className="schedule-custom-time-grid">
+                          <input
+                            type="time"
+                            aria-label={`Bat dau ${person.name} ${formatDate(date)}`}
+                            value={customDraft.startTime}
+                            onChange={(event) => setCustomDrafts((current) => ({
+                              ...current,
+                              [draftKey]: { ...customDraft, startTime: event.target.value },
+                            }))}
+                          />
+                          <input
+                            type="time"
+                            aria-label={`Ket thuc ${person.name} ${formatDate(date)}`}
+                            value={customDraft.endTime}
+                            onChange={(event) => setCustomDrafts((current) => ({
+                              ...current,
+                              [draftKey]: { ...customDraft, endTime: event.target.value },
+                            }))}
+                          />
+                          <button
+                            type="button"
+                            className="schedule-custom-save"
+                            disabled={savingCell === `${person.id}-${date}`}
+                            onClick={() => void saveCustomCell(person, date)}
+                          >
+                            {savingCell === `${person.id}-${date}` ? 'Đang lưu' : savedCustomLabel ? 'Đã lưu' : 'Lưu'}
+                          </button>
+                          {savedCustomLabel && <strong className="schedule-custom-saved">Đã lưu {savedCustomLabel}</strong>}
+                        </div>
+                      )}
                       {extraRegistrations.map((item) => (
                         <i key={item.id}>+ {item.startTime}-{item.endTime}</i>
                       ))}
@@ -938,6 +1377,14 @@ function employmentOrder(type?: EmployeeProfile['employmentType']) {
 function employmentLabel(type?: EmployeeProfile['employmentType']) {
   return type === 'leader' ? 'Ca trưởng / Ca phó' : type === 'full_time' ? 'Full-time' : type === 'part_time' ? 'Part-time' : 'Nhân viên'
 }
+function isSupplementalScheduleRegistration(item: { shiftId?: string; note?: string }) {
+  if (item.shiftId) return false
+  const note = normalizeScheduleNote(item.note || '')
+  return ['tang ca', 'bo sung', 'phat sinh'].some((keyword) => note.includes(keyword))
+}
+function normalizeScheduleNote(value: string) {
+  return value.trim().toLocaleLowerCase('vi').normalize('NFD').replace(/\p{Diacritic}/gu, '')
+}
 function shiftColor(startTime: string) {
   if (startTime < '09:00') return 'morning'
   if (startTime < '12:00') return 'middle'
@@ -946,57 +1393,109 @@ function shiftColor(startTime: string) {
 }
 
 function AttendanceReportPanel({
-  user, shifts, registrations, records, employees,
+  user, shifts, registrations, records, employees, from, to, onRangeChange,
 }: {
   user: AppUser
   shifts: WorkShift[]
   registrations: ShiftRegistration[]
   records: AttendanceRecord[]
   employees: EmployeeProfile[]
+  from: string
+  to: string
+  onRangeChange: (range: { from: string; to: string }) => void
 }) {
-  const today = new Date()
+  const lang = useLang()
+  const text = ATTENDANCE_REPORT_TEXT[lang]
   const [branchId, setBranchId] = useState('')
   const [userId, setUserId] = useState('')
-  const [from, setFrom] = useState(localDateKey(new Date(today.getFullYear(), today.getMonth(), 1)))
-  const [to, setTo] = useState(localDateKey(new Date(today.getFullYear(), today.getMonth() + 1, 0)))
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState('')
   const branchIds = permittedBranchIds(user)
+  const branches = useConfiguredBranches({ user })
+  const activeEmployeeIds = useMemo(
+    () => new Set(employees.filter((item) => item.active !== false).map((item) => item.id)),
+    [employees],
+  )
   const filteredRegistrations = useMemo(() => registrations.filter((item) =>
     (!branchId || item.branchId === branchId)
     && (!userId || item.userId === userId)
+    && (!activeEmployeeIds.size || activeEmployeeIds.has(item.userId))
     && item.workDate >= from && item.workDate <= to,
-  ), [registrations, branchId, userId, from, to])
+  ), [registrations, branchId, userId, from, to, activeEmployeeIds])
   const filteredRecords = useMemo(() => records.filter((item) =>
     (!branchId || item.branchId === branchId)
     && (!userId || item.userId === userId)
+    && (!activeEmployeeIds.size || activeEmployeeIds.has(item.userId))
     && localDateKey(new Date(item.checkInTime)) >= from && localDateKey(new Date(item.checkInTime)) <= to,
-  ), [records, branchId, userId, from, to])
+  ), [records, branchId, userId, from, to, activeEmployeeIds])
   const grace = useMemo(() => new Map(shifts.map((item) => [item.id, item.graceMinutes])), [shifts])
-  const rows = useMemo(() => buildAttendanceReport(filteredRegistrations, filteredRecords, grace), [filteredRegistrations, filteredRecords, grace])
-  const detailRows = useMemo(() => buildAttendanceDetailRows(filteredRegistrations, filteredRecords, grace), [filteredRegistrations, filteredRecords, grace])
+  const registeredEmployeeKeys = useMemo(
+    () => new Set(filteredRegistrations.filter((item) => item.status !== 'rejected').map((item) => `${item.userId}|${item.branchId}`)),
+    [filteredRegistrations],
+  )
+  const rows = useMemo(
+    () => buildAttendanceReport(filteredRegistrations, filteredRecords, grace)
+      .filter((row) => registeredEmployeeKeys.has(`${row.userId}|${row.branchId}`)),
+    [filteredRegistrations, filteredRecords, grace, registeredEmployeeKeys],
+  )
+  const detailRows = useMemo(
+    () => buildAttendanceDetailRows(filteredRegistrations, filteredRecords, grace)
+      .filter((row) => filteredRegistrations.some((registration) => registration.id === row.registrationId)),
+    [filteredRegistrations, filteredRecords, grace],
+  )
 
   function exportCsv() {
+    const headers = [text.employee, text.branch, text.totalShifts, text.totalHours, text.overtimeHours, text.workDays, text.late, text.absent, text.missingCheckout]
     const csv = [
-      ['Nhân viên', 'Chi nhánh', 'Tổng ca', 'Tổng giờ', 'Ngày công', 'Đi trễ', 'Vắng', 'Quên check-out'],
-      ...rows.map((row) => [row.employeeName, branchName(row.branchId), row.totalShifts, row.totalHours, row.workDays, row.lateCount, row.absentCount, row.missingCheckoutCount]),
+      headers,
+      ...rows.map((row) => [row.employeeName, branchName(row.branchId), row.totalShifts, row.totalHours, row.overtimeHours, row.workDays, row.lateCount, row.absentCount, row.missingCheckoutCount]),
     ].map((line) => line.map(csvCell).join(',')).join('\n')
     download(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }), `bang-cong-${from}-${to}.csv`)
   }
 
   async function exportXlsx() {
+    if (exporting) return
+    if (!rows.length) {
+      setExportError('Chưa có dữ liệu chấm công trong bộ lọc hiện tại để xuất Excel.')
+      return
+    }
+    setExporting(true)
+    setExportError('')
+    try {
+      await exportXlsxInner()
+    } catch (error) {
+      setExportError(error instanceof Error ? `Không thể xuất Excel: ${error.message}` : 'Không thể xuất Excel.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  async function exportXlsxInner() {
     const ExcelJS = await import('exceljs')
     const workbook = new ExcelJS.Workbook()
-    const sheet = workbook.addWorksheet('Tổng hợp')
+    const positionByUser = new Map<string, string>()
+    const positionByName = new Map<string, string>()
+    employees.forEach((employee) => {
+      const label = employeePositionLabel(employee)
+      if (employee.id) positionByUser.set(employee.id, label)
+      positionByName.set(`${employee.branchId}|${normalizeName(employee.name)}`, label)
+    })
+    const resolvePosition = (userId: string, branchId: string, name: string) =>
+      positionByUser.get(userId) || positionByName.get(`${branchId}|${normalizeName(name)}`) || ''
+    const sheet = workbook.addWorksheet(text.summarySheet)
     sheet.columns = [
-      { header: 'Nhân viên', key: 'employeeName', width: 26 },
-      { header: 'Chi nhánh', key: 'branch', width: 26 },
-      { header: 'Tổng ca', key: 'totalShifts', width: 12 },
-      { header: 'Tổng giờ', key: 'totalHours', width: 12 },
-      { header: 'Ngày công', key: 'workDays', width: 12 },
-      { header: 'Đi trễ', key: 'lateCount', width: 10 },
-      { header: 'Vắng mặt', key: 'absentCount', width: 11 },
-      { header: 'Quên check-out', key: 'missingCheckoutCount', width: 16 },
+      { header: text.employee, key: 'employeeName', width: 26 },
+      { header: 'Vị trí', key: 'position', width: 16 },
+      { header: text.branch, key: 'branch', width: 26 },
+      { header: text.totalShifts, key: 'totalShifts', width: 12 },
+      { header: text.totalHours, key: 'totalHours', width: 12 },
+      { header: text.overtimeHours, key: 'overtimeHours', width: 15 },
+      { header: text.workDays, key: 'workDays', width: 12 },
+      { header: text.late, key: 'lateCount', width: 10 },
+      { header: text.absent, key: 'absentCount', width: 11 },
+      { header: text.missingCheckout, key: 'missingCheckoutCount', width: 16 },
     ]
-    rows.forEach((row) => sheet.addRow({ ...row, branch: branchName(row.branchId) }))
+    rows.forEach((row) => sheet.addRow({ ...row, position: resolvePosition(row.userId, row.branchId, row.employeeName), branch: branchName(row.branchId) }))
     sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } }
     sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F1F33' } }
     sheet.views = [{ state: 'frozen', ySplit: 1 }]
@@ -1006,50 +1505,166 @@ function AttendanceReportPanel({
       ...rows.map((row) => row.branchId),
       ...detailRows.map((row) => row.branchId),
     ])).sort((a, b) => branchName(a).localeCompare(branchName(b), 'vi'))
+    const usedSheetNames = new Set(workbook.worksheets.map((item) => item.name))
     for (const id of exportBranchIds) {
-      const branchSheet = workbook.addWorksheet(safeSheetName(branchName(id)))
+      const branchSheet = workbook.addWorksheet(uniqueSheetName(branchName(id), usedSheetNames))
       branchSheet.columns = attendanceDetailColumns()
       for (const row of detailRows.filter((item) => item.branchId === id)) {
-        await addAttendanceDetailRow(branchSheet, row)
+        await addAttendanceDetailRow(branchSheet, row, resolvePosition(row.userId, row.branchId, row.employeeName))
       }
       styleAttendanceSheet(branchSheet)
     }
 
     const buffer = await workbook.xlsx.writeBuffer()
-    download(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `bang-cong-${from}-${to}.xlsx`)
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const fileName = `bang-cong-${from}-${to}.xlsx`
+    if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent) && typeof navigator.share === 'function') {
+      await shareOrDownloadBlob(blob, fileName, { title: `Bảng công ${from} - ${to}` })
+    } else {
+      download(blob, fileName)
+    }
   }
 
   return (
     <>
       <section className="section-card attendance-filters">
         <div className="attendance-filter-grid">
-          <label>Chi nhánh<select value={branchId} onChange={(event) => setBranchId(event.target.value)}><option value="">Tất cả chi nhánh</option>{BRANCHES.filter((item) => branchIds.includes(item.id)).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-          <label>Nhân viên<select value={userId} onChange={(event) => setUserId(event.target.value)}><option value="">Tất cả nhân viên</option>{employees.filter((item) => !branchId || item.branchId === branchId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-          <label>Từ ngày<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
-          <label>Đến ngày<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+          <label>{text.branch}<select value={branchId} onChange={(event) => setBranchId(event.target.value)}><option value="">{text.allBranches}</option>{branches.filter((item) => branchIds.includes(item.id)).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          <label>{text.employee}<select value={userId} onChange={(event) => setUserId(event.target.value)}><option value="">{text.allEmployees}</option>{employees.filter((item) => !branchId || item.branchId === branchId).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          <label>{text.from}<input type="date" value={from} onChange={(event) => onRangeChange({ from: event.target.value, to })} /></label>
+          <label>{text.to}<input type="date" value={to} min={from} onChange={(event) => onRangeChange({ from, to: event.target.value })} /></label>
         </div>
         <div className="attendance-export-actions">
-          <button className="secondary-button" onClick={exportCsv}>Xuất CSV</button>
-          <button className="primary-button" onClick={exportXlsx}>Xuất Excel (.xlsx)</button>
+          <button type="button" className="secondary-button" onClick={exportCsv}>{text.exportCsv}</button>
+          <button type="button" className="primary-button" disabled={exporting} onClick={() => void exportXlsx()}>{exporting ? 'Đang xuất…' : text.exportExcel}</button>
         </div>
+        {exportError && <div className="feedback-bar">{exportError}<button onClick={() => setExportError('')}>×</button></div>}
       </section>
       <section className="section-card stock-section">
-        <div className="section-title"><div><span className="eyebrow dark">ATTENDANCE REPORT</span><h2>Bảng công tổng hợp</h2></div><span className="date-chip">{rows.length} nhân viên</span></div>
-        <div className="table-scroll"><table className="data-table attendance-report-table">
-          <thead><tr><th>Nhân viên</th><th>Chi nhánh</th><th>Tổng ca</th><th>Tổng giờ</th><th>Ngày công</th><th>Đi trễ</th><th>Vắng</th><th>Quên checkout</th></tr></thead>
-          <tbody>{rows.map((row) => <tr key={`${row.userId}-${row.branchId}`}><td><strong>{row.employeeName}</strong></td><td>{branchName(row.branchId)}</td><td>{row.totalShifts}</td><td>{row.totalHours}</td><td><strong>{row.workDays}</strong></td><td>{row.lateCount}</td><td>{row.absentCount}</td><td>{row.missingCheckoutCount}</td></tr>)}</tbody>
-        </table></div>
-        {!rows.length && <p className="empty-copy">Không có dữ liệu trong khoảng thời gian đã chọn.</p>}
+        <div className="section-title"><div><span className="eyebrow dark">{text.eyebrow}</span><h2>{text.title}</h2></div><span className="date-chip">{rows.length} {text.employees}</span></div>
+        <div className="table-scroll">
+          <table className="data-table attendance-data-table">
+            <thead>
+              <tr>
+                <th>{text.employee}</th>
+                <th>{text.branch}</th>
+                <th>{text.totalShifts}</th>
+                <th>{text.totalHours}</th>
+                <th>{text.overtimeHours}</th>
+                <th>{text.workDays}</th>
+                <th>{text.late}</th>
+                <th>{text.absent}</th>
+                <th>{text.missingCheckout}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={`${row.userId}-${row.branchId}`}>
+                  <td><strong>{row.employeeName}</strong></td>
+                  <td>{branchName(row.branchId)}</td>
+                  <td>{row.totalShifts}</td>
+                  <td>{row.totalHours}</td>
+                  <td>{row.overtimeHours}</td>
+                  <td>{row.workDays}</td>
+                  <td className={row.lateCount ? 'warn' : ''}>{row.lateCount}</td>
+                  <td className={row.absentCount ? 'warn' : ''}>{row.absentCount}</td>
+                  <td className={row.missingCheckoutCount ? 'warn' : ''}>{row.missingCheckoutCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!rows.length && <p className="empty-copy">{text.empty}</p>}
       </section>
     </>
   )
 }
 
-function branchName(id: string) { return BRANCHES.find((item) => item.id === id)?.name || id }
+const ATTENDANCE_REPORT_TEXT = {
+  vi: {
+    eyebrow: 'BẢNG CHẤM CÔNG',
+    title: 'Chấm công theo ngày, tháng',
+    branch: 'Chi nhánh',
+    allBranches: 'Tất cả chi nhánh',
+    employee: 'Nhân viên',
+    employees: 'nhân viên',
+    allEmployees: 'Tất cả nhân viên',
+    from: 'Từ ngày',
+    to: 'Đến ngày',
+    exportCsv: 'Xuất CSV',
+    exportExcel: 'Xuất Excel',
+    summarySheet: 'Tổng hợp',
+    totalShifts: 'Tổng ca',
+    totalHours: 'Tổng giờ',
+    overtimeHours: 'Giờ tăng ca',
+    workDays: 'Ngày công',
+    late: 'Đi trễ',
+    absent: 'Vắng',
+    missingCheckout: 'Quên check-out',
+    empty: 'Không có dữ liệu trong khoảng thời gian đã chọn.',
+  },
+  en: {
+    eyebrow: 'TIMESHEET',
+    title: 'Attendance by day and month',
+    branch: 'Branch',
+    allBranches: 'All branches',
+    employee: 'Employee',
+    employees: 'employees',
+    allEmployees: 'All employees',
+    from: 'From',
+    to: 'To',
+    exportCsv: 'Export CSV',
+    exportExcel: 'Export Excel',
+    summarySheet: 'Summary',
+    totalShifts: 'Shifts',
+    totalHours: 'Hours',
+    overtimeHours: 'Overtime hours',
+    workDays: 'Work days',
+    late: 'Late',
+    absent: 'Absent',
+    missingCheckout: 'Missed checkout',
+    empty: 'No data in the selected range.',
+  },
+} as const
+
+function branchName(id: string) { return configuredBranchName(id) || id }
 function roleLabel(role: AppUser['role']) { return accessRoleLabel(role) }
 function statusLabel(status: ShiftRegistration['status']) { return status === 'rejected' ? 'Không hiệu lực' : 'Đã đăng ký' }
+function busyLabel(phase: 'locating' | 'saving' | '') { return phase === 'saving' ? 'Đang lưu ảnh…' : 'Đang định vị chính xác…' }
+
+async function openShiftAfterLeaderCheckIn(
+  user: AppUser,
+  registration: ShiftRegistration,
+  movements: StockMovement[],
+) {
+  const sessions = await fetchBagShiftSessions(user, { branchId: user.branchId, date: registration.workDate })
+  if (sessions.some((item) => item.status === 'open')) return ' Ca vận hành đang mở.'
+  if (sessions.length >= 2) return ' Hôm nay đã đủ 2 ca vận hành.'
+  await ensureOperationDay(user, registration.workDate)
+  const finishedProducts = getFinishedBulkProducts()
+  const products = finishedProducts.length ? finishedProducts : getSaleProducts()
+  const stock = calculateStock(movements.filter((item) => item.branchId === user.branchId))
+  const openingBalances = Object.fromEntries(products.map((product) => [
+    product.id,
+    Math.max(0, stock.find((line) => line.product.id === product.id)?.expected || 0),
+  ]))
+  try {
+    const session = await startBagShift(user, registration.workDate, openingBalances)
+    return ` Ca ${session.sequence} đã tự mở; hãy chụp ảnh quầy đầu ca ở trang Hôm nay.`
+  } catch (error) {
+    const latest = await fetchBagShiftSessions(user, { branchId: user.branchId, date: registration.workDate })
+    if (latest.some((item) => item.status === 'open')) return ' Ca vận hành đã tự mở.'
+    throw error
+  }
+}
+function normalizeName(value: string) { return value.trim().toLocaleLowerCase('vi').normalize('NFD').replace(/\p{Diacritic}/gu, '') }
 function formatDate(date: string) { return new Date(`${date}T00:00:00`).toLocaleDateString('vi-VN') }
 function formatTime(date: string) { return new Date(date).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) }
+function workedHours(record: AttendanceRecord) {
+  if (!record.checkOutTime) return '0'
+  const hours = Math.max(0, (new Date(record.checkOutTime).getTime() - new Date(record.checkInTime).getTime()) / 3600000)
+  return Number(hours.toFixed(2)).toLocaleString('vi-VN')
+}
 function formatDateTime(date: string) { return new Date(date).toLocaleString('vi-VN', { hour12: false }) }
 function attendanceDetailStatus(status: 'completed' | 'working' | 'absent' | 'scheduled') {
   return ({ completed: 'Đã hoàn thành', working: 'Đang làm', absent: 'Vắng', scheduled: 'Chưa tới ca' })[status]
@@ -1064,55 +1679,111 @@ function attendanceDetailColumns() {
   return [
     { header: 'Ngày làm', key: 'workDate', width: 13 },
     { header: 'Nhân viên', key: 'employeeName', width: 26 },
+    { header: 'Vị trí', key: 'position', width: 16 },
     { header: 'Chi nhánh', key: 'branch', width: 24 },
     { header: 'Ca dự kiến', key: 'scheduled', width: 17 },
     { header: 'Giờ vào', key: 'checkIn', width: 20 },
     { header: 'Giờ ra', key: 'checkOut', width: 20 },
     { header: 'Giờ thực tế', key: 'totalHours', width: 13 },
+    { header: 'Giờ tăng ca', key: 'overtimeHours', width: 13 },
+    { header: 'Loại ca', key: 'shiftType', width: 14 },
     { header: 'Ngày công', key: 'workDayCredit', width: 12 },
     { header: 'Đi trễ (phút)', key: 'lateMinutes', width: 14 },
     { header: 'Trạng thái', key: 'status', width: 16 },
     { header: 'Địa chỉ check-in', key: 'address', width: 50 },
-    { header: 'Tọa độ', key: 'coordinates', width: 24 },
-    { header: 'Minh chứng selfie', key: 'selfieUrl', width: 18 },
+    { header: 'Địa chỉ check-out', key: 'checkOutAddress', width: 50 },
+    { header: 'Ảnh check-in', key: 'checkInSelfieUrl', width: 18 },
+    { header: 'Ảnh check-out', key: 'checkOutSelfieUrl', width: 18 },
     { header: 'Ghi chú', key: 'note', width: 30 },
   ]
 }
-async function addAttendanceDetailRow(sheet: import('exceljs').Worksheet, row: ReturnType<typeof buildAttendanceDetailRows>[number]) {
-  const evidenceUrl = await selfieEvidenceUrl(row.selfieUrl)
+async function addAttendanceDetailRow(sheet: import('exceljs').Worksheet, row: ReturnType<typeof buildAttendanceDetailRows>[number], position = '') {
+  const [evidenceUrl, checkOutEvidenceUrl] = await Promise.all([
+    selfieEvidenceUrl(row.selfieUrl),
+    selfieEvidenceUrl(row.checkOutSelfieUrl),
+  ])
   sheet.addRow({
     workDate: formatDate(row.workDate),
     employeeName: row.employeeName,
+    position,
     branch: branchName(row.branchId),
     scheduled: `${row.scheduledStart}-${row.scheduledEnd}`,
     checkIn: row.checkInTime ? formatDateTime(row.checkInTime) : '',
     checkOut: row.checkOutTime ? formatDateTime(row.checkOutTime) : '',
     totalHours: row.totalHours,
+    overtimeHours: row.isOvertime ? row.totalHours : 0,
+    shiftType: row.isOvertime ? 'Tăng ca' : 'Ca thường',
     workDayCredit: row.workDayCredit,
     lateMinutes: row.lateMinutes,
     status: attendanceDetailStatus(row.status),
     address: row.checkInAddress || '',
-    coordinates: row.checkInLatitude === undefined ? '' : `${row.checkInLatitude}, ${row.checkInLongitude}`,
-    selfieUrl: evidenceUrl ? { text: 'Xem ảnh', hyperlink: evidenceUrl } : '',
+    checkOutAddress: row.checkOutAddress || '',
+    checkInSelfieUrl: evidenceUrl ? { text: 'Check-in', hyperlink: evidenceUrl } : '',
+    checkOutSelfieUrl: checkOutEvidenceUrl ? { text: 'Check-out', hyperlink: checkOutEvidenceUrl } : '',
     note: row.note,
   })
 }
+const attendanceEvidenceUrlCache = new Map<string, Promise<string>>()
+
 async function selfieEvidenceUrl(value?: string) {
   if (!value) return ''
-  if (/^https?:\/\//i.test(value)) return value
+  const cached = attendanceEvidenceUrlCache.get(value)
+  if (cached) return cached
+  const pending = resolveSelfieEvidenceUrl(value).catch(() => {
+    attendanceEvidenceUrlCache.delete(value)
+    return ''
+  })
+  attendanceEvidenceUrlCache.set(value, pending)
+  return pending
+}
+
+async function resolveSelfieEvidenceUrl(value: string) {
+  const path = normalizeAttendanceSelfiePath(value)
+  if (/^https?:\/\//i.test(value) && !path) return value
   if (value.startsWith('/')) return `${window.location.origin}${value}`
   if (!supabase) return value
-  const signed = await supabase.storage.from('attendance-selfies').createSignedUrl(value, 60 * 60 * 24 * 30)
-  return signed.data?.signedUrl || supabase.storage.from('attendance-selfies').getPublicUrl(value).data.publicUrl || value
+  const storagePath = path || value.replace(/^attendance-selfies\//, '')
+  const signed = await supabase.storage.from('attendance-selfies').createSignedUrl(storagePath, 60 * 60 * 24 * 30)
+  return signed.data?.signedUrl || supabase.storage.from('attendance-selfies').getPublicUrl(storagePath).data.publicUrl || value
 }
 function safeSheetName(value: string) {
   return value.replace(/[\\/?*[\]:]/g, ' ').slice(0, 31).trim() || 'Chi nhánh'
+}
+function uniqueSheetName(value: string, used: Set<string>) {
+  const base = safeSheetName(value)
+  let name = base
+  let index = 2
+  while (used.has(name)) {
+    const suffix = ` ${index}`
+    name = `${base.slice(0, Math.max(1, 31 - suffix.length)).trim()}${suffix}`
+    index += 1
+  }
+  used.add(name)
+  return name
+}
+function normalizeAttendanceSelfiePath(value: string) {
+  try {
+    const rawPath = /^https?:\/\//i.test(value) ? decodeURIComponent(new URL(value).pathname) : value
+    const marker = '/attendance-selfies/'
+    const index = rawPath.indexOf(marker)
+    if (index >= 0) return rawPath.slice(index + marker.length)
+    if (rawPath.startsWith('attendance-selfies/')) return rawPath.slice('attendance-selfies/'.length)
+  } catch {
+    // Keep original value when it is not a parseable URL.
+  }
+  return ''
 }
 function localDateKey(date = new Date()) {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+function attendanceMonthRange(date = new Date()) {
+  return {
+    from: localDateKey(new Date(date.getFullYear(), date.getMonth(), 1)),
+    to: localDateKey(new Date(date.getFullYear(), date.getMonth() + 1, 0)),
+  }
 }
 function getCheckInWindow(registration: ShiftRegistration) {
   const startsAt = new Date(`${registration.workDate}T${registration.startTime}:00`)
@@ -1153,9 +1824,5 @@ function registrationWeekStartKey(date = new Date()) {
 }
 function csvCell(value: string | number) { return `"${String(value).replace(/"/g, '""')}"` }
 function download(blob: Blob, name: string) {
-  const link = document.createElement('a')
-  link.href = URL.createObjectURL(blob)
-  link.download = name
-  link.click()
-  URL.revokeObjectURL(link.href)
+  downloadBlob(blob, name)
 }

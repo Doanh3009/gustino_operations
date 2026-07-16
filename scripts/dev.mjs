@@ -17,3 +17,5 @@ if (!(await lanServerIsReady())) {
 const vite = await createServer()
 await vite.listen()
 vite.printUrls()
+
+await new Promise(() => {})

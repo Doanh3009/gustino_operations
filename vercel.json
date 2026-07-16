@@ -1,4 +1,11 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/auto-close-day",
+      "schedule": "0 17 * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/",
