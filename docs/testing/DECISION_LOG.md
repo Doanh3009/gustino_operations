@@ -2,6 +2,7 @@
 
 | Date | Decision | Evidence and consequence |
 |---|---|---|
+| 2026-07-17 | Randomly select one loading mascot from reference images 1/2/4 per loading session; reserve image 3 for attendance reminders. | Direct owner clarification. The loader preloads all three assets and chooses one only when a new loading session becomes visible; image 3 replaces only the check-in/check-out reminder art. Existing operations, attendance rules, disabled states and background refresh behavior remain unchanged. |
 | 2026-07-11 | Reconstruct a minimal testing workflow and tracking set, then continue testing. | `docs/testing/` was absent from the worktree, `git ls-tree HEAD`, `git log --all -- docs/testing`, and repository-wide filename search. The reconstruction uses `AGENTS.md` plus the user's explicit requirements and is marked provisional. |
 | 2026-07-11 | Preserve all pre-existing dirty-worktree files as user-owned. | Initial `git status --short` showed many modified/untracked source, migrations, scripts, artifacts, and data files. Only new `docs/testing/` files and deliberate test/fix files will be changed. |
 | 2026-07-11 | Test authorization before other business modules. | Authorization spans UI navigation, branch scoping, RLS, and RPCs; a defect has Critical impact and can invalidate downstream test results. |

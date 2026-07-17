@@ -1,5 +1,17 @@
 # Session Handoff
 
+## Active local batch — global Capy loading and attendance reminder art
+
+- Owner requested a small centered Capy loading window for site actions, clarified that loading must randomly choose reference image 1, 2 or 4, and requested reference image 3 in the check-in/check-out reminder.
+- Implemented `GlobalLoadingOverlay` at the application root. Every enabled actionable click/form submit/file-or-select change gets a minimum 700 ms overlay; network calls started by that user interaction keep it open until settlement. A short activity window prevents periodic background refreshes from opening the loader.
+- Each distinct loading session randomly renders exactly one 256×256 RGBA asset: `capy-loading-1.png`, `capy-loading-2.png` or `capy-loading-4.png`. All loading assets are high-priority HTML preloads, synchronously decoded and selected in a layout effect before overlay paint to prevent the window appearing before Capy. Reduced-motion users receive a static mascot. Auth and lazy-route fallbacks use the same window.
+- Replaced the CSS-drawn mascot only on the two attendance reminder surfaces (`AppShell` popup and Today card) with `capy-attendance-camera.png`; Sunday registration reminder is unchanged. Attendance checks, refresh cadence, navigation and business rules are unchanged.
+- Verification Passed: `node scripts/test-capybara-loading-ui.mjs` (`CAPYBARA_LOADING_UI_OK`), `npx.cmd tsc -p tsconfig.app.json --noEmit --incremental false`, 204-button contract, idle-disabled regression, `git diff --check`, and both local/prebuilt production builds with 697 modules plus `PRODUCTION_SUPABASE_BUNDLE_OK (index-DyOxfcGs.js)`. Existing Browserslist/Tailwind/ExcelJS/large-chunk warnings remain.
+- Browser runtime setup and required troubleshooting were followed; the single availability read returned `[]`. No alternate browser backend was used and no live visual/viewport pass is claimed.
+- Inspected `.vercel/output` contained 60 files, five expected API functions, all four optimized mascots, and no SQL/migration/seed/purge artifact. Owner-authorized prebuilt production deployment `dpl_6SBUcHGg1VckVodC8oioWZAQoDiu` is Ready and aliased to `https://gustino-operations.vercel.app`; live HTML serves `index-DyOxfcGs.js`/`index-CvUuwReK.css`, contains preload 1/2/4 and all four PNGs return HTTP 200 `image/png`.
+- No schema, business logic or database data changed. Changed application files: `index.html`, `src/components/GlobalLoadingOverlay.tsx`, `src/main.tsx`, `src/App.tsx`, `src/components/AppShell.tsx`, `src/pages/TodayPage.tsx`, `src/styles.css`, four `public/mascots/*.png`, and `scripts/test-capybara-loading-ui.mjs`, plus this tracking batch.
+- Exact next action: owner hard-refreshes production and triggers several actions to observe random 1/2/4 selection at desktop/phone widths, then uses a signed-in account with an active attendance reminder to verify the camera mascot in both reminder surfaces. In-app Browser visual verification remains pending.
+
 ## Active production batch — BUG-057/058 deployed with schema/data gate
 
 - Owner authorized production deployment with a strict no-data-loss/migration gate.

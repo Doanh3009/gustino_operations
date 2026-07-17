@@ -1,6 +1,6 @@
 # Test Progress
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 ## Summary
 
@@ -10,7 +10,8 @@ Last updated: 2026-07-16
 - Modules complete: 0.
 - Latest strict cross-module verification: 22 safe source/mock tests executed; 19 Passed and only the three recorded blockers failed (`BUG-002`, `BUG-003`, `BUG-038`). Ten Playwright QA files passed syntax only and were not executed because the required in-app Browser is unavailable and some scripts mutate LAN data.
 - UI contract: 204 native buttons audited, 198 reachable from active `App.tsx`; no missing/no-op action or invalid form-submit wiring found. Live click/render/role/viewport execution remains Blocked.
-- Latest production build/deploy: Passed with 696 modules; app TypeScript and the mandatory Supabase bundle guard Passed. Live assets are `index-DOyCiHFj.js`/`index-CMcoy5E8.css` on deployment `dpl_GEMYw5wPiK7fTSK5j6wjG9WBbgAX`. Existing Browserslist/Tailwind/ExcelJS/large-chunk warnings remain.
+- Latest local UI batch: global Capy loading window randomly selects one of reference images 1/2/4 per loading session; 256px optimized assets are high-priority preloaded and decoded before paint, while attendance reminders use reference image 3. `CAPYBARA_LOADING_UI_OK`, app TypeScript, UI-button/idle-disabled regressions and the 697-module production build all Passed. In-app Browser discovery still returns `[]`, so live visual/viewport execution remains pending.
+- Latest production build/deploy: Passed with 697 modules; app TypeScript and the mandatory Supabase bundle guard Passed. Live assets are `index-DyOxfcGs.js`/`index-CvUuwReK.css` on deployment `dpl_6SBUcHGg1VckVodC8oioWZAQoDiu`. Production HTML contains the three high-priority loading preloads and all four Capy PNGs return HTTP 200. Existing Browserslist/Tailwind/ExcelJS/large-chunk warnings remain.
 - Bug tracker: 58 evidence-backed entries; BUG-002/003/038 remain `Blocked — Requires Business Decision`; BUG-054 through BUG-058 are deployed pending their listed visual/device/integration checks.
 - Coverage: not measured; no percentage claimed.
 
@@ -18,6 +19,7 @@ Last updated: 2026-07-16
 
 | Time (Asia/Bangkok) | Batch | Result/evidence |
 |---|---|---|
+| 2026-07-17 | MOD20-TC-CAPY-01/02 | Added four validated/optimized 256×256 RGBA mascot assets, high-priority HTML preload plus pre-paint decode/selection, a root interaction/request-aware loading overlay with random image 1/2/4 selection, and image 3 on both check-in/check-out reminder surfaces. `CAPYBARA_LOADING_UI_OK`, no-emit TypeScript, 204-button contract, idle-disabled regression, 697-module production/prebuilt builds and bundle guards Passed. Deployment `dpl_6SBUcHGg1VckVodC8oioWZAQoDiu` is Ready/aliased; live HTML/bundle/four assets return expected evidence. Browser availability is `[]`, so no signed-in visual pass is claimed. No business rule, schema or data changed. |
 | 2026-07-11 | Entry checks | `git status --short` showed a heavily dirty worktree; preserved as user-owned. |
 | 2026-07-11 | Workflow lookup | `docs/testing/` absent from worktree, HEAD, Git history, and all branches. Baseline tracking workflow created from explicit requirements. |
 | 2026-07-11 | Initial discovery | Confirmed React/Vite/Supabase architecture, role helpers, page/module surfaces, migrations, and existing Node/SQL QA assets. |

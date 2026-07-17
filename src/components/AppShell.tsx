@@ -382,7 +382,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
       {showAttendanceReminder && (
         <aside className="sunday-shift-popup attendance-check-popup" role="dialog" aria-label="Nhắc chấm công hôm nay">
           <button className="sunday-shift-popup-close" type="button" aria-label="Đóng" onClick={() => setAttendanceReminderDismissed(true)}>×</button>
-          <CapybaraMascot />
+          <img className="attendance-capybara-image attendance-popup-capybara" src="/mascots/capy-attendance-camera.png" alt="" width="256" height="256" decoding="async" aria-hidden="true" />
           <div>
             <small>CAPY NHẮC CHẤM CÔNG ✨</small>
             <strong>{attendanceReminder === 'check-out' ? 'Bạn chưa check-out ca đang làm' : 'Bạn có ca hôm nay chưa check-in'}</strong>

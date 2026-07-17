@@ -9,6 +9,7 @@ import { canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseS
 import { fetchConfiguredProducts, subscribeConfiguredProducts } from './lib/products'
 import type { AppUser, StockMovement } from './types'
 import { applyLanguageToDocument, useLang } from './lib/i18n'
+import { CapyLoadingWindow } from './components/GlobalLoadingOverlay'
 
 const InventoryPage = lazy(() => import('./pages/InventoryPage').then((module) => ({ default: module.InventoryPage })))
 const ReportPage = lazy(() => import('./pages/ReportPage').then((module) => ({ default: module.ReportPage })))
@@ -246,7 +247,7 @@ function App() {
     navigate('launcher')
   }
 
-  if (!authReady) return <div className="login-page"><section className="login-panel"><div className="login-card">Đang kiểm tra phiên đăng nhập…</div></section></div>
+  if (!authReady) return <CapyLoadingWindow forced label="Đang kiểm tra phiên đăng nhập…" />
   if (!user) return <LoginPage onLogin={handleLogin} />
   if (!canAccessPage(user, page)) return null
   if (page === 'launcher') {
@@ -310,15 +311,7 @@ function App() {
 }
 
 function PageLoadFallback() {
-  return (
-    <div className="page page-load-placeholder" aria-live="polite">
-      <section className="section-card">
-        <span className="eyebrow dark">GUSTINO</span>
-        <strong>Đang mở màn hình…</strong>
-        <small>Chỉ tải dữ liệu cần cho chức năng này.</small>
-      </section>
-    </div>
-  )
+  return <CapyLoadingWindow forced label="Đang mở màn hình…" />
 }
 
 function pageFromHash(): Page {

@@ -364,7 +364,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
 
       {attendanceReminder && (
         <section className={`attendance-reminder-card ${attendanceReminder.tone}`}>
-          <span className="capybara-mascot attendance-capybara" aria-hidden="true"><i className="capy-ear left" /><i className="capy-ear right" /><i className="capy-eye left" /><i className="capy-eye right" /><i className="capy-nose" /></span>
+          <img className="attendance-capybara-image attendance-capybara" src="/mascots/capy-attendance-camera.png" alt="" width="256" height="256" decoding="async" aria-hidden="true" />
           <strong>{attendanceReminder.title}</strong>
           <span>{attendanceReminder.message}</span>
           <button onClick={() => onNavigate('attendance')}>Mở chấm công</button>

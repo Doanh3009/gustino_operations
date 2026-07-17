@@ -1,6 +1,6 @@
 # Business Module Index
 
-Last updated: 2026-07-16. This is the source-backed inventory and remains subject to discovery refinement.
+Last updated: 2026-07-17. This is the source-backed inventory and remains subject to discovery refinement.
 
 | ID | Module | Primary source evidence | Risk | Status |
 |---|---|---|---|---|
@@ -23,6 +23,6 @@ Last updated: 2026-07-16. This is the source-backed inventory and remains subjec
 | MOD-17 | Export/report files (CSV/XLSX/PDF/image) | attendance/report/order pages, ExcelJS/jsPDF/html2canvas | Medium | In progress — inventory export now has period summary, selected-day sale-out, complete ledger, current stock and count-voucher sheets; actual workbook-open/device verification pending |
 | MOD-18 | Reverse geocoding and degraded external-service behavior | `api/reverse-geocode.ts`, attendance flow | Medium | In progress — source regression passes; physical HTTPS GPS pending |
 | MOD-19 | Local demo/LAN synchronization and persistence | `lib/supabase.ts`, `lib/store.ts`, LAN/dev scripts | High | In progress — syntax/data completeness checked; BUG-003 auth blocked; integration pending |
-| MOD-20 | Frontend load performance and perceived responsiveness | `App.tsx`, management/attendance pages, export helpers | High | In progress — lazy/scoped/coalesced loads, 20-row Admin correction pagination and management realtime reconciliation fallback pass local regression; browser timing/disconnect verification pending |
+| MOD-20 | Frontend load performance and perceived responsiveness | `App.tsx`, `GlobalLoadingOverlay.tsx`, management/attendance pages, export helpers | High | In progress — lazy/scoped/coalesced loads and preloaded/pre-paint random 1/2/4 Capy interaction loading are deployed and pass regression/build/live HTTP checks; browser timing/visual/disconnect verification pending |
 
 Priority rationale: MOD-02 is first because authorization failures can expose or mutate cross-role/cross-branch business data and invalidate every downstream module test.

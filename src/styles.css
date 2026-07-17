@@ -4794,6 +4794,103 @@ textarea { min-height: 100px; resize: vertical; }
 .close-shift-msg.success { background: #f1f7dd; color: #53720a; }
 .close-shift-msg.error { background: #fff2f5; color: #c7274d; }
 
+/* Global Capy loading window: shared by navigation and user-triggered async work. */
+.global-capy-loader {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  box-sizing: border-box;
+  background: rgba(12, 29, 47, .12);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity .18s ease, visibility 0s linear .18s;
+}
+.global-capy-loader.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity .18s ease;
+}
+.global-capy-loader-window {
+  position: relative;
+  overflow: hidden;
+  width: min(214px, calc(100vw - 32px));
+  min-height: 190px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 18px 20px 16px;
+  border: 1px solid rgba(207, 229, 138, .9);
+  border-radius: 24px;
+  background: linear-gradient(145deg, rgba(255,255,255,.98), rgba(249,255,230,.98));
+  box-shadow: 0 24px 70px rgba(15,31,51,.24), inset 0 1px 0 #fff;
+  color: #173652;
+  text-align: center;
+  animation: globalCapyWindowIn .28s cubic-bezier(.2,.85,.3,1.15) both;
+}
+.global-capy-loader-stage {
+  position: relative;
+  width: 104px;
+  height: 100px;
+  margin-bottom: 2px;
+}
+.global-capy-loader-stage img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 1;
+  filter: drop-shadow(0 8px 9px rgba(79,45,22,.15));
+  animation: globalCapyBounce 1.05s ease-in-out infinite;
+}
+.global-capy-loader-window strong { font-size: 13px; font-weight: 950; letter-spacing: -.01em; }
+.global-capy-loader-window > span { margin-top: 3px; color: #738091; font-size: 9px; font-weight: 750; }
+.global-capy-loader-progress {
+  position: relative;
+  overflow: hidden;
+  width: 112px;
+  height: 4px;
+  margin-top: 11px;
+  border-radius: 999px;
+  background: #e9f2cf;
+}
+.global-capy-loader-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 -45%;
+  width: 44%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #b8df45, #f2c94c);
+  animation: globalCapyProgress 1.05s ease-in-out infinite;
+}
+@keyframes globalCapyWindowIn {
+  from { transform: translateY(10px) scale(.95); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@keyframes globalCapyBounce {
+  0%, 100% { transform: translateY(2px) scale(.98) rotate(-1.5deg); }
+  50% { transform: translateY(-5px) scale(1.02) rotate(1.5deg); }
+}
+@keyframes globalCapyProgress {
+  0% { left: -45%; }
+  100% { left: 108%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .global-capy-loader-window,
+  .global-capy-loader-stage img,
+  .global-capy-loader-progress::after,
+  .attendance-capybara-image { animation: none !important; }
+  .global-capy-loader-stage img { opacity: 1; transform: none; }
+}
+
 .attendance-reminder-card,
 .report-readiness-card {
   position: relative;
@@ -4869,6 +4966,14 @@ textarea { min-height: 100px; resize: vertical; }
   box-shadow: inset 0 -7px 0 rgba(89,48,25,.12), 0 6px 12px rgba(67,38,19,.16);
   animation: capyFloat 1.8s ease-in-out infinite;
 }
+.attendance-capybara-image {
+  display: block;
+  width: 58px;
+  height: 58px;
+  object-fit: contain;
+  filter: drop-shadow(0 7px 8px rgba(67,38,19,.13));
+  animation: capyFloat 1.8s ease-in-out infinite;
+}
 .attendance-capybara { grid-column: 1; grid-row: 1 / span 2; align-self: center; }
 .capy-ear { position: absolute; top: -5px; width: 14px; height: 14px; border-radius: 50%; background: #8c5732; border: 2px solid #734526; }
 .capy-ear.left { left: 5px; }.capy-ear.right { right: 5px; }
@@ -4905,6 +5010,7 @@ textarea { min-height: 100px; resize: vertical; }
 .sunday-shift-popup > button:not(.sunday-shift-popup-close) { min-height: 40px; border: 0; border-radius: 12px; padding: 0 13px; background: #173652; color: #fff; font-size: 9px; font-weight: 900; }
 .sunday-shift-popup-close { position: absolute; top: 5px; right: 7px; width: 28px; height: 28px; border: 0; background: transparent; color: #718095; font-size: 19px; }
 .attendance-check-popup { border-color: #b9dd62; box-shadow: 0 24px 70px rgba(94,132,16,.28); }
+.attendance-popup-capybara { width: 72px; height: 72px; margin: -8px -5px -8px -8px; }
 .attendance-check-popup::before { content: '✦'; position: absolute; left: 8px; top: 5px; color: #9bc529; animation: capyFloat 1.2s ease-in-out infinite; }
 @keyframes sundayPopupIn { from { opacity: 0; transform: translateY(18px) scale(.94); } to { opacity: 1; transform: none; } }
 @media (max-width: 600px) {
