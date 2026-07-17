@@ -7391,6 +7391,12 @@ img, svg, video, canvas { max-width: 100%; }
 }
 .inventory-shift-reconciliation-head h3 { margin: 5px 0 0; color: var(--navy); font-size: 22px; }
 .inventory-shift-reconciliation-head p { max-width: 760px; margin: 7px 0 0; color: #65758a; font-size: 12px; line-height: 1.55; }
+.inventory-shift-period-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  flex: 0 0 390px;
+  gap: 10px;
+}
 .inventory-shift-reconciliation-head label {
   display: grid;
   flex: 0 0 190px;
@@ -7689,6 +7695,7 @@ img, svg, video, canvas { max-width: 100%; }
   .inventory-daily-outbound-row { grid-template-columns: 1fr; }
   .inventory-shift-reconciliation { padding: 14px; border-radius: 16px; }
   .inventory-shift-reconciliation-head { display: grid; align-items: stretch; }
+  .inventory-shift-period-fields { grid-template-columns: 1fr; width: 100%; }
   .inventory-shift-reconciliation-head label { width: 100%; }
   .inventory-shift-reconciliation-summary,
   .inventory-shift-reconciliation-row { grid-template-columns: 1fr; }

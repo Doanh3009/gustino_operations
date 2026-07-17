@@ -33,11 +33,11 @@ if (inventorySection.includes('Ngưỡng cảnh báo') || inventorySection.inclu
 if (!inventorySection.includes('inventory-stock-status')) {
   failures.push('Bảng tồn SKU phải giữ trạng thái dễ đọc sau khi bỏ cột ngưỡng.')
 }
-if (!admin.includes("const [inventorySalesDate, setInventorySalesDate] = useState(todayKey)")) {
-  failures.push('Chưa có ngày xem riêng cho bảng xuất kho bán hàng.')
+if (admin.includes('inventorySalesDate')) {
+  failures.push('Bảng xuất bán/bàn giao vẫn bị khóa vào một ngày riêng thay vì khoảng ngày báo cáo.')
 }
-if (!admin.includes("item.type === 'sale_out'") || !admin.includes('item.shiftDate === inventorySalesDate')) {
-  failures.push('Bảng xuất trong ngày chưa lọc đúng movement sale_out và ngày được chọn.')
+if (!admin.includes("item.type === 'sale_out'") || !admin.includes('item.shiftDate >= from') || !admin.includes('item.shiftDate <= to')) {
+  failures.push('Bảng xuất trong kỳ chưa lọc đúng movement sale_out trong khoảng Từ ngày–Đến ngày.')
 }
 if (!inventorySection.includes('Xuất bán và tồn bàn giao') || !inventorySection.includes('inventory-shift-reconciliation-table')) {
   failures.push('Màn kho chưa có bảng đối chiếu Out theo bàn giao và POS cho quản lý.')
@@ -48,7 +48,7 @@ if (!admin.includes('formatInventoryQuantity') || !admin.includes('summarizeInve
 if (/formatNumber\((stockUnits|inbound|outbound)\)/.test(inventorySection)) {
   failures.push('Card chi nhánh vẫn hiển thị tổng số trộn nhiều đơn vị mà không có kg/cái.')
 }
-for (const sheetName of ['Tổng hợp kho', 'Đối chiếu ca', 'Xuất bán ngày chọn', 'Nhật ký kho', 'Tồn hiện tại', 'Phiếu kiểm kê']) {
+for (const sheetName of ['Tổng hợp kho', 'Đối chiếu ca', 'Xuất bán trong kỳ', 'Nhật ký kho', 'Tồn hiện tại', 'Phiếu kiểm kê']) {
   if (!admin.includes(`addWorksheet('${sheetName}')`)) failures.push(`Excel kho thiếu sheet ${sheetName}.`)
 }
 if (!inventorySection.includes('Hao hụt cần chú ý') || !inventorySection.includes('inventory-loss-panel')) {

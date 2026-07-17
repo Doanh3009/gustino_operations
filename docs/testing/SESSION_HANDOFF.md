@@ -1,5 +1,16 @@
 # Session Handoff
 
+## Active production batch — BUG-060/061 inventory Excel clarity and period export
+
+- Owner screenshot shows mixed number separators such as `2,019.915` and requests one consistent convention. Inventory workbook cells remain numeric but all six quantity groups now use `0.####`; POS revenue uses `0`, eliminating the grouping symbol without changing any value/formula/unit.
+- Owner additionally requests date/month selection for “Xuất bán và tồn bàn giao” because the prior export included only `inventorySalesDate`.
+- The section now exposes `Từ ngày`/`Đến ngày` bound to the existing authoritative report range. `sale_out` movements and handover sessions use inclusive range checks, rows display their business date, and the Excel sheets/titles cover the full period.
+- Focused pre-fix regressions failed and now report `INVENTORY_EXCEL_NUMBER_FORMAT_OK` and `INVENTORY_EXPORT_DATE_RANGE_OK`. Manager inventory, shift reconciliation, product tombstone, sales/report consistency, pagination, core business guards, 204-button contract and no-emit TypeScript pass.
+- No inventory formula, movement/status rule, permission, API, schema, migration or data changed. Production build Passed with 697 modules and `PRODUCTION_SUPABASE_BUNDLE_OK (index-G-HQ_UuZ.js)`; built `AdminPage-DHtc8ikq.js` contains the period UI/sheet label and single numeric format, with no legacy single-day state or mixed quantity format.
+- Inspected Vercel output has 65 files, five existing API functions and zero SQL/migration/seed/purge artifacts. Owner follow-up authorized immediate deployment.
+- Deployment `dpl_CV4n9oaG27ciC3KQRCEYELXNA1T7` is Ready and aliased to `https://gustino-operations.vercel.app`. Live assets are `index-G-HQ_UuZ.js`, `index-CmEMlQd6.css` and HTTP-200 `AdminPage-DHtc8ikq.js`; live Admin contains both range labels and period sheet name, with neither the mixed format nor legacy single-day state.
+- Required in-app Browser discovery returned `[]`, so no click/viewport claim is made. Actual downloaded-workbook verification remains pending.
+
 ## Active production batch — BUG-059 silent Kitchen audio priming
 
 - Root cause confirmed: the first Kitchen interaction always primes `/audio/hachimi-mambo.mp3`; the prior code relied only on `volume = 0`, which is not reliable on older/volume-locked Apple media stacks and could be audible with zero pending orders.

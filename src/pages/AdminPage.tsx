@@ -51,6 +51,9 @@ import type {
 
 export type AdminSection = 'overview' | 'attendance' | 'commission' | 'payroll' | 'inventory' | 'requests' | 'accounts' | 'revenue'
 
+const INVENTORY_EXCEL_QUANTITY_FORMAT = '0.####'
+const INVENTORY_EXCEL_INTEGER_FORMAT = '0'
+
 const ADMIN_SECTIONS: Array<{ id: AdminSection; icon: string }> = [
   { id: 'revenue', icon: '₫' },
   { id: 'overview', icon: '▤' },
@@ -322,7 +325,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [attendanceListDate, setAttendanceListDate] = useState(todayKey)
   const [attendanceListEmployeeId, setAttendanceListEmployeeId] = useState('')
   const [attendanceListPage, setAttendanceListPage] = useState(1)
-  const [inventorySalesDate, setInventorySalesDate] = useState(todayKey)
   const [competitionRankingMode, setCompetitionRankingMode] = useState<'daily' | 'monthly' | 'leaders'>('daily')
   const [competitionDate, setCompetitionDate] = useState(todayKey)
   const [savingRoleId, setSavingRoleId] = useState('')
@@ -446,7 +448,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     setAttendanceListEmployeeId('')
     setAttendanceListPage(1)
     setAttendanceEdit(null)
-    setInventorySalesDate((current) => current >= from && current <= to ? current : fallbackDate)
     setCompetitionDate((current) => current >= from && current <= to ? current : fallbackDate)
   }, [from, to, branchId])
 
@@ -696,7 +697,8 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const inventorySaleOutMovements = movements
     .filter((item) =>
       item.type === 'sale_out'
-      && item.shiftDate === inventorySalesDate
+      && item.shiftDate >= from
+      && item.shiftDate <= to
       && validBranchIds.has(item.branchId)
       && (!branchId || item.branchId === branchId),
     )
@@ -712,7 +714,8 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     bagSessions,
     salesReceipts,
     movements,
-    inventorySalesDate,
+    from,
+    to,
     validBranchIds,
     branchId,
   )
@@ -1367,7 +1370,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       closing: row.closing,
     }))
     for (const key of ['opening', 'inbound', 'outbound', 'waste', 'closing']) {
-      summarySheet.getColumn(key).numFmt = '#,##0.####'
+      summarySheet.getColumn(key).numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
     }
     styleSheet(summarySheet, `TỔNG HỢP KHO ${formatDate(from)} - ${formatDate(to)}`)
 
@@ -1421,12 +1424,12 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       }))
     })
     for (const key of ['opening', 'additions', 'posEquivalent', 'waste', 'closing', 'officialOut', 'difference']) {
-      shiftReconciliationSheet.getColumn(key).numFmt = '#,##0.####'
+      shiftReconciliationSheet.getColumn(key).numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
     }
-    shiftReconciliationSheet.getColumn('revenue').numFmt = '#,##0'
-    styleSheet(shiftReconciliationSheet, `ĐỐI CHIẾU XUẤT BÁN THEO CA ${formatDate(inventorySalesDate)}`)
+    shiftReconciliationSheet.getColumn('revenue').numFmt = INVENTORY_EXCEL_INTEGER_FORMAT
+    styleSheet(shiftReconciliationSheet, `ĐỐI CHIẾU XUẤT BÁN THEO CA ${formatDate(from)} - ${formatDate(to)}`)
 
-    const dailyOutboundSheet = workbook.addWorksheet('Xuất bán ngày chọn')
+    const dailyOutboundSheet = workbook.addWorksheet('Xuất bán trong kỳ')
     dailyOutboundSheet.columns = [
       { header: 'Ngày', key: 'date', width: 13 },
       { header: 'Giờ ghi', key: 'time', width: 20 },
@@ -1455,8 +1458,8 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         note: movement.note || '-',
       })
     })
-    dailyOutboundSheet.getColumn('quantity').numFmt = '#,##0.####'
-    styleSheet(dailyOutboundSheet, `XUẤT KHO ĐỂ BÁN NGÀY ${formatDate(inventorySalesDate)}`)
+    dailyOutboundSheet.getColumn('quantity').numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
+    styleSheet(dailyOutboundSheet, `XUẤT KHO ĐỂ BÁN ${formatDate(from)} - ${formatDate(to)}`)
 
     const ledgerSheet = workbook.addWorksheet('Nhật ký kho')
     ledgerSheet.columns = [
@@ -1497,7 +1500,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       })
     })
     for (const key of ['quantity', 'sourceQuantity', 'measuredWeightKg']) {
-      ledgerSheet.getColumn(key).numFmt = '#,##0.####'
+      ledgerSheet.getColumn(key).numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
     }
     styleSheet(ledgerSheet, `NHẬT KÝ KHO ${formatDate(from)} - ${formatDate(to)}`)
 
@@ -1523,7 +1526,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         unit: line.product.unit,
         status: line.expected <= 0.0001 ? 'Hết hàng' : line.expected <= line.product.lowStock ? 'Sắp hết' : 'Ổn định',
       }))
-    currentStockSheet.getColumn('quantity').numFmt = '#,##0.####'
+    currentStockSheet.getColumn('quantity').numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
     styleSheet(currentStockSheet, 'TỒN KHO HIỆN TẠI THEO CHI NHÁNH')
 
     const countSheet = workbook.addWorksheet('Phiếu kiểm kê')
@@ -1565,7 +1568,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       })
     })
     for (const key of ['freezer', 'stockRoom', 'orderNeeded']) {
-      countSheet.getColumn(key).numFmt = '#,##0.####'
+      countSheet.getColumn(key).numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
     }
     styleSheet(countSheet, `PHIẾU KIỂM KÊ ${formatDate(from)} - ${formatDate(to)}`)
 
@@ -2453,7 +2456,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         <span className="inventory-branch-card-metrics">
                           <span><small>Tồn hiện tại</small><b>{stockSummary}</b></span>
                           <span><small>Nhập trong kỳ</small><b>{inboundSummary}</b></span>
-                          <span><small>POS bán {formatDate(inventorySalesDate)}</small><b>{dailyPosSummary}</b></span>
+                          <span><small>POS bán trong kỳ</small><b>{dailyPosSummary}</b></span>
                         </span>
                         <span className="inventory-branch-card-footer">
                           <span className={`inventory-health ${lowCount ? 'warning' : 'good'}`}>{lowCount ? `${lowCount} SKU sắp hết` : 'Tồn kho ổn định'}</span>
@@ -2528,16 +2531,14 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     <h3>Xuất bán và tồn bàn giao</h3>
                     <p>Out chính thức = Tồn đầu + Nhập thêm − Tồn bàn giao − Hao hụt. POS chỉ dùng để đối chiếu, không trừ kho lần hai.</p>
                   </div>
-                  <label>Ngày xem
-                    <input
-                      type="date"
-                      min={from}
-                      max={to}
-                      value={inventorySalesDate}
-                      onChange={(event) => { if (event.target.value) setInventorySalesDate(event.target.value) }}
-                      required
-                    />
-                  </label>
+                  <div className="inventory-shift-period-fields">
+                    <label>Từ ngày
+                      <input type="date" max={to} value={from} onChange={(event) => { if (event.target.value) setFrom(event.target.value) }} required />
+                    </label>
+                    <label>Đến ngày
+                      <input type="date" min={from} value={to} onChange={(event) => { if (event.target.value) setTo(event.target.value) }} required />
+                    </label>
+                  </div>
                 </header>
                 <div className="inventory-shift-reconciliation-summary">
                   <span><small>Ca đã bàn giao</small><strong>{inventoryClosedShiftCount}/{inventoryShiftReconciliationRows.length} ca</strong></span>
@@ -2545,7 +2546,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   <span><small>Out chính thức</small><strong>{inventoryShiftOfficialOutSummary}</strong></span>
                   <span><small>Phiếu xuất riêng</small><strong>{inventoryDailyOutboundDocumentCount} phiếu · {inventoryDailyOutboundSummary}</strong></span>
                 </div>
-                <div className="inventory-shift-reconciliation-table" role="table" aria-label={`Đối chiếu xuất bán theo ca ngày ${formatDate(inventorySalesDate)}`}>
+                <div className="inventory-shift-reconciliation-table" role="table" aria-label={`Đối chiếu xuất bán theo ca từ ${formatDate(from)} đến ${formatDate(to)}`}>
                   <div className="inventory-shift-reconciliation-table-head" role="row">
                     <span>Chi nhánh / ca</span>
                     <span>Trạng thái</span>
@@ -2561,7 +2562,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     <article className={`inventory-shift-reconciliation-row ${row.status}`} role="row" key={row.sessionId}>
                       <span data-label="Chi nhánh / ca" role="cell">
                         <strong>{branchName(row.branchId)}</strong>
-                        <small>Ca {row.sequence} · {formatShiftTime(row.startedAt, row.endedAt)}</small>
+                        <small>{formatDate(row.businessDate)} · Ca {row.sequence} · {formatShiftTime(row.startedAt, row.endedAt)}</small>
                       </span>
                       <span data-label="Trạng thái" role="cell">
                         <b className={`inventory-shift-status ${row.status}`}>
@@ -2599,7 +2600,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       </details>
                     </article>
                   ))}
-                  {!inventoryShiftReconciliationRows.length && <p className="empty-copy">Không có ca vận hành trong ngày và chi nhánh đã chọn.</p>}
+                  {!inventoryShiftReconciliationRows.length && <p className="empty-copy">Không có ca vận hành trong khoảng ngày và chi nhánh đã chọn.</p>}
                 </div>
               </section>
               {user.role === 'admin' && <div className="admin-inventory-ledger" role="table" aria-label="Danh sách phát sinh kho">
@@ -3524,7 +3525,8 @@ function buildShiftInventoryReconciliation(
   sessions: BagShiftSession[],
   receipts: SalesReceipt[],
   movements: StockMovement[],
-  businessDate: string,
+  fromDate: string,
+  toDate: string,
   validBranchIds: Set<string>,
   selectedBranchId: string,
 ) {
@@ -3540,12 +3542,13 @@ function buildShiftInventoryReconciliation(
 
   return sessions
     .filter((session) =>
-      session.businessDate === businessDate
+      session.businessDate >= fromDate
+      && session.businessDate <= toDate
       && validBranchIds.has(session.branchId)
       && (!selectedBranchId || session.branchId === selectedBranchId),
     )
     .slice()
-    .sort((a, b) => a.branchId.localeCompare(b.branchId) || a.sequence - b.sequence)
+    .sort((a, b) => b.businessDate.localeCompare(a.businessDate) || a.branchId.localeCompare(b.branchId) || a.sequence - b.sequence)
     .map((session) => {
       const startMs = Date.parse(session.startedAt)
       const endMs = session.endedAt ? Date.parse(session.endedAt) : Number.POSITIVE_INFINITY
