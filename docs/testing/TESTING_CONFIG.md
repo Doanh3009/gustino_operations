@@ -13,5 +13,6 @@
 - In-app Browser status on 2026-07-15: unavailable (`agent.browsers.list()` returned `[]`); do not substitute another browser-control backend under the active browser skill.
 - Vercel environment readback on 2026-07-15: Production exposes `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `CRON_SECRET`; all are shown by Vercel as encrypted/sensitive values. Never print or persist server-secret values locally.
 - Production build guard: always run `node scripts/test-production-supabase-bundle.mjs` after the build and before deployment. The generated `.vercel/.env.production.local` can be stale/empty; explicitly supply the two public Vite values during local prebuild and verify the emitted asset rather than assuming environment hydration.
+- Linked migration history warning (verified 2026-07-17): local files use repeated eight-digit date versions while production history uses fourteen-digit versions, so `supabase db push --linked --dry-run` refuses. Never use history repair, `--include-all`, force or bulk replay as a deployment shortcut; first run the read-only runtime/predeploy/latest-object audits and reconcile history only in a dedicated reviewed operation with backup and an explicit version map.
 
 This configuration is provisional until discovery is complete.

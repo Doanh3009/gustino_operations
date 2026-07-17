@@ -1,5 +1,15 @@
 # Session Handoff
 
+## Active production batch — BUG-059 silent Kitchen audio priming
+
+- Root cause confirmed: the first Kitchen interaction always primes `/audio/hachimi-mambo.mp3`; the prior code relied only on `volume = 0`, which is not reliable on older/volume-locked Apple media stacks and could be audible with zero pending orders.
+- Minimal fix: set `audio.muted = true` before `audio.play()`, pause and seek to zero, then restore the previous volume/mute state. The separate new-pending-order alert and 60-second reminder guarded by pending requests are unchanged.
+- `KITCHEN_IDLE_BELL_OK`, core business guards, 204-button/198-reachable UI contract, no-emit TypeScript, diff check and the 697-module production build Passed. Existing build warnings are unchanged.
+- Linked production audit was read-only: 30/30 required public tables, 17/17 required functions and every latest migration object checked by `db_audit_latest_migrations_20260717.sql` are present. No required runtime migration is missing for this release.
+- Migration history remains intentionally/unavoidably unaligned: local files use repeated eight-digit date versions while remote history uses fourteen-digit versions through `20260624003000`; exact version matches are zero and `db push --dry-run` refuses. No history repair, pull, force, bulk push, SQL write or migration application was performed.
+- Inspected prebuilt output contains 60 files, five existing API functions and no SQL/migration/seed/purge artifact. Production deployment `dpl_CgasdGCNoQyu2nSq6sQeUu2yKDZY` is Ready and aliased to `https://gustino-operations.vercel.app`.
+- Live verification serves `index-00Pews68.js`, `index-CvUuwReK.css` and HTTP-200 `KitchenPage-D0nm0nQ8.js`; the Kitchen chunk contains the mute assignment. Remaining check: hard-refresh on the reporting phone/tablet, open Kitchen with zero pending orders and tap once to verify physical silence.
+
 ## Active local batch — global Capy loading and attendance reminder art
 
 - Owner requested a small centered Capy loading window for site actions, clarified that loading must randomly choose reference image 1, 2 or 4, and requested reference image 3 in the check-in/check-out reminder.

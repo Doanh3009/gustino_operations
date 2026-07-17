@@ -298,6 +298,10 @@ function getKitchenAudio() {
 async function primeKitchenBell() {
   const audio = getKitchenAudio()
   const oldVolume = audio.volume
+  const oldMuted = audio.muted
+  // iOS/iPadOS cũ có thể khóa thuộc tính volume ở mức hệ thống. Dùng muted
+  // trước play để lần mở khóa chuông luôn im lặng dù chưa có đơn bếp.
+  audio.muted = true
   audio.volume = 0
   try {
     await audio.play()
@@ -307,6 +311,7 @@ async function primeKitchenBell() {
     // Browser may still block sound until a later explicit interaction.
   } finally {
     audio.volume = oldVolume
+    audio.muted = oldMuted
   }
 }
 
