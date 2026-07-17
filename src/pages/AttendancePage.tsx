@@ -35,6 +35,7 @@ import { employeePositionLabel, roleLabel as accessRoleLabel } from '../lib/acce
 import { useLang } from '../lib/i18n'
 import { createAttendanceAdjustment } from '../lib/attendanceAdjustments'
 import { AttendanceAdjustmentArchive } from '../components/AttendanceAdjustmentArchive'
+import { formatDecimalHoursAsDuration, formatWorkDurationBetween } from '../lib/workDuration'
 import type {
   AppUser,
   AttendanceAdjustmentRequest,
@@ -406,7 +407,7 @@ function SchedulePanel({
           {record && <div className="attendance-times">
             <span>Vào: <strong>{formatTime(record.checkInTime)}</strong></span>
             <span>Ra: <strong>{record.checkOutTime ? formatTime(record.checkOutTime) : 'Chưa check-out'}</strong></span>
-            {isOvertime && record.checkOutTime && <span>Giờ tăng ca: <strong>{workedHours(record)} giờ</strong></span>}
+            {isOvertime && record.checkOutTime && <span>Giờ tăng ca: <strong>{formatWorkDurationBetween(record.checkInTime, record.checkOutTime)}</strong></span>}
             {record.checkInAddress && <span className="attendance-location">Vị trí: <strong>{record.checkInAddress}</strong></span>}
             {record.checkOutAddress && <span className="attendance-location">Vị trí ra: <strong>{record.checkOutAddress}</strong></span>}
           </div>}
@@ -475,7 +476,7 @@ function SchedulePanel({
         <time>{formatDate(registration.workDate)}</time>
         <strong>{registration.startTime} - {registration.endTime}</strong>
         <span>{branchName(registration.branchId)}</span>
-        <span>{isOvertime ? 'Tăng ca · ' : ''}Vào <b>{record ? formatTime(record.checkInTime) : '-'}</b> · Ra <b>{record?.checkOutTime ? formatTime(record.checkOutTime) : '-'}</b>{isOvertime && record?.checkOutTime ? ` · ${workedHours(record)} giờ tăng ca` : ''}</span>
+        <span>{isOvertime ? 'Tăng ca · ' : ''}Vào <b>{record ? formatTime(record.checkInTime) : '-'}</b> · Ra <b>{record?.checkOutTime ? formatTime(record.checkOutTime) : '-'}</b>{isOvertime && record?.checkOutTime ? ` · ${formatWorkDurationBetween(record.checkInTime, record.checkOutTime)} tăng ca` : ''}</span>
       </article>
     )
   }
@@ -1445,7 +1446,7 @@ function AttendanceReportPanel({
   )
 
   function exportCsv() {
-    const headers = [text.employee, text.branch, text.totalShifts, text.totalHours, text.overtimeHours, text.workDays, text.late, text.absent, text.missingCheckout]
+    const headers = [text.employee, text.branch, text.totalShifts, `${text.totalHours} (thập phân)`, `${text.overtimeHours} (thập phân)`, text.workDays, text.late, text.absent, text.missingCheckout]
     const csv = [
       headers,
       ...rows.map((row) => [row.employeeName, branchName(row.branchId), row.totalShifts, row.totalHours, row.overtimeHours, row.workDays, row.lateCount, row.absentCount, row.missingCheckoutCount]),
@@ -1488,8 +1489,8 @@ function AttendanceReportPanel({
       { header: 'Vị trí', key: 'position', width: 16 },
       { header: text.branch, key: 'branch', width: 26 },
       { header: text.totalShifts, key: 'totalShifts', width: 12 },
-      { header: text.totalHours, key: 'totalHours', width: 12 },
-      { header: text.overtimeHours, key: 'overtimeHours', width: 15 },
+      { header: `${text.totalHours} (thập phân)`, key: 'totalHours', width: 20 },
+      { header: `${text.overtimeHours} (thập phân)`, key: 'overtimeHours', width: 23 },
       { header: text.workDays, key: 'workDays', width: 12 },
       { header: text.late, key: 'lateCount', width: 10 },
       { header: text.absent, key: 'absentCount', width: 11 },
@@ -1563,8 +1564,8 @@ function AttendanceReportPanel({
                   <td><strong>{row.employeeName}</strong></td>
                   <td>{branchName(row.branchId)}</td>
                   <td>{row.totalShifts}</td>
-                  <td>{row.totalHours}</td>
-                  <td>{row.overtimeHours}</td>
+                  <td>{formatDecimalHoursAsDuration(row.totalHours)}</td>
+                  <td>{formatDecimalHoursAsDuration(row.overtimeHours)}</td>
                   <td>{row.workDays}</td>
                   <td className={row.lateCount ? 'warn' : ''}>{row.lateCount}</td>
                   <td className={row.absentCount ? 'warn' : ''}>{row.absentCount}</td>
@@ -1660,11 +1661,6 @@ async function openShiftAfterLeaderCheckIn(
 function normalizeName(value: string) { return value.trim().toLocaleLowerCase('vi').normalize('NFD').replace(/\p{Diacritic}/gu, '') }
 function formatDate(date: string) { return new Date(`${date}T00:00:00`).toLocaleDateString('vi-VN') }
 function formatTime(date: string) { return new Date(date).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) }
-function workedHours(record: AttendanceRecord) {
-  if (!record.checkOutTime) return '0'
-  const hours = Math.max(0, (new Date(record.checkOutTime).getTime() - new Date(record.checkInTime).getTime()) / 3600000)
-  return Number(hours.toFixed(2)).toLocaleString('vi-VN')
-}
 function formatDateTime(date: string) { return new Date(date).toLocaleString('vi-VN', { hour12: false }) }
 function attendanceDetailStatus(status: 'completed' | 'working' | 'absent' | 'scheduled') {
   return ({ completed: 'Đã hoàn thành', working: 'Đang làm', absent: 'Vắng', scheduled: 'Chưa tới ca' })[status]
@@ -1684,8 +1680,8 @@ function attendanceDetailColumns() {
     { header: 'Ca dự kiến', key: 'scheduled', width: 17 },
     { header: 'Giờ vào', key: 'checkIn', width: 20 },
     { header: 'Giờ ra', key: 'checkOut', width: 20 },
-    { header: 'Giờ thực tế', key: 'totalHours', width: 13 },
-    { header: 'Giờ tăng ca', key: 'overtimeHours', width: 13 },
+    { header: 'Giờ thực tế (thập phân)', key: 'totalHours', width: 22 },
+    { header: 'Giờ tăng ca (thập phân)', key: 'overtimeHours', width: 22 },
     { header: 'Loại ca', key: 'shiftType', width: 14 },
     { header: 'Ngày công', key: 'workDayCredit', width: 12 },
     { header: 'Đi trễ (phút)', key: 'lateMinutes', width: 14 },

@@ -3,6 +3,7 @@ import {
   buildAttendanceReport,
   buildAttendanceDetailRows,
   createEmployeeAccount,
+  deleteAttendanceRecordByAdmin,
   deleteEmployeeAccount,
   fetchAttendanceRecords,
   fetchEmployees,
@@ -15,6 +16,7 @@ import {
   updateEmployeeDetails,
   updateEmployeeRole,
 } from '../lib/attendance'
+import { formatDecimalHoursAsDuration, formatWorkDurationBetween } from '../lib/workDuration'
 import { employeePositionLabel, roleLabel } from '../lib/access'
 import { useLang } from '../lib/i18n'
 import { PRODUCTS, getPackingOptionsByOutput, getProducts, productById } from '../lib/constants'
@@ -324,6 +326,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [attendanceListMode, setAttendanceListMode] = useState<'date' | 'employee'>('date')
   const [attendanceListDate, setAttendanceListDate] = useState(todayKey)
   const [attendanceListEmployeeId, setAttendanceListEmployeeId] = useState('')
+  const [attendanceEmployeeSearch, setAttendanceEmployeeSearch] = useState('')
   const [attendanceListPage, setAttendanceListPage] = useState(1)
   const [competitionRankingMode, setCompetitionRankingMode] = useState<'daily' | 'monthly' | 'leaders'>('daily')
   const [competitionDate, setCompetitionDate] = useState(todayKey)
@@ -367,6 +370,13 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     reason: string
   } | null>(null)
   const [attendanceEditSaving, setAttendanceEditSaving] = useState(false)
+  const [attendanceDelete, setAttendanceDelete] = useState<{
+    recordId: string
+    employeeName: string
+    workDate: string
+    reason: string
+  } | null>(null)
+  const [attendanceDeleteSaving, setAttendanceDeleteSaving] = useState(false)
   const managementRefreshInFlightRef = useRef<Promise<void> | null>(null)
   const managementRefreshQueuedRef = useRef(false)
   const managementRefreshContextRef = useRef({ activeSection, focused, from, to, rankingMonthFrom, rankingMonthTo })
@@ -644,18 +654,34 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     })
     return Array.from(byEmployee.values()).sort((a, b) => a.name.localeCompare(b.name, 'vi'))
   }, [attendanceListRows])
+  const attendanceEmployeeSearchKey = normalizeName(attendanceEmployeeSearch)
+  const attendanceListVisibleEmployeeOptions = useMemo(() => (
+    attendanceEmployeeSearchKey
+      ? attendanceListEmployeeOptions.filter((employee) =>
+        normalizeName(`${employee.name} ${branchName(employee.branchId)}`).includes(attendanceEmployeeSearchKey),
+      )
+      : attendanceListEmployeeOptions
+  ), [attendanceListEmployeeOptions, attendanceEmployeeSearchKey])
   const attendanceListFilteredRows = useMemo(() => {
-    const scopedRows = attendanceListMode === 'date'
+    const modeRows = attendanceListMode === 'date'
       ? attendanceListRows.filter((row) => row.workDate === attendanceListDate)
       : attendanceListEmployeeId
         ? attendanceListRows.filter((row) => row.userId === attendanceListEmployeeId)
-        : []
+        : attendanceEmployeeSearchKey
+          ? attendanceListRows
+          : []
+    const scopedRows = attendanceEmployeeSearchKey
+      ? modeRows.filter((row) =>
+        normalizeName(row.employeeName).includes(attendanceEmployeeSearchKey)
+        || normalizeName(branchName(row.branchId)).includes(attendanceEmployeeSearchKey),
+      )
+      : modeRows
     return scopedRows.slice().sort((a, b) =>
       b.workDate.localeCompare(a.workDate)
       || a.employeeName.localeCompare(b.employeeName, 'vi')
       || a.scheduledStart.localeCompare(b.scheduledStart),
     )
-  }, [attendanceListRows, attendanceListMode, attendanceListDate, attendanceListEmployeeId])
+  }, [attendanceListRows, attendanceListMode, attendanceListDate, attendanceListEmployeeId, attendanceEmployeeSearchKey])
   const attendanceListTotalPages = Math.max(1, Math.ceil(attendanceListFilteredRows.length / ATTENDANCE_EDIT_PAGE_SIZE))
   const attendanceListSafePage = Math.min(attendanceListPage, attendanceListTotalPages)
   const attendanceListPageStart = (attendanceListSafePage - 1) * ATTENDANCE_EDIT_PAGE_SIZE
@@ -1277,7 +1303,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       { header: 'Vị trí', key: 'position', width: 16 },
       { header: 'Chi nhánh', key: 'branch', width: 25 },
       { header: 'Tổng ca', key: 'totalShifts', width: 11 },
-      { header: 'Tổng giờ', key: 'totalHours', width: 12 },
+      { header: 'Tổng giờ (thập phân)', key: 'totalHours', width: 20 },
       { header: 'Ngày công', key: 'workDays', width: 12 },
       { header: 'Đi trễ', key: 'lateCount', width: 10 },
       { header: 'Vắng', key: 'absentCount', width: 10 },
@@ -1290,7 +1316,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     commissionSheet.columns = [
       { header: 'Nhân viên', key: 'employeeName', width: 26 },
       { header: 'Chi nhánh', key: 'branch', width: 24 },
-      { header: 'Giờ công', key: 'totalHours', width: 12 },
+      { header: 'Giờ công (thập phân)', key: 'totalHours', width: 21 },
       { header: 'Doanh thu', key: 'revenue', width: 16 },
       { header: 'KPI doanh thu', key: 'targetQuantity', width: 16 },
       { header: 'Tỷ lệ đạt (%)', key: 'progress', width: 14 },
@@ -1689,7 +1715,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       row.note,
     ])
     const csv = [
-      ['Nhân viên', 'Chi nhánh', 'Vị trí', 'Ca', 'Giờ công', 'Ngày công', 'Lương giờ', 'Lương cứng', 'Lương công', 'Thưởng KPI', 'Thưởng ngày', 'Thưởng tuần', 'Thưởng tháng', 'Thưởng thêm', 'Trừ', 'Thực nhận', 'Ghi chú'],
+      ['Nhân viên', 'Chi nhánh', 'Vị trí', 'Ca', 'Giờ công (thập phân)', 'Ngày công', 'Lương giờ', 'Lương cứng', 'Lương công', 'Thưởng KPI', 'Thưởng ngày', 'Thưởng tuần', 'Thưởng tháng', 'Thưởng thêm', 'Trừ', 'Thực nhận', 'Ghi chú'],
       ...rows,
     ].map((line) => line.map(csvCell).join(',')).join('\n')
     download(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }), `bang-luong-${from}-${to}.csv`)
@@ -1716,10 +1742,30 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     }
   }
 
+  async function saveAttendanceDeletion(event: React.FormEvent) {
+    event.preventDefault()
+    if (!attendanceDelete || attendanceDeleteSaving) return
+    setAttendanceDeleteSaving(true)
+    try {
+      await deleteAttendanceRecordByAdmin(user, {
+        recordId: attendanceDelete.recordId,
+        reason: attendanceDelete.reason,
+      })
+      await refresh(false)
+      setAttendanceDelete(null)
+      setFeedback(`Đã xóa ca công của ${attendanceDelete.employeeName} ngày ${formatDate(attendanceDelete.workDate)} và đồng bộ lại bảng lương.`)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Không thể xóa ca công của nhân viên.')
+    } finally {
+      setAttendanceDeleteSaving(false)
+    }
+  }
+
   function selectAttendanceListMode(mode: 'date' | 'employee') {
     setAttendanceListMode(mode)
     setAttendanceListPage(1)
     setAttendanceEdit(null)
+    setAttendanceDelete(null)
   }
 
   return (
@@ -1908,7 +1954,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               )}
               <section className="admin-stats admin-business-stats">
                 <article><span>{text.shiftsDone}</span><strong>{formatNumber(totalShifts)}</strong><small>{text.shiftsHint}</small></article>
-                <article><span>{text.hours}</span><strong>{formatNumber(totalHours)}</strong><small>{attendanceRows.length} {text.hoursHint}</small></article>
+                <article><span>{text.hours}</span><strong>{formatDecimalHoursAsDuration(totalHours)}</strong><small>{attendanceRows.length} {text.hoursHint}</small></article>
                 <article className={lowStockRows.length ? 'danger' : 'active'}><span>{text.lowStock}</span><strong>{lowStockRows.length}</strong><small>{activeNow} {text.activeHint}</small></article>
                 <article className={pendingRequests ? 'warning' : ''}><span>{text.orderRequests}</span><strong>{pendingRequests}</strong><small>{supplyRequests.length} {text.requestsHint}</small></article>
               </section>
@@ -1982,7 +2028,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         <td><strong>{row.employeeName}</strong></td>
                         <td>{branchName(row.branchId)}</td>
                         <td>{row.totalShifts}</td>
-                        <td>{row.totalHours}</td>
+                        <td>{formatDecimalHoursAsDuration(row.totalHours)}</td>
                         <td>{row.workDays}</td>
                         <td className={row.lateCount ? 'warn' : ''}>{row.lateCount}</td>
                         <td className={row.absentCount ? 'warn' : ''}>{row.absentCount}</td>
@@ -1997,10 +2043,13 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
 
             <section className="section-card attendance-detail-section">
               <div className="section-title">
-                <div>
-                  <span className="eyebrow dark">DANH SÁCH CÔNG</span>
-                  <h2>Từng ca đã ghi nhận</h2>
-                  <p>Chọn đúng một ngày hoặc một nhân viên để chỉnh nhanh. Giờ công và lương vẫn đồng bộ từ cùng bản ghi sau khi lưu.</p>
+                <div className="attendance-cute-heading">
+                  <img className="attendance-cute-mascot" src="/mascots/capy-loading-2.png" alt="" aria-hidden="true" />
+                  <div>
+                    <span className="eyebrow dark">DANH SÁCH CÔNG</span>
+                    <h2>Từng ca đã ghi nhận</h2>
+                    <p>Tìm theo tên, chọn đúng ngày để chỉnh hoặc xóa ca tạo nhầm. Mọi thay đổi đều được lưu lịch sử và đồng bộ bảng lương.</p>
+                  </div>
                 </div>
                 <span className="date-chip">{attendanceListFilteredRows.length} ca</span>
               </div>
@@ -2019,6 +2068,20 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     onClick={() => selectAttendanceListMode('employee')}
                   >Theo nhân viên</button>
                 </div>
+                <label className="attendance-employee-search">Tìm nhân viên
+                  <input
+                    type="search"
+                    value={attendanceEmployeeSearch}
+                    placeholder="Tìm tên nhân viên, có thể nhập không dấu…"
+                    onChange={(event) => {
+                      setAttendanceEmployeeSearch(event.target.value)
+                      setAttendanceListEmployeeId('')
+                      setAttendanceListPage(1)
+                      setAttendanceEdit(null)
+                      setAttendanceDelete(null)
+                    }}
+                  />
+                </label>
                 {attendanceListMode === 'date' ? (
                   <label>Ngày cần chỉnh
                     <input
@@ -2031,6 +2094,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         setAttendanceListDate(event.target.value)
                         setAttendanceListPage(1)
                         setAttendanceEdit(null)
+                        setAttendanceDelete(null)
                       }}
                       required
                     />
@@ -2043,10 +2107,11 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         setAttendanceListEmployeeId(event.target.value)
                         setAttendanceListPage(1)
                         setAttendanceEdit(null)
+                        setAttendanceDelete(null)
                       }}
                     >
                       <option value="">Chọn nhân viên</option>
-                      {attendanceListEmployeeOptions.map((employee) => (
+                      {attendanceListVisibleEmployeeOptions.map((employee) => (
                         <option key={employee.id} value={employee.id}>
                           {employee.name} · {branchName(employee.branchId)}
                         </option>
@@ -2077,20 +2142,38 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     </div>
                     <div className="attendance-detail-result">
                       <span className={`attendance-state ${row.status}`}>{attendanceDetailStatus(row.status)}</span>
-                      <strong>{formatNumber(row.totalHours)} giờ</strong>
+                      <strong>{formatWorkDurationBetween(row.checkInTime, row.checkOutTime)}</strong>
                     </div>
                     {row.attendanceRecordId ? (
-                      <button
-                        type="button"
-                        className="mini-button attendance-edit-button"
-                        onClick={() => setAttendanceEdit({
-                          recordId: row.attendanceRecordId!,
-                          employeeName: row.employeeName,
-                          checkInTime: toDateTimeLocalValue(row.checkInTime),
-                          checkOutTime: toDateTimeLocalValue(row.checkOutTime),
-                          reason: '',
-                        })}
-                      >Chỉnh công</button>
+                      <div className="attendance-record-actions">
+                        <button
+                          type="button"
+                          className="mini-button attendance-edit-button"
+                          onClick={() => {
+                            setAttendanceDelete(null)
+                            setAttendanceEdit({
+                              recordId: row.attendanceRecordId!,
+                              employeeName: row.employeeName,
+                              checkInTime: toDateTimeLocalValue(row.checkInTime),
+                              checkOutTime: toDateTimeLocalValue(row.checkOutTime),
+                              reason: '',
+                            })
+                          }}
+                        >Chỉnh công</button>
+                        <button
+                          type="button"
+                          className="mini-button attendance-delete-button"
+                          onClick={() => {
+                            setAttendanceEdit(null)
+                            setAttendanceDelete({
+                              recordId: row.attendanceRecordId!,
+                              employeeName: row.employeeName,
+                              workDate: row.workDate,
+                              reason: '',
+                            })
+                          }}
+                        >Xóa ca công</button>
+                      </div>
                     ) : <span className="attendance-no-record">Chưa có bản ghi</span>}
 
                     {attendanceEdit && attendanceEdit.recordId === row.attendanceRecordId && (
@@ -2114,12 +2197,37 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         </div>
                       </form>
                     )}
+
+                    {attendanceDelete && attendanceDelete.recordId === row.attendanceRecordId && (
+                      <form className="attendance-delete-confirm" onSubmit={saveAttendanceDeletion}>
+                        <div>
+                          <strong>Xóa ca công · {attendanceDelete.employeeName}</strong>
+                          <small>Ngày {formatDate(attendanceDelete.workDate)} · Chỉ bản ghi này bị xóa; lịch đăng ký ca vẫn được giữ lại.</small>
+                        </div>
+                        <label>Lý do xóa
+                          <input
+                            value={attendanceDelete.reason}
+                            minLength={3}
+                            onChange={(event) => setAttendanceDelete((current) => current ? { ...current, reason: event.target.value } : current)}
+                            placeholder="Ví dụ: tạo nhầm nhân viên hoặc nhầm ngày"
+                            required
+                            autoFocus
+                          />
+                        </label>
+                        <div className="attendance-delete-actions">
+                          <button type="button" className="secondary-button" onClick={() => setAttendanceDelete(null)} disabled={attendanceDeleteSaving}>Giữ lại</button>
+                          <button type="submit" className="attendance-delete-confirm-button" disabled={attendanceDeleteSaving}>
+                            {attendanceDeleteSaving ? 'Đang xóa…' : 'Xác nhận xóa ca'}
+                          </button>
+                        </div>
+                      </form>
+                    )}
                   </article>
                 ))}
                 {!attendanceListPageRows.length && (
                   <p className="empty-copy">
-                    {attendanceListMode === 'employee' && !attendanceListEmployeeId
-                      ? 'Chọn một nhân viên để xem và chỉnh các ca trong khoảng ngày phía trên.'
+                    {attendanceListMode === 'employee' && !attendanceListEmployeeId && !attendanceEmployeeSearchKey
+                      ? 'Tìm tên hoặc chọn một nhân viên để xem các ca trong khoảng ngày phía trên.'
                       : 'Không có ca nào phù hợp với lựa chọn hiện tại.'}
                   </p>
                 )}
@@ -2203,7 +2311,11 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   </label>}
                 </div>
               </div>
-              <CompetitionClassificationTable title={competitionRankingTitle} rows={competitionRankingRows} />
+              <CompetitionClassificationTable
+                title={competitionRankingTitle}
+                rows={competitionRankingRows}
+                showReward={competitionRankingMode !== 'leaders'}
+              />
               <div className="adm-list">
                 {commissionRows.map((row) => (
                   <article className="adm-row" key={`${row.branchId}-${row.employeeKey}`}>
@@ -2212,7 +2324,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       <div className="adm-row-hero"><b className="adm-hero-money">{row.commission.toLocaleString('vi-VN')}đ</b><span>thưởng KPI</span></div>
                     </div>
                     <div className="adm-metrics">
-                      <span><i>Giờ công</i><b>{formatNumber(row.totalHours)}</b></span>
+                      <span><i>Giờ công</i><b>{formatDecimalHoursAsDuration(row.totalHours)}</b></span>
                       <span><i>Doanh thu</i><b>{formatMoney(row.revenue)}</b></span>
                       <span><i>KPI doanh thu</i><b>{formatMoney(row.targetQuantity)}</b></span>
                       <span className={row.rank === 'A' || row.rank === 'S+' ? 'ok' : row.rank === 'D' ? 'warn' : 'amber'}><i>Xếp hạng</i><b>{row.rank}</b></span>
@@ -2293,7 +2405,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       <div className="adm-row-hero"><b className="adm-hero-money">{formatMoney(row.grossPay)}</b><span>thực nhận</span></div>
                     </div>
                     <div className="adm-metrics">
-                      <span><i>Công</i><b>{formatNumber(row.totalHours)} giờ</b></span>
+                      <span><i>Công</i><b>{formatDecimalHoursAsDuration(row.totalHours)}</b></span>
                       <span><i>Ngày · ca</i><b>{formatNumber(row.workDays)} · {row.totalShifts}</b></span>
                       <span><i>Lương công</i><b>{formatMoney(row.basePay)}</b></span>
                       <span className="ok"><i>Thưởng KPI</i><b>{formatMoney(row.dailyBonus + row.weeklyBonus)}</b></span>
@@ -2302,7 +2414,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     <p className="payroll-basepay-formula">
                       {row.fixedSalary > 0
                         ? <>Lương công = lương cứng <b>{formatMoney(row.fixedSalary)}</b></>
-                        : <>Lương công = <b>{formatNumber(row.totalHours)}</b> giờ công × <b>{formatMoney(row.hourlyRate)}</b>/giờ = <b>{formatMoney(row.basePay)}</b></>}
+                        : <>Lương công = <b>{formatDecimalHoursAsDuration(row.totalHours)}</b> (<b>{formatNumber(row.totalHours)}</b> giờ thập phân) × <b>{formatMoney(row.hourlyRate)}</b>/giờ = <b>{formatMoney(row.basePay)}</b></>}
                     </p>
                     <div className="payroll-bonus-breakdown">
                       <span>KPI <b>{formatNumber(row.kpiProgress)}% · {row.achievedDays} ngày đạt</b></span>
@@ -2378,7 +2490,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         <td>{branchName(row.branchId)}</td>
                         <td><strong>{row.employeeName}</strong></td>
                         <td>{row.positionTitle}</td>
-                        <td>{formatNumber(row.totalHours)}</td>
+                        <td>{formatDecimalHoursAsDuration(row.totalHours)}</td>
                         <td>{formatNumber(row.soldQuantity)}</td>
                         <td>{formatMoney(row.revenue)}</td>
                         <td>{formatMoney(row.targetRevenue)}</td>
@@ -3003,13 +3115,20 @@ function EmployeeRevenueChart({ rows }: { rows: ReturnType<typeof buildCompetiti
 function CompetitionClassificationTable({
   title,
   rows,
+  showReward,
 }: {
   title: string
   rows: Array<ReturnType<typeof buildCompetitionRows>[number] & { detail?: string }>
+  showReward: boolean
 }) {
-  return <section className="competition-classification-table" aria-label={title}>
+  return <section className={`competition-classification-table${showReward ? ' with-reward' : ''}`} aria-label={title}>
     <div className="competition-classification-title">
-      <h3>{title}</h3>
+      <div>
+        <h3>{title} · Xếp hạng doanh thu</h3>
+        <p>{showReward
+          ? 'Top doanh thu không tự phát sinh thưởng; thưởng chỉ có khi đạt ngưỡng KPI ngày/tuần.'
+          : 'Bảng này xếp doanh thu ca do ca trưởng phụ trách, không phải thưởng KPI cá nhân.'}</p>
+      </div>
       <small>{rows.length} người có doanh thu</small>
     </div>
     <div className="competition-classification-head" role="row">
@@ -3019,6 +3138,7 @@ function CompetitionClassificationTable({
       <span>Kết quả</span>
       <span>Doanh thu</span>
       <span>Xếp loại KPI</span>
+      {showReward && <span>Thưởng KPI</span>}
     </div>
     {rows.map((row, index) => <div className="competition-classification-row" role="row" key={`${row.branchId}-${row.employeeKey}`}>
       <span data-label="Hạng" role="cell"><b className={`leaderboard-rank rank-${index + 1}`}>{index + 1}</b></span>
@@ -3030,6 +3150,10 @@ function CompetitionClassificationTable({
       <span data-label="Kết quả" role="cell">{row.detail || `${formatNumber(row.soldQuantity)} sản phẩm`}</span>
       <span data-label="Doanh thu" role="cell"><b>{formatMoney(row.revenue)}</b></span>
       <span data-label="Xếp loại KPI" role="cell"><b>{row.rank}</b><small>{formatNumber(row.progress)}%</small></span>
+      {showReward && <span data-label="Thưởng KPI" role="cell" className={`competition-classification-reward${row.commission > 0 ? ' earned' : ''}`}>
+        <b>{formatMoney(row.commission)}</b>
+        <small>{row.commission > 0 ? 'Đã đạt thưởng ngày/tuần' : 'Chưa đạt ngưỡng ngày/tuần'}</small>
+      </span>}
     </div>)}
     {!rows.length && <p className="empty-copy">Chưa có doanh thu phù hợp với phân loại và ngày đã chọn.</p>}
   </section>
@@ -4062,7 +4186,7 @@ function attendanceDetailColumns() {
     { header: 'Ca dự kiến', key: 'scheduled', width: 17 },
     { header: 'Giờ vào', key: 'checkIn', width: 20 },
     { header: 'Giờ ra', key: 'checkOut', width: 20 },
-    { header: 'Giờ thực tế', key: 'totalHours', width: 13 },
+    { header: 'Giờ thực tế (thập phân)', key: 'totalHours', width: 22 },
     { header: 'Ngày công', key: 'workDayCredit', width: 12 },
     { header: 'Đi trễ (phút)', key: 'lateMinutes', width: 14 },
     { header: 'Trạng thái', key: 'status', width: 16 },

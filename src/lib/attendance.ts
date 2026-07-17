@@ -3,6 +3,7 @@ import { branchIds, branchName } from './branches'
 import { localDateKey, localDayBoundsIso } from './dates'
 import { shouldUseLanApi, supabase } from './supabase'
 import { usernameToEmail, validateUsername } from './authIdentity'
+import { formatWorkDurationBetween } from './workDuration'
 import type {
   AppUser,
   AttendanceRecord,
@@ -756,6 +757,33 @@ export async function updateAttendanceRecordByAdmin(
   return data
 }
 
+export async function deleteAttendanceRecordByAdmin(
+  actor: AppUser,
+  input: {
+    recordId: string
+    reason: string
+  },
+) {
+  if (actor.role !== 'admin') throw new Error('Chỉ Admin hệ thống được xóa ca công của nhân viên.')
+  if (!input.recordId) throw new Error('Thiếu bản ghi chấm công cần xóa.')
+  if (input.reason.trim().length < 3) throw new Error('Hãy nhập lý do xóa ít nhất 3 ký tự.')
+  if (shouldUseAttendanceApi(actor)) {
+    throw new Error('Xóa ca công chỉ thực hiện trên hệ thống online để đồng bộ với bảng lương.')
+  }
+  const { data, error } = await supabase!.rpc('admin_delete_attendance_record', {
+    p_record_id: input.recordId,
+    p_reason: input.reason.trim(),
+  })
+  if (error) {
+    if (isMissingRpcError(error)) {
+      throw new Error('Chưa cập nhật chức năng xóa ca công trên Supabase. Cần chạy migration mới rồi thử lại.')
+    }
+    throw new Error(error.message || 'Không thể xóa ca công của nhân viên.')
+  }
+  window.dispatchEvent(new CustomEvent('gustino-attendance-updated'))
+  return data
+}
+
 export async function setScheduleRegistration(
   user: AppUser,
   input: {
@@ -957,9 +985,6 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
   const location = await getAttendanceLocation()
   const checkOutTime = await getTrustedTimestamp()
   onPhase?.('saving')
-  const totalHours = record.checkInTime
-    ? Math.max(0, (new Date(checkOutTime).getTime() - new Date(record.checkInTime).getTime()) / 3600000)
-    : 0
   const stampedSelfie = await stampAttendancePhoto(selfie, {
     actionLabel: 'CHECK-OUT',
     employeeName: user.name,
@@ -969,7 +994,7 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
     latitude: location.latitude,
     longitude: location.longitude,
     accuracy: location.accuracy,
-    totalHoursLabel: totalHours > 0 ? `Tổng giờ làm: ${totalHours.toFixed(2)}h` : undefined,
+    totalHoursLabel: record.checkInTime ? `Tổng giờ làm: ${formatWorkDurationBetween(record.checkInTime, checkOutTime)}` : undefined,
   })
   const checkOutSelfieUrl = await uploadSelfie(user, registration, stampedSelfie)
   if (shouldUseAttendanceApi(user)) {
