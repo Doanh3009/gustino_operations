@@ -352,6 +352,7 @@ export async function saveShiftReportSnapshot(
     leaderId: string
     leaderName: string
     report: Record<string, unknown>
+    zaloIntent?: Record<string, unknown>
     zaloDelivery?: Record<string, unknown>
     n8nDelivery?: Record<string, unknown>
   },

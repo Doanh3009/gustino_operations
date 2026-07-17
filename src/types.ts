@@ -313,6 +313,7 @@ export interface ReportSnapshot {
       leaderName: string
       finalizedAt: string
       report: Record<string, unknown>
+      zaloIntent?: Record<string, unknown>
       zaloDelivery?: Record<string, unknown>
       n8nDelivery?: Record<string, unknown>
     }>

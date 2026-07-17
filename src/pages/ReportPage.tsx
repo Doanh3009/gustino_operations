@@ -10,7 +10,7 @@ import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { localDateKey } from '../lib/dates'
 import { canvasToBlob, shareOrDownloadBlob } from '../lib/browser'
-import { sendZaloShiftReports, type ZaloReportKind } from '../lib/zaloReports'
+import { createZaloReportIntent } from '../lib/reportDeliveryIntent'
 import { queueN8nReportImages, type N8nQueueResult, type N8nReportKind } from '../lib/n8nReports'
 import type { InventoryTab, Page } from '../components/AppShell'
 import type { AppUser, AttendanceRecord, BagAllocation, BagShiftSession, ReportSnapshot, ShiftRegistration, StockMovement } from '../types'
@@ -407,6 +407,11 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
             ? 'Ca 2 chỉ được chốt khi không còn ca nào đang mở, vì nút này đồng thời chốt Tổng ngày.'
             : ''
   const canFinalize = !finalizeBlockedReason
+  const finalizeActionLabel = leaderShiftSession?.sequence === 1
+    ? 'Chốt báo cáo Ca 1 & bàn giao Ca 2'
+    : leaderShiftSession?.sequence === 2
+      ? 'Chốt báo cáo Ca 2 & kết thúc ngày'
+      : 'Chốt báo cáo'
   const automaticPosterScopes: ReportScope[] = leaderShiftSession?.sequence === 1
     ? ['shift-1']
     : leaderShiftSession?.sequence === 2
@@ -525,6 +530,14 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
         businessDate,
         employeeKpiTargets,
       )
+      const zaloIntent = createZaloReportIntent({
+        branchId: user.branchId,
+        businessDate,
+        shiftId: freshLeaderShiftSession.id,
+        shiftSequence: freshLeaderShiftSession.sequence as 1 | 2,
+        requestedBy: user.id,
+        requestedByName: user.name,
+      })
       const shiftEntry = {
         shiftId: freshLeaderShiftSession.id,
         sequence: freshLeaderShiftSession.sequence,
@@ -532,6 +545,7 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
         leaderId: user.id,
         leaderName: user.name,
         report: shiftReport as unknown as Record<string, unknown>,
+        zaloIntent: zaloIntent as unknown as Record<string, unknown>,
       }
       if (freshIsSecondShiftFinalization) {
         const previousShiftReports = freshSnapshot?.payload.shiftReports || {}
@@ -557,50 +571,10 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
       } else {
         await saveShiftReportSnapshot(user, businessDate, shiftEntry)
       }
-
-      const reportKinds: ZaloReportKind[] = freshIsSecondShiftFinalization ? ['shift-2', 'day'] : ['shift-1']
-      const reports = reportKinds.map((kind) => {
-        const model = kind === 'day' ? freshDailyReport : shiftReport
-        return {
-          kind,
-          label: reportKindLabel(kind),
-          revenue: model.totals.revenue,
-          sold: model.totals.sold,
-          employeeCount: model.employeeRows.length,
-        }
-      })
-      let n8nResult: N8nQueueResult
-      try {
-        n8nResult = await queueCurrentReportImages(freshLeaderShiftSession)
-      } catch (error) {
-        n8nResult = {
-          queued: false,
-          mode: 'error',
-          message: error instanceof Error ? error.message : 'Không tạo được ảnh để đưa vào n8n.',
-          jobs: {},
-        }
-      }
-      const zaloResult = n8nResult.mode === 'not-configured'
-        ? await sendZaloShiftReports(user, {
-            branchId: user.branchId,
-            branchName: freshDailyReport.branchName,
-            businessDate,
-            shiftId: freshLeaderShiftSession.id,
-            shiftSequence: freshLeaderShiftSession.sequence as 1 | 2,
-            reportKinds,
-            reports,
-          })
-        : null
-      await saveShiftReportSnapshot(user, businessDate, {
-        ...shiftEntry,
-        n8nDelivery: { ...n8nResult, updatedAt: new Date().toISOString() },
-        ...(zaloResult ? { zaloDelivery: { ...zaloResult } } : {}),
-      })
       await refreshLedger()
-      const deliveryMessage = zaloResult?.message || n8nResult.message
       setMessage(freshIsSecondShiftFinalization
-        ? `Đã chốt Ca 2 và Tổng ngày. ${deliveryMessage}`
-        : `Đã chốt báo cáo Ca 1. ${deliveryMessage}`)
+        ? 'Đã chốt Ca 2 và kết thúc ngày. Đã ghi nhận yêu cầu gửi Zalo gồm Báo cáo Ca 2 và Báo cáo ngày; đang chờ kết nối.'
+        : 'Đã đóng Ca 1, chốt báo cáo và bàn giao cho Ca 2. Đã ghi nhận yêu cầu gửi Zalo Báo cáo Ca 1; đang chờ kết nối.')
     } catch (error) {
       const detail = error instanceof Error ? error.message : ''
       setMessage(detail ? `Không thể lưu báo cáo: ${detail}` : 'Không thể lưu báo cáo.')
@@ -711,7 +685,7 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
                     disabled={busy}
                     title={canFinalize ? undefined : finalizeBlockedReason}
                   >
-                    {busy ? 'Đang chốt…' : 'Chốt báo cáo'}
+                    {busy ? 'Đang chốt…' : finalizeActionLabel}
                   </button>}
           </div>
 

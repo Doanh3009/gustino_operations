@@ -1,5 +1,17 @@
 # Session Handoff
 
+## Active implementation — MOD13 per-shift report close/Zalo intent
+
+- Direct owner rule: `Chốt báo cáo` is the business trigger for a future Zalo send. Ca 1 records only `shift-1`, completes its own handover and leaves Ca 2/day open; Ca 2 records `shift-2` plus `day` and closes that operation day.
+- The owner explicitly reserves the external Zalo connection for a collaborator. This change must create a durable `pending_connection` intent but must not invoke n8n/Zalo from the finalize action. Existing integration modules may remain as the handoff seam/manual compatibility path.
+- Preserve required inventory/photo handover before report finalization, shift ownership, stored snapshot, Ca 2 no-open-shift guard, report formulas and all historical delivery fields.
+- Pre-fix `node scripts/test-report-close-zalo-intent.mjs` exits 1 with eight expected contract failures covering the missing intent/seam, external call inside finalize, scope-specific button copy and snapshot types.
+- Minimal implementation complete: `reportDeliveryIntent.ts` maps sequence 1 to `shift-1` and sequence 2 to `shift-2` + `day`; `ReportPage.saveCloud()` stores a `pending_connection` intent and no longer invokes an external sender. Ca 1 still uses the per-shift snapshot save; Ca 2 still uses atomic daily finalization.
+- UI buttons now state `Chốt báo cáo Ca 1 & bàn giao Ca 2` versus `Chốt báo cáo Ca 2 & kết thúc ngày`; success feedback names the recorded Zalo package and waiting-connection state.
+- `REPORT_CLOSE_ZALO_INTENT_OK`, `SHIFT_REPORT_ZALO_WORKFLOW_OK`, `N8N_REPORT_IMAGE_QUEUE_OK`, `REPORT_FINALIZATION_RETRY_OK` and app TypeScript Passed. Next: broad report/operations regressions, production build/diff check and final documentation update. No external request, data write, deploy, commit or push occurred.
+- Broad report toolbar/inventory, realtime reminder, sales/report, midnight auto-close, core guard and 207-button contracts now all Pass. One stale reminder assertion was aligned to the already-committed owner-selected image-3 Capy asset; no application behavior changed for that test maintenance.
+- Production build Passed with 698 modules and `PRODUCTION_SUPABASE_BUNDLE_OK (index-DMYHLV-_.js)`. `git diff --check` and built asset inspection confirm the pending intent plus both scope-specific labels. Browser skill discovery returned `[]`, so rendered button verification remains pending. Implementation is ready for owner review; do not deploy, commit or push unless the owner requests it.
+
 ## Active diagnosis — BUG-062 work-duration clarity and employee search
 
 - Owner required pulling commit `c6e98c8` before edits. `git fetch` verified it is the direct child of `bfcf04c`; `git pull --ff-only origin main` succeeded. The pulled commit adds only `api/n8n/revenue.ts`. Pre-existing `supabase/.temp/cli-latest` and untracked `supabase.zip` are preserved.
