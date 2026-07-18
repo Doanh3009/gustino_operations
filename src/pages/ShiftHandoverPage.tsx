@@ -7,6 +7,8 @@ import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordFo
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { formatLocalDate, localDateKey } from '../lib/dates'
 import { fetchConfiguredProducts } from '../lib/products'
+import { branchName as configuredBranchName } from '../lib/branches'
+import { notifyN8nShiftPhoto } from '../lib/n8nShiftPhoto'
 import type { Page } from '../components/AppShell'
 import {
   closeBagShift,
@@ -289,6 +291,22 @@ export function ShiftHandoverPage({
       setFeedback(openSession.sequence >= 2
         ? `Đã chốt ${shiftLabel(openSession.sequence)}. Chuyển sang báo cáo cuối ngày để chốt doanh thu và đóng ngày.`
         : `Đã chốt ${shiftLabel(openSession.sequence)}. Tồn thành phẩm sẽ thành tồn đầu ca 2.`)
+      const closingPhotoUrl = openSession.closingPhotoUrl
+      if (closingPhotoUrl) {
+        void notifyN8nShiftPhoto(user, {
+          shiftId: openSession.id,
+          branchId: openSession.branchId,
+          branchName: configuredBranchName(openSession.branchId),
+          businessDate: openSession.businessDate,
+          shiftSequence: openSession.sequence,
+          kind: 'closing',
+          photoUrl: closingPhotoUrl,
+        }).then((result) => {
+          if (!result.sent && result.mode !== 'skipped' && result.mode !== 'disabled') {
+            setFeedback(`Đã chốt ca, nhưng chưa gửi được ảnh cuối ca sang n8n/Zalo: ${result.message || 'lỗi không rõ.'}`)
+          }
+        })
+      }
       await Promise.all([refresh(), onChanged()])
       options.afterClose?.()
     } catch (error) {
