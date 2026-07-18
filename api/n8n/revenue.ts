@@ -302,14 +302,26 @@ function buildDailyRevenueRows(
   allocationRows: DailyRevenueRow[],
   movementRows: DailyRevenueRow[],
 ): DailyRevenueRow[] {
-  const snapshotKeys = new Set(snapshotRows.map((row) => `${row.branchId}|${row.reportDate}`))
+  // Chỉ coi là "đã có báo cáo chính thức" khi snapshot thực sự có dữ liệu
+  // (revenue > 0 hoặc totalSold > 0). Snapshot rỗng (placeholder) sẽ KHÔNG
+  // chặn dữ liệu live fallback xuống nữa.
+  const meaningfulSnapshots = snapshotRows.filter((row) => row.revenue > 0 || row.totalSold > 0)
+  const snapshotKeys = new Set(meaningfulSnapshots.map((row) => `${row.branchId}|${row.reportDate}`))
+
   const filteredReceipts = receiptRows.filter((row) => !snapshotKeys.has(`${row.branchId}|${row.reportDate}`))
   const receiptKeys = new Set([...snapshotKeys, ...filteredReceipts.map((row) => `${row.branchId}|${row.reportDate}`)])
   const filteredAllocations = allocationRows.filter((row) => !receiptKeys.has(`${row.branchId}|${row.reportDate}`))
   const liveKeys = new Set([...receiptKeys, ...filteredAllocations.map((row) => `${row.branchId}|${row.reportDate}`)])
   const filteredMovements = movementRows.filter((row) => !liveKeys.has(`${row.branchId}|${row.reportDate}`))
 
-  return [...snapshotRows, ...filteredReceipts, ...filteredAllocations, ...filteredMovements]
+  const emptySnapshots = snapshotRows.filter((row) => !(row.revenue > 0 || row.totalSold > 0))
+  const emptySnapshotsWithoutLiveData = emptySnapshots.filter(
+    (row) => !filteredReceipts.some((r) => r.branchId === row.branchId && r.reportDate === row.reportDate)
+      && !filteredAllocations.some((r) => r.branchId === row.branchId && r.reportDate === row.reportDate)
+      && !filteredMovements.some((r) => r.branchId === row.branchId && r.reportDate === row.reportDate),
+  )
+
+  return [...meaningfulSnapshots, ...filteredReceipts, ...filteredAllocations, ...filteredMovements, ...emptySnapshotsWithoutLiveData]
     .sort((a, b) => b.reportDate.localeCompare(a.reportDate) || b.createdAt.localeCompare(a.createdAt))
 }
 
