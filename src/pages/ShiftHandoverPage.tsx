@@ -218,9 +218,26 @@ export function ShiftHandoverPage({
     }
     if (targetSession) {
       try {
-        await uploadBagShiftPhoto(user, targetSession, kind, dataUrl)
+       const updatedSession = await uploadBagShiftPhoto(user, targetSession, kind, dataUrl)
         await refresh()
-        setFeedback(kind === 'opening' ? 'Đã đồng bộ ảnh đầu ca vào sổ ca.' : 'Đã đồng bộ ảnh cuối ca vào sổ ca.')
+       setFeedback(kind === 'opening' ? 'Đã đồng bộ ảnh đầu ca vào sổ ca.' : 'Đã đồng bộ ảnh cuối ca vào sổ ca.')
+
+        if (kind === 'closing' && targetSession.status === 'closed' && updatedSession.closingPhotoUrl) {
+          void notifyN8nShiftPhoto(user, {
+            shiftId: targetSession.id,
+            branchId: targetSession.branchId,
+            branchName: configuredBranchName(targetSession.branchId),
+            businessDate: targetSession.businessDate,
+            shiftSequence: targetSession.sequence,
+            kind: 'closing',
+            photoUrl: updatedSession.closingPhotoUrl,
+          }).then((result) => {
+            if (!result.sent && result.mode !== 'skipped' && result.mode !== 'disabled') {
+              setFeedback(`Đã đồng bộ ảnh cuối ca, nhưng chưa gửi được sang n8n/Zalo: ${result.message || 'lỗi không rõ.'}`)
+            }
+          })
+        }
+
         return
       } catch (error) {
         setFeedback(error instanceof Error ? error.message : 'Không thể đồng bộ ảnh bàn giao.')
