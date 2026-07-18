@@ -92,6 +92,11 @@ create table public.supply_requests (
   quantity numeric(14,3) not null check (quantity > 0),
   unit text not null default 'kg',
   note text not null default '',
+  requested_delivery_date date,
+  requested_delivery_period text check (
+    requested_delivery_period is null
+    or requested_delivery_period in ('morning', 'noon', 'afternoon')
+  ),
   requested_by uuid references auth.users(id),
   requested_by_name text not null default '',
   status public.supply_request_status not null default 'pending',

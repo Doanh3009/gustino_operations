@@ -608,6 +608,14 @@ async function handleApi(request, response, url) {
     const input = await body(request)
     const branchId = String(input.branchId || user.branchId)
     if (!canAccessBranch(user, branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
+    const requestedDeliveryDate = String(input.requestedDeliveryDate || '').trim()
+    const requestedDeliveryPeriod = String(input.requestedDeliveryPeriod || '').trim()
+    if (requestedDeliveryDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedDeliveryDate)) {
+      return json(response, 400, { error: 'Ngày nhận mong muốn không hợp lệ.' })
+    }
+    if (requestedDeliveryPeriod && !['morning', 'noon', 'afternoon'].includes(requestedDeliveryPeriod)) {
+      return json(response, 400, { error: 'Buổi nhận mong muốn không hợp lệ.' })
+    }
     const inputItems = Array.isArray(input.items) ? input.items : [input]
     const rows = inputItems.map((item) => ({
       productName: String(item.productName || '').trim(),
@@ -625,6 +633,8 @@ async function handleApi(request, response, url) {
       ...item,
       requestedBy: user.id,
       requestedByName: String(input.requestedByName || user.id),
+      requestedDeliveryDate,
+      requestedDeliveryPeriod,
       status: 'pending',
       createdAt: now,
       updatedAt: now,
@@ -644,12 +654,20 @@ async function handleApi(request, response, url) {
     if (!canAccessBranch(user, store.supplyRequests[index].branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
     const patch = await body(request)
     if (patch.status && !['pending', 'acknowledged', 'fulfilled', 'cancelled'].includes(patch.status)) return json(response, 400, { error: 'Trạng thái không hợp lệ.' })
+    if (patch.requestedDeliveryDate !== undefined && patch.requestedDeliveryDate && !/^\d{4}-\d{2}-\d{2}$/.test(String(patch.requestedDeliveryDate))) {
+      return json(response, 400, { error: 'Ngày nhận mong muốn không hợp lệ.' })
+    }
+    if (patch.requestedDeliveryPeriod !== undefined && patch.requestedDeliveryPeriod && !['morning', 'noon', 'afternoon'].includes(patch.requestedDeliveryPeriod)) {
+      return json(response, 400, { error: 'Buổi nhận mong muốn không hợp lệ.' })
+    }
     store.supplyRequests[index] = {
       ...store.supplyRequests[index],
       ...(patch.productName !== undefined ? { productName: String(patch.productName).trim() } : {}),
       ...(patch.quantity !== undefined ? { quantity: Number(patch.quantity) } : {}),
       ...(patch.unit !== undefined ? { unit: String(patch.unit).trim() || 'kg' } : {}),
       ...(patch.note !== undefined ? { note: String(patch.note).trim() } : {}),
+      ...(patch.requestedDeliveryDate !== undefined ? { requestedDeliveryDate: String(patch.requestedDeliveryDate || '') } : {}),
+      ...(patch.requestedDeliveryPeriod !== undefined ? { requestedDeliveryPeriod: String(patch.requestedDeliveryPeriod || '') } : {}),
       ...(patch.status ? { status: patch.status } : {}),
       updatedAt: new Date().toISOString(),
     }
@@ -1174,7 +1192,7 @@ async function handleApi(request, response, url) {
       const index = store.attendanceRecords.findIndex((item) => item.id === recordMatch[1])
       if (index < 0) return json(response, 404, { error: 'Không tìm thấy bản ghi chấm công.' })
       if (store.attendanceRecords[index].userId !== user.id) return json(response, 403, { error: 'Không thể check-out thay người khác.' })
-      if (store.attendanceRecords[index].checkOutTime) return json(response, 409, { error: 'Ca này đã check-out.' })
+      if (store.attendanceRecords[index].checkOutTime) return json(response, 200, store.attendanceRecords[index])
       const patch = await body(request)
       const serverNow = new Date().toISOString()
       patch.checkOutTime = serverNow

@@ -27,11 +27,11 @@ if (!autoCloseApi.includes('autoFinalizedAt') || !autoCloseApi.includes("status:
 if (!vercel.includes('"/api/auto-close-day"') || !vercel.includes('"0 17 * * *"')) {
   failures.push('Vercel chưa xếp lịch auto-close lúc 00:00 UTC+7 để chốt ngày vừa kết thúc.')
 }
-if (!report.includes('Chia sẻ ảnh Zalo') || !report.includes('shareInfographicToZalo')) {
-  failures.push('Sau khi chốt chưa có nút chia sẻ infographic bằng Share Sheet để chọn Zalo.')
+if (report.includes('>Gửi Zalo</button>') || report.includes('>Chia sẻ ảnh Zalo</button>')) {
+  failures.push('Màn hoàn tất vẫn còn nút gửi/chia sẻ Zalo thủ công dù bàn giao đã gửi tự động.')
 }
-if (!report.includes('{(finalized || shiftReportEntry) && (')) {
-  failures.push('Ngày đã được máy chủ tự chốt nhưng chưa có shift report vẫn không hiện nút chia sẻ ảnh Zalo.')
+if (!report.includes('queueCurrentReportImages(freshLeaderShiftSession, true)')) {
+  failures.push('Màn bàn giao chưa tự động gửi gói ảnh báo cáo qua n8n.')
 }
 
 if (manager.includes('fetchShiftRegistrations') || manager.includes('registeredHoursByEmployee') || manager.includes('giờ đăng ký')) {
@@ -77,7 +77,7 @@ if (!attendance.includes('attendance-loading-skeleton') || !styles.includes('.at
   failures.push('Trạng thái tải đầu tiên của chấm công chưa có khung chờ nhẹ thay cho thông báo tải kéo dài.')
 }
 
-if (!app.includes('lazy(() => import(') || !app.includes('<Suspense')) {
+if (!(app.includes('lazy(() => import(') || app.includes('lazyWithReload(() => import(')) || !app.includes('<Suspense')) {
   failures.push('Ứng dụng vẫn nạp đồng thời toàn bộ page thay vì tách bundle theo màn hình.')
 }
 if (!admin.includes('managementDataNeeds(refreshContext.activeSection, refreshContext.focused)')) {

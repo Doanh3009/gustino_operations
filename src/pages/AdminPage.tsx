@@ -358,6 +358,8 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [accountRole, setAccountRole] = useState<Exclude<Role, 'admin'>>('staff')
   const [accountEmploymentType, setAccountEmploymentType] = useState<EmploymentType>('part_time')
   const [accountPositionTitle, setAccountPositionTitle] = useState('Part-time')
+  const [crmEmployeeId, setCrmEmployeeId] = useState('')
+  const [crmBranchId, setCrmBranchId] = useState('')
   const [temporaryCredential, setTemporaryCredential] = useState<{ username: string; password: string } | null>(null)
   const [showSupplyReport, setShowSupplyReport] = useState(false)
   const [inventoryDetailBranchId, setInventoryDetailBranchId] = useState('')
@@ -587,7 +589,15 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     && (!branchId || employee.branchId === branchId)
     && (!employeeId || employee.id === employeeId)
   )
-  const accountEmployees = filteredEmployees.filter((employee) => employee.hasLoginAccount !== false || Boolean(employee.email))
+  // Danh sách tài khoản phải giữ cả hồ sơ inactive để Admin nhìn thấy username
+  // vẫn đang tồn tại trong Auth và có thể xóa dứt điểm. Các báo cáo bên trên vẫn
+  // dùng filteredEmployees nên không đưa nhân sự inactive vào số liệu vận hành.
+  const accountEmployees = employees.filter((employee) =>
+    (!employee.branchId || validBranchIds.has(employee.branchId) || employee.role === 'admin' || employee.role === 'manager' || employee.role === 'kitchen')
+    && (!branchId || employee.branchId === branchId || employee.role === 'admin' || employee.role === 'manager' || employee.role === 'kitchen')
+    && (!employeeId || employee.id === employeeId)
+    && (employee.hasLoginAccount !== false || Boolean(employee.email)),
+  )
   const rangeRegistrations = registrations.filter((item) =>
     (!branchId || item.branchId === branchId)
     && (!employeeId || item.userId === employeeId)
@@ -2826,6 +2836,101 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 <div><span className="eyebrow dark">NHÂN SỰ & TÀI KHOẢN</span><h2>Tạo và quản lý tài khoản nhân viên</h2></div>
                 <span className="date-chip">{accountEmployees.length} tài khoản</span>
               </div>
+              <div className="admin-crm-branches" aria-label="Hồ sơ chi nhánh">
+                {visibleBranches.map((branch) => {
+                  const branchEmployees = accountEmployees.filter((employee) => employee.branchId === branch.id)
+                  const branchReceipts = salesReceipts.filter((receipt) =>
+                    receipt.branchId === branch.id && receipt.businessDate >= from && receipt.businessDate <= to,
+                  )
+                  const branchRevenue = branchReceipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0)
+                  const activeCount = branchEmployees.filter((employee) => employee.active !== false).length
+                  return (
+                    <button
+                      type="button"
+                      key={branch.id}
+                      className={crmBranchId === branch.id ? 'admin-crm-branch active' : 'admin-crm-branch'}
+                      onClick={() => {
+                        setCrmBranchId((current) => current === branch.id ? '' : branch.id)
+                        setCrmEmployeeId('')
+                      }}
+                    >
+                      <small>CHI NHÁNH</small>
+                      <strong>{branch.name}</strong>
+                      <span>{activeCount}/{branchEmployees.length} nhân sự hoạt động</span>
+                      <b>{formatMoney(branchRevenue)}</b>
+                      <em>Doanh thu {from} → {to}</em>
+                    </button>
+                  )
+                })}
+              </div>
+              {crmBranchId && (() => {
+                const branch = visibleBranches.find((item) => item.id === crmBranchId)
+                const branchEmployees = accountEmployees.filter((employee) => employee.branchId === crmBranchId)
+                const branchReceipts = salesReceipts.filter((receipt) =>
+                  receipt.branchId === crmBranchId && receipt.businessDate >= from && receipt.businessDate <= to,
+                )
+                const revenueByDate = Array.from(new Set(branchReceipts.map((receipt) => receipt.businessDate))).sort().map((date) => ({
+                  date,
+                  revenue: branchReceipts.filter((receipt) => receipt.businessDate === date).reduce((sum, receipt) => sum + receipt.totalAmount, 0),
+                }))
+                const maxRevenue = Math.max(1, ...revenueByDate.map((item) => item.revenue))
+                return (
+                  <div className="admin-crm-detail">
+                    <div className="admin-crm-detail-head">
+                      <div><small>HỒ SƠ CHI NHÁNH</small><h3>{branch?.name}</h3><p>Dữ liệu trực tiếp từ nhân sự, POS và chấm công trong kỳ đang chọn.</p></div>
+                      <button type="button" onClick={() => setCrmBranchId('')}>Đóng hồ sơ</button>
+                    </div>
+                    <div className="admin-crm-chart">
+                      {revenueByDate.length ? revenueByDate.map((item) => (
+                        <span key={item.date} title={`${item.date}: ${formatMoney(item.revenue)}`}>
+                          <i style={{ height: `${Math.max(8, item.revenue / maxRevenue * 100)}%` }} />
+                          <small>{item.date.slice(8)}</small>
+                        </span>
+                      )) : <p>Chưa có doanh thu trong kỳ.</p>}
+                    </div>
+                    <div className="admin-crm-people">
+                      {branchEmployees.map((employee) => (
+                        <button type="button" key={employee.id} onClick={() => setCrmEmployeeId(employee.id)}>
+                          <b>{employee.name}</b><span>{employee.positionTitle || roleLabel(employee.role)}</span>
+                          <em>{employee.active === false ? 'Ngừng hoạt động' : 'Đang hoạt động'}</em>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+              {crmEmployeeId && (() => {
+                const employee = accountEmployees.find((item) => item.id === crmEmployeeId)
+                if (!employee) return null
+                const employeeReceipts = salesReceipts.filter((receipt) =>
+                  (receipt.sellerId === employee.id || normalizeName(receipt.sellerName) === normalizeName(employee.name))
+                  && receipt.businessDate >= from && receipt.businessDate <= to,
+                )
+                const employeeRecords = records.filter((record) =>
+                  record.userId === employee.id
+                  && localDateKey(new Date(record.checkInTime)) >= from
+                  && localDateKey(new Date(record.checkInTime)) <= to,
+                )
+                const revenue = employeeReceipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0)
+                const hours = employeeRecords.reduce((sum, record) => sum + Math.max(
+                  0,
+                  ((record.checkOutTime ? new Date(record.checkOutTime).getTime() : Date.now()) - new Date(record.checkInTime).getTime()) / 36e5,
+                ), 0)
+                return (
+                  <div className="admin-crm-detail employee">
+                    <div className="admin-crm-detail-head">
+                      <div><small>HỒ SƠ NHÂN VIÊN</small><h3>{employee.name}</h3><p>{branchName(employee.branchId)} · {employee.positionTitle || roleLabel(employee.role)}</p></div>
+                      <button type="button" onClick={() => setCrmEmployeeId('')}>Đóng hồ sơ</button>
+                    </div>
+                    <div className="admin-crm-metrics">
+                      <article><span>Tình trạng</span><strong>{employee.active === false ? 'Ngừng làm việc' : 'Đang làm việc'}</strong></article>
+                      <article><span>Doanh thu kỳ này</span><strong>{formatMoney(revenue)}</strong><small>{employeeReceipts.length} hóa đơn</small></article>
+                      <article><span>Giờ công kỳ này</span><strong>{formatNumber(hours)}</strong><small>{employeeRecords.length} lượt chấm công</small></article>
+                      <article><span>Tài khoản</span><strong>@{emailToUsername(employee.email) || employee.id}</strong><small>{roleLabel(employee.role)}</small></article>
+                    </div>
+                  </div>
+                )
+              })()}
               <form className="employee-account-form" onSubmit={createAccount}>
                 <label>Họ tên<input value={accountName} onChange={(event) => setAccountName(event.target.value)} placeholder="Nguyễn Văn A" required /></label>
                 <label>Tên đăng nhập<input value={accountUsername} onChange={(event) => setAccountUsername(event.target.value)} placeholder="Ví dụ: ngoc, quanly" autoCapitalize="none" required /></label>
@@ -2899,7 +3004,14 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     <span className="admin-avatar">
                       {draft.avatarUrl ? <img src={draft.avatarUrl} alt="" /> : employee.name.slice(0, 1).toUpperCase()}
                     </span>
-                    <span><strong>{employee.name}{employee.active === false ? ' · Đã xóa' : ''}</strong><small>{employee.role === 'manager' || employee.role === 'kitchen' ? 'Tất cả chi nhánh' : branchName(employee.branchId)} · {employee.positionTitle || roleLabel(employee.role)} · @{emailToUsername(employee.email) || employee.id}</small></span>
+                    <span>
+                      <button type="button" className="admin-crm-person-link" onClick={() => setCrmEmployeeId(employee.id)}>
+                        <strong>{employee.name}{employee.active === false ? ' · Đã vô hiệu hóa' : ''}</strong>
+                        <small>Mở hồ sơ CRM →</small>
+                      </button>
+                      <small>{employee.role === 'manager' || employee.role === 'kitchen' ? 'Tất cả chi nhánh' : branchName(employee.branchId)} · {employee.positionTitle || roleLabel(employee.role)} · @{emailToUsername(employee.email) || employee.id}</small>
+                      {employee.active === false && <small className="inactive-account-warning">Tên đăng nhập vẫn được giữ cho đến khi Admin bấm “Xóa sạch test”.</small>}
+                    </span>
                     <div className="employee-profile-editor">
                       {employee.role === 'manager' || employee.role === 'kitchen' ? (
                         <label>Phạm vi
@@ -2959,7 +3071,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       <button
                         type="button"
                         className={pendingHardDeleteId === employee.id ? 'danger-button compact confirming' : 'danger-button compact'}
-                        disabled={accountBusyId === employee.id || employee.id === user.id || employee.active === false}
+                        disabled={accountBusyId === employee.id || employee.id === user.id}
                         title="Xóa vĩnh viễn tài khoản test và toàn bộ lịch làm/chấm công/lương liên quan"
                         onClick={() => void hardRemoveAccount(employee)}
                       >

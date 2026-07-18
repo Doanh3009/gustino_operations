@@ -56,15 +56,35 @@ Deno.serve(async (request) => {
         await seedDefaultShifts(adminClient, branchId)
       }
 
-      const { data: created, error: createError } = await adminClient.auth.admin.createUser({
+      let { data: created, error: createError } = await adminClient.auth.admin.createUser({
         email,
         password,
         email_confirm: true,
         user_metadata: { full_name: name, role, branch_id: branchId, employment_type: employmentType, position_title: positionTitle },
       })
+      if (createError?.message?.toLowerCase().includes('already')) {
+        const recoveredUser = await recoverOrphanedAuthUser(adminClient, email, password, {
+          full_name: name,
+          role,
+          branch_id: branchId,
+          employment_type: employmentType,
+          position_title: positionTitle,
+        })
+        if (recoveredUser) {
+          created = { user: recoveredUser }
+          createError = null
+        }
+      }
       if (createError || !created.user) {
+        const { data: existingProfile } = await adminClient
+          .from('profiles')
+          .select('full_name, active')
+          .ilike('email', email)
+          .maybeSingle()
         const message = createError?.message?.toLowerCase().includes('already')
-          ? 'Tên đăng nhập này đã được sử dụng.'
+          ? existingProfile
+            ? `Tên đăng nhập này đang thuộc tài khoản ${existingProfile.full_name} (${existingProfile.active === false ? 'đã vô hiệu hóa' : 'đang hoạt động'}).`
+            : 'Tên đăng nhập này đã được sử dụng trong hệ thống Auth; chưa thể tự phục hồi vì trạng thái hồ sơ không xác định.'
           : createError?.message || 'Không thể tạo tài khoản.'
         return response(400, { error: message })
       }
@@ -351,13 +371,50 @@ async function hardDeleteEmployee(
   await updateMaybe(client, 'commission_rules', { employee_id: null }, (query) => query.eq('employee_id', employeeId))
   await updateMaybe(client, 'commission_rules', { updated_by: null }, (query) => query.eq('updated_by', employeeId))
   await deleteMaybe(client, 'manager_branch_assignments', (query) => query.eq('manager_id', employeeId))
-  await deleteMaybe(client, 'profiles', (query) => query.eq('id', employeeId))
   if (deleteAuthUser) {
     const { error: authError } = await client.auth.admin.deleteUser(employeeId)
     if (authError && !/not found|user not found/i.test(authError.message || '')) {
       throw authError
     }
   }
+  await deleteMaybe(client, 'profiles', (query) => query.eq('id', employeeId))
+}
+
+async function recoverOrphanedAuthUser(
+  client: ReturnType<typeof createClient>,
+  email: string,
+  password: string,
+  userMetadata: Record<string, unknown>,
+) {
+  const authUser = await findAuthUserByEmail(client, email)
+  if (!authUser) return null
+  const { data: profile, error: profileError } = await client
+    .from('profiles')
+    .select('id')
+    .eq('id', authUser.id)
+    .maybeSingle()
+  if (profileError) throw profileError
+  if (profile) return null
+
+  const { data, error } = await client.auth.admin.updateUserById(authUser.id, {
+    password,
+    email_confirm: true,
+    user_metadata: userMetadata,
+  })
+  if (error) throw error
+  return data.user
+}
+
+async function findAuthUserByEmail(client: ReturnType<typeof createClient>, email: string) {
+  const target = email.trim().toLowerCase()
+  for (let page = 1; page <= 100; page += 1) {
+    const { data, error } = await client.auth.admin.listUsers({ page, perPage: 1000 })
+    if (error) throw error
+    const match = data.users.find((user) => String(user.email || '').trim().toLowerCase() === target)
+    if (match) return match
+    if (data.users.length < 1000) return null
+  }
+  return null
 }
 
 async function deleteMaybe(

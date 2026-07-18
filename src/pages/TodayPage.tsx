@@ -7,7 +7,7 @@ import { fetchBagShiftSessions, uploadBagShiftPhoto } from '../lib/shiftLedger'
 import { imageFileToDataUrl } from '../lib/browser'
 import { ShiftPhotoButton } from '../components/ShiftPhotoButton'
 import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
-import { createSupplyRequests } from '../lib/supplyRequests'
+import { createSupplyRequests, type SupplyDeliveryPeriod } from '../lib/supplyRequests'
 import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { localDateKey } from '../lib/dates'
 import { supabase, uniqueChannelName } from '../lib/supabase'
@@ -45,6 +45,8 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   const [reportedShiftIds, setReportedShiftIds] = useState<string[]>([])
   const [orderModal, setOrderModal] = useState(false)
   const [orderLines, setOrderLines] = useState<OrderDraftLine[]>(() => [emptyOrderLine()])
+  const [orderDeliveryDate, setOrderDeliveryDate] = useState(() => localDateKey())
+  const [orderDeliveryPeriod, setOrderDeliveryPeriod] = useState<SupplyDeliveryPeriod>('morning')
   const [orderBusy, setOrderBusy] = useState(false)
   const [orderFeedback, setOrderFeedback] = useState('')
   const [openingBusy, setOpeningBusy] = useState(false)
@@ -207,13 +209,11 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
     {
       number: 6,
       icon: '▤',
-      title: latestClosedOwnSession?.sequence === 1 ? 'Báo cáo cuối Ca 1' : 'Báo cáo cuối Ca 2 & Tổng ngày',
-      description: latestClosedOwnSession?.sequence === 1
-        ? 'Sau khi bàn giao Ca 1, mở báo cáo để kiểm tra dữ liệu Ca 1 và bấm Chốt báo cáo.'
-        : 'Sau khi bàn giao Ca 2, xem Ca 2/Tổng ngày và dùng một nút Chốt báo cáo cho cả hai.',
+      title: 'Chốt & bàn giao ca',
+      description: 'Kiểm tồn và chốt bàn giao. Hệ thống tự tạo, lưu và gửi đúng hình báo cáo của ca.',
       done: Boolean(latestClosedOwnSession && reportedShiftIds.includes(latestClosedOwnSession.id)),
-      action: () => onNavigate('report'),
-      actionLabel: 'Mở báo cáo cuối ca',
+      action: () => onNavigate('handover'),
+      actionLabel: 'Mở bàn giao ca',
     },
   ]
   const nextStep = steps.find((step) => !step.done) || steps[steps.length - 1]
@@ -238,12 +238,10 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
       : reportReady
         ? {
             number: 6,
-            title: latestClosedOwnSession?.sequence === 1 ? 'Mở báo cáo Ca 1' : 'Mở báo cáo Ca 2 & Tổng ngày',
-            description: latestClosedOwnSession?.sequence === 1
-              ? 'Ca 1 đã bàn giao. Báo cáo chỉ lấy dữ liệu Ca 1.'
-              : 'Ca 2 đã bàn giao. Có thể xem riêng Ca 2 hoặc Tổng ngày trước khi chốt.',
-            action: () => onNavigate('report'),
-            actionLabel: 'Mở báo cáo',
+            title: 'Hoàn tất bàn giao ca',
+            description: 'Báo cáo sẽ được tạo, lưu lịch sử và gửi Zalo tự động ngay sau khi chốt.',
+            action: () => onNavigate('handover'),
+            actionLabel: 'Mở bàn giao ca',
           }
         : nextStep
   const completedSteps = steps.filter((step) => step.done).length
@@ -333,9 +331,16 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
       }))
       .filter((line) => line.productName && Number.isFinite(line.quantity) && line.quantity > 0)
     if (!validLines.length) return
+    if (!orderDeliveryDate || orderDeliveryDate < localDateKey()) {
+      setOrderFeedback('Ngày nhận hàng mong muốn không thể trước ngày hôm nay.')
+      return
+    }
     setOrderBusy(true)
     try {
-      await createSupplyRequests(user, validLines)
+      await createSupplyRequests(user, validLines, {
+        requestedDeliveryDate: orderDeliveryDate,
+        requestedDeliveryPeriod: orderDeliveryPeriod,
+      })
       setOrderFeedback(`Đã gửi ${validLines.length} món đến bếp và quản lý.`)
       const blankLine = emptyOrderLine()
       setOrderLines([blankLine])
@@ -444,8 +449,8 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
             <p>{reportDone ? 'Dữ liệu đã vào báo cáo và dashboard quản lý.' : actionStep.description}</p>
           </div>
         </div>
-        <button onClick={reportDone ? () => onNavigate('report') : actionStep.action}>
-          {reportDone ? 'Xem báo cáo' : actionStep.actionLabel}
+        <button onClick={reportDone ? () => onNavigate('my-records') : actionStep.action}>
+          {reportDone ? 'Xem lịch sử' : actionStep.actionLabel}
         </button>
       </section>
 
@@ -518,6 +523,30 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
               </div>
             ) : (
               <form onSubmit={submitOrder} style={{ display: 'grid', gap: 13 }}>
+                <div className="order-delivery-fields">
+                  <label>
+                    <span>Ngày nhận mong muốn</span>
+                    <input
+                      type="date"
+                      min={localDateKey()}
+                      value={orderDeliveryDate}
+                      onChange={(event) => setOrderDeliveryDate(event.target.value)}
+                      required
+                    />
+                  </label>
+                  <label>
+                    <span>Buổi nhận</span>
+                    <select
+                      value={orderDeliveryPeriod}
+                      onChange={(event) => setOrderDeliveryPeriod(event.target.value as SupplyDeliveryPeriod)}
+                    >
+                      <option value="morning">Sáng</option>
+                      <option value="noon">Trưa</option>
+                      <option value="afternoon">Chiều</option>
+                    </select>
+                  </label>
+                  <p>📦 Lịch nhận này áp dụng cho tất cả món trong phiếu.</p>
+                </div>
                 <div className="supply-order-lines">
                   {orderLines.map((line, index) => (
                     <div className="supply-order-line" key={line.id}>

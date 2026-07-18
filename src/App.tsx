@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useState } from 'react'
 import { AppShell, type InventoryTab, type Page } from './components/AppShell'
 import { fetchMovements, loadLocalUser, saveLocalUser } from './lib/store'
 import { shouldUseLanApi, supabase, uniqueChannelName } from './lib/supabase'
@@ -10,21 +10,23 @@ import { fetchConfiguredProducts, subscribeConfiguredProducts } from './lib/prod
 import type { AppUser, StockMovement } from './types'
 import { applyLanguageToDocument, useLang } from './lib/i18n'
 import { CapyLoadingWindow } from './components/GlobalLoadingOverlay'
+import { LazyRouteErrorBoundary } from './components/LazyRouteErrorBoundary'
+import { lazyWithReload } from './lib/lazyRoute'
 
-const InventoryPage = lazy(() => import('./pages/InventoryPage').then((module) => ({ default: module.InventoryPage })))
-const ReportPage = lazy(() => import('./pages/ReportPage').then((module) => ({ default: module.ReportPage })))
-const ReportArchivePage = lazy(() => import('./pages/ReportArchivePage').then((module) => ({ default: module.ReportArchivePage })))
-const RestaurantPage = lazy(() => import('./pages/RestaurantPage').then((module) => ({ default: module.RestaurantPage })))
-const SalesPage = lazy(() => import('./pages/SalesPage').then((module) => ({ default: module.SalesPage })))
-const MyRecordsPage = lazy(() => import('./pages/MyRecordsPage').then((module) => ({ default: module.MyRecordsPage })))
-const TodayPage = lazy(() => import('./pages/TodayPage').then((module) => ({ default: module.TodayPage })))
-const AttendancePage = lazy(() => import('./pages/AttendancePage').then((module) => ({ default: module.AttendancePage })))
-const ShiftHandoverPage = lazy(() => import('./pages/ShiftHandoverPage').then((module) => ({ default: module.ShiftHandoverPage })))
-const ManagementPage = lazy(() => import('./pages/AdminPage').then((module) => ({ default: module.ManagementPage })))
-const KitchenPage = lazy(() => import('./pages/KitchenPage').then((module) => ({ default: module.KitchenPage })))
-const OrdersPage = lazy(() => import('./pages/OrdersPage').then((module) => ({ default: module.OrdersPage })))
-const ManagerDashboardPage = lazy(() => import('./pages/ManagerDashboardPage').then((module) => ({ default: module.ManagerDashboardPage })))
-const ControlCenterPage = lazy(() => import('./pages/ControlCenterPage').then((module) => ({ default: module.ControlCenterPage })))
+const InventoryPage = lazyWithReload(() => import('./pages/InventoryPage').then((module) => ({ default: module.InventoryPage })))
+const ReportPage = lazyWithReload(() => import('./pages/ReportPage').then((module) => ({ default: module.ReportPage })))
+const ReportArchivePage = lazyWithReload(() => import('./pages/ReportArchivePage').then((module) => ({ default: module.ReportArchivePage })))
+const RestaurantPage = lazyWithReload(() => import('./pages/RestaurantPage').then((module) => ({ default: module.RestaurantPage })))
+const SalesPage = lazyWithReload(() => import('./pages/SalesPage').then((module) => ({ default: module.SalesPage })))
+const MyRecordsPage = lazyWithReload(() => import('./pages/MyRecordsPage').then((module) => ({ default: module.MyRecordsPage })))
+const TodayPage = lazyWithReload(() => import('./pages/TodayPage').then((module) => ({ default: module.TodayPage })))
+const AttendancePage = lazyWithReload(() => import('./pages/AttendancePage').then((module) => ({ default: module.AttendancePage })))
+const ShiftHandoverPage = lazyWithReload(() => import('./pages/ShiftHandoverPage').then((module) => ({ default: module.ShiftHandoverPage })))
+const ManagementPage = lazyWithReload(() => import('./pages/AdminPage').then((module) => ({ default: module.ManagementPage })))
+const KitchenPage = lazyWithReload(() => import('./pages/KitchenPage').then((module) => ({ default: module.KitchenPage })))
+const OrdersPage = lazyWithReload(() => import('./pages/OrdersPage').then((module) => ({ default: module.OrdersPage })))
+const ManagerDashboardPage = lazyWithReload(() => import('./pages/ManagerDashboardPage').then((module) => ({ default: module.ManagerDashboardPage })))
+const ControlCenterPage = lazyWithReload(() => import('./pages/ControlCenterPage').then((module) => ({ default: module.ControlCenterPage })))
 
 function App() {
   const lang = useLang()
@@ -249,7 +251,7 @@ function App() {
 
   if (!authReady) return <CapyLoadingWindow forced label="Đang kiểm tra phiên đăng nhập…" />
   if (!user) return <LoginPage onLogin={handleLogin} />
-  if (!canAccessPage(user, page)) return null
+  if (!canAccessPage(user, page)) return <PageLoadFallback label="Đang chuyển đến màn hình phù hợp…" />
   if (page === 'launcher') {
     return (
       <LauncherPage
@@ -267,7 +269,8 @@ function App() {
   return (
     <AppShell user={user} page={page} currentSection={mgmtSection} onNavigate={navigate} onLogout={logout}>
       <div key={page} className="page-transition">
-        <Suspense fallback={<PageLoadFallback />}>
+        <LazyRouteErrorBoundary key={page}>
+          <Suspense fallback={<PageLoadFallback />}>
         {page === 'today' && <TodayPage user={user} movements={movements} onNavigate={navigate} onOpenInventory={openInventory} />}
         {page === 'dashboard' && canUseManagement(user.role) && <ManagerDashboardPage user={user} onNavigate={navigate} />}
         {page === 'sales' && <SalesPage user={user} onNavigate={navigate} />}
@@ -304,14 +307,15 @@ function App() {
         {page === 'admin-accounts' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="accounts" focused />}
         {page === 'control' && canUseAdmin(user.role) && <ControlCenterPage user={user} />}
         {page === 'kitchen' && canUseKitchen(user.role) && <KitchenPage user={user} />}
-        </Suspense>
+          </Suspense>
+        </LazyRouteErrorBoundary>
       </div>
     </AppShell>
   )
 }
 
-function PageLoadFallback() {
-  return <CapyLoadingWindow forced label="Đang mở màn hình…" />
+function PageLoadFallback({ label = 'Đang mở màn hình…' }: { label?: string }) {
+  return <CapyLoadingWindow forced label={label} />
 }
 
 function pageFromHash(): Page {

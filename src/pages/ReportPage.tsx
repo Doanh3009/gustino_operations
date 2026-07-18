@@ -199,7 +199,7 @@ interface ReportLedgerData {
   snapshots: ReportSnapshot[]
 }
 
-export function ReportPage({ user, movements, onRefresh }: Props) {
+export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
   const infographicRef = useRef<HTMLDivElement>(null)
   const n8nDayPosterRef = useRef<HTMLDivElement>(null)
   const n8nShiftOnePosterRef = useRef<HTMLDivElement>(null)
@@ -220,6 +220,9 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
   const [employeeKpiTargets, setEmployeeKpiTargets] = useState<Record<string, number>>({})
   const [reportScope, setReportScope] = useState<ReportScope>('day')
   const [reportSnapshot, setReportSnapshot] = useState<ReportSnapshot | null>(null)
+  const handoverIntentRef = useRef(readHandoverReportIntent())
+  const autoFinalizeAttemptRef = useRef('')
+  const [handoverComplete, setHandoverComplete] = useState(false)
   const businessDate = localDateKey()
 
   async function loadReportLedger(): Promise<ReportLedgerData> {
@@ -472,8 +475,8 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
     }
   }
 
-  async function saveCloud() {
-    if (finalized) {
+  async function saveCloud(fromHandover = false) {
+    if (finalized && !fromHandover) {
       setMessage('Ngày đã kết thúc. Chúc cả đội ngủ ngon.')
       return
     }
@@ -511,6 +514,21 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
       const freshCanResumeSecondShiftFinalization = Boolean(
         freshIsSecondShiftFinalization && freshShiftReportEntry && !finalized,
       )
+      if (fromHandover && freshShiftReportEntry && (freshIsSecondShiftFinalization ? finalized : true)) {
+        await waitForReportPosters()
+        const delivery = await queueCurrentReportImages(freshLeaderShiftSession, true)
+        await saveShiftReportSnapshot(user, businessDate, {
+          ...freshShiftReportEntry,
+          n8nDelivery: { ...delivery, updatedAt: new Date().toISOString() },
+        })
+        await refreshLedger()
+        window.sessionStorage.removeItem('gustino:handover-report')
+        setHandoverComplete(true)
+        setMessage(freshIsSecondShiftFinalization
+          ? 'Đã chốt Ca 2 và Tổng ngày. Hai hình báo cáo đã được gửi tự động vào nhóm Zalo.'
+          : 'Đã chốt Ca 1. Hình báo cáo ca đã được gửi tự động vào nhóm Zalo.')
+        return
+      }
       if (freshShiftReportEntry && !freshCanResumeSecondShiftFinalization) {
         throw new Error(`Báo cáo Ca ${freshLeaderShiftSession.sequence} đã được chốt trước đó.`)
       }
@@ -572,9 +590,24 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
         await saveShiftReportSnapshot(user, businessDate, shiftEntry)
       }
       await refreshLedger()
-      setMessage(freshIsSecondShiftFinalization
-        ? 'Đã chốt Ca 2 và kết thúc ngày. Đã ghi nhận yêu cầu gửi Zalo gồm Báo cáo Ca 2 và Báo cáo ngày; đang chờ kết nối.'
-        : 'Đã đóng Ca 1, chốt báo cáo và bàn giao cho Ca 2. Đã ghi nhận yêu cầu gửi Zalo Báo cáo Ca 1; đang chờ kết nối.')
+      if (fromHandover) {
+        await waitForReportPosters()
+        const delivery = await queueCurrentReportImages(freshLeaderShiftSession, true)
+        await saveShiftReportSnapshot(user, businessDate, {
+          ...shiftEntry,
+          n8nDelivery: { ...delivery, updatedAt: new Date().toISOString() },
+        })
+        await refreshLedger()
+        window.sessionStorage.removeItem('gustino:handover-report')
+        setHandoverComplete(true)
+        setMessage(freshIsSecondShiftFinalization
+          ? 'Đã chốt Ca 2 và Tổng ngày. Hai hình báo cáo đã được gửi tự động vào nhóm Zalo.'
+          : 'Đã chốt Ca 1. Hình báo cáo ca đã được gửi tự động vào nhóm Zalo.')
+      } else {
+        setMessage(freshIsSecondShiftFinalization
+          ? 'Đã chốt Ca 2 và kết thúc ngày.'
+          : 'Đã đóng Ca 1, chốt báo cáo và bàn giao cho Ca 2.')
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : ''
       setMessage(detail ? `Không thể lưu báo cáo: ${detail}` : 'Không thể lưu báo cáo.')
@@ -582,6 +615,16 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
       setBusy(false)
     }
   }
+
+  useEffect(() => {
+    const intent = handoverIntentRef.current
+    if (!intent || intent.businessDate !== businessDate || !leaderShiftSession) return
+    if (intent.shiftId !== leaderShiftSession.id || leaderShiftSession.status !== 'closed') return
+    if (autoFinalizeAttemptRef.current === intent.shiftId) return
+    autoFinalizeAttemptRef.current = intent.shiftId
+    setMessage('Đang tạo và gửi hình báo cáo tự động…')
+    void saveCloud(true)
+  }, [businessDate, leaderShiftSession?.id, leaderShiftSession?.status])
 
   async function reopenDay() {
     if (!window.confirm('Mở lại ngày vận hành để bổ sung/sửa số liệu? Sau khi xong nhớ bấm Chốt báo cáo lại.')) return
@@ -650,7 +693,7 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
     <div className="report-page">
       <div className="report-toolbar">
         <div className="report-toolbar-summary">
-          <strong>{finalized ? 'Đã chốt Ca 2 và Tổng ngày' : `Báo cáo ${reportScopeLabel.toLowerCase()}`}</strong>
+          <strong>{handoverComplete ? 'Bàn giao hoàn tất' : finalized ? 'Đã chốt Ca 2 và Tổng ngày' : `Báo cáo ${reportScopeLabel.toLowerCase()}`}</strong>
         </div>
         <div className="report-toolbar-controls">
           <label className="report-scope-select">
@@ -669,13 +712,9 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
 
           <div className="report-essential-actions">
             <button className="secondary-button" onClick={() => void exportInfographicImage()} disabled={busy}>Tải ảnh</button>
-            {shiftReportEntry && (
-              <button className="secondary-button" onClick={() => void sendReportToZalo()} disabled={busy}>Gửi Zalo</button>
-            )}
-            {(finalized || shiftReportEntry) && (
-              <button className="secondary-button report-share-zalo-button" onClick={() => void shareInfographicToZalo()} disabled={busy}>Chia sẻ ảnh Zalo</button>
-            )}
-            {finalized
+            {handoverComplete
+              ? <button className="primary-button" onClick={() => onNavigate('today')}>Về màn hình chính</button>
+              : finalized
               ? <button className="secondary-button report-reopen-button" onClick={() => void reopenDay()} disabled={busy}>Mở lại ngày</button>
               : shiftReportEntry && !canResumeSecondShiftFinalization
                 ? <span className="report-finalized-status">✓ Đã chốt Ca {leaderShiftSession?.sequence}</span>
@@ -712,6 +751,28 @@ export function ReportPage({ user, movements, onRefresh }: Props) {
       </div>
     </div>
   )
+}
+
+interface HandoverReportIntent {
+  shiftId: string
+  sequence: number
+  businessDate: string
+}
+
+function readHandoverReportIntent(): HandoverReportIntent | null {
+  try {
+    const value = window.sessionStorage.getItem('gustino:handover-report')
+    if (!value) return null
+    const parsed = JSON.parse(value) as Partial<HandoverReportIntent>
+    if (!parsed.shiftId || !parsed.businessDate || !Number.isFinite(parsed.sequence)) return null
+    return parsed as HandoverReportIntent
+  } catch {
+    return null
+  }
+}
+
+async function waitForReportPosters() {
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())))
 }
 
 function ReportPoster({

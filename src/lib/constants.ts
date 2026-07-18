@@ -223,6 +223,31 @@ export const PROCESS_OUTPUT_OPTIONS_BY_INPUT: Record<string, string[]> = {
   'cake-raw': ['cake-ready'],
 }
 
+/**
+ * Thành phẩm của mẻ chế biến phải tra từ danh mục cloud hiện hành, không chỉ
+ * từ nhóm kg. Nhờ vậy mapping theo cái (bánh hạt dẻ) vẫn hoạt động; nếu SKU
+ * hệ thống đã được tombstone, SKU kho tương thích do Admin tạo vẫn có thể chọn.
+ */
+export function getProcessingOutputOptions(inputProductId: string): ConfiguredProduct[] {
+  const currentProducts = getProducts().filter((product) =>
+    product.active !== false && product.category === 'finished',
+  )
+  const currentById = new Map(currentProducts.map((product) => [product.id, product]))
+  const mapped = (PROCESS_OUTPUT_OPTIONS_BY_INPUT[inputProductId] || [])
+    .map((id) => currentById.get(id))
+    .filter(Boolean) as ConfiguredProduct[]
+  if (mapped.length) return mapped
+
+  const input = productById(inputProductId)
+  const warehouseFinished = currentProducts.filter((product) =>
+    product.unit === 'kg' || Number(product.price || 0) <= 0,
+  )
+  const sameUnit = input
+    ? warehouseFinished.filter((product) => product.unit === input.unit)
+    : []
+  return sameUnit.length ? sameUnit : warehouseFinished
+}
+
 export interface PackingOption {
   productId: string
   label: string

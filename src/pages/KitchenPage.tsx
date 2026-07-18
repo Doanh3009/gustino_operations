@@ -5,7 +5,9 @@ import { T, useLang } from '../lib/i18n'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import {
   fetchSupplyRequests,
+  formatSupplyRequestDelivery as formatRequestedDelivery,
   updateSupplyRequestStatus,
+  type SupplyDeliveryPeriod,
   type SupplyRequest,
   type SupplyRequestStatus,
 } from '../lib/supplyRequests'
@@ -25,6 +27,10 @@ export function KitchenPage({ user }: Props) {
   const [loading, setLoading] = useState(true)
   const [feedback, setFeedback] = useState('')
   const [busyId, setBusyId] = useState('')
+  const [kitchenHistoryStatus, setKitchenHistoryStatus] = useState<'all' | SupplyRequestStatus>('all')
+  const [kitchenHistoryDeliveryDate, setKitchenHistoryDeliveryDate] = useState('')
+  const [kitchenHistoryDeliveryPeriod, setKitchenHistoryDeliveryPeriod] = useState<'all' | SupplyDeliveryPeriod>('all')
+  const [kitchenHistorySearch, setKitchenHistorySearch] = useState('')
   const seenPendingIds = useRef<Set<string>>(new Set())
   const initialized = useRef(false)
   const branchIds = useMemo(
@@ -140,7 +146,20 @@ export function KitchenPage({ user }: Props) {
   const alarmTitle = lang === 'en' ? `${pending.length} NEW KITCHEN ORDERS` : `CÓ ${pending.length} ĐƠN BẾP MỚI`
   const alarmHint = lang === 'en'
     ? 'Confirm quickly so the shift leader knows the order was received.'
-    : 'Bếp xác nhận ngay để ca trưởng biết đã nhận đơn.'
+    : 'Bếp xác nhận ngay để ca trưởng biết đơn đã được tiếp nhận.'
+  const kitchenHistoryRequests = useMemo(() => {
+    const keyword = kitchenHistorySearch.trim().toLowerCase()
+    return requests
+      .filter((request) => {
+        if (kitchenHistoryStatus !== 'all' && request.status !== kitchenHistoryStatus) return false
+        if (kitchenHistoryDeliveryDate && request.requestedDeliveryDate !== kitchenHistoryDeliveryDate) return false
+        if (kitchenHistoryDeliveryPeriod !== 'all' && request.requestedDeliveryPeriod !== kitchenHistoryDeliveryPeriod) return false
+        if (keyword && !`${request.productName} ${request.note} ${request.requestedByName} ${branchName(request.branchId)}`.toLowerCase().includes(keyword)) return false
+        return true
+      })
+      .slice()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }, [kitchenHistoryDeliveryDate, kitchenHistoryDeliveryPeriod, kitchenHistorySearch, kitchenHistoryStatus, requests])
   const successFeedbacks: string[] = [
     tx.kitchenBellFeedback,
     tx.kitchenAcceptedFeedback,
@@ -214,6 +233,71 @@ export function KitchenPage({ user }: Props) {
           savingLabel={tx.kitchenSaving}
         />
       </section>
+
+      <section className="kitchen-history-section">
+        <div className="kitchen-history-head">
+          <div>
+            <span className="eyebrow dark">TRA CỨU ĐƠN ĐẶT HÀNG</span>
+            <h2>Danh sách đơn có phân loại</h2>
+            <p>Coi lại ngày đặt, lịch nhận và trạng thái bếp của tất cả đơn trong phạm vi được phép.</p>
+          </div>
+          <strong>{kitchenHistoryRequests.length} đơn</strong>
+        </div>
+        <div className="kitchen-history-filters">
+          <label>Trạng thái
+            <select value={kitchenHistoryStatus} onChange={(event) => setKitchenHistoryStatus(event.target.value as 'all' | SupplyRequestStatus)}>
+              <option value="all">Tất cả trạng thái</option>
+              <option value="pending">Chờ bếp xác nhận</option>
+              <option value="acknowledged">Bếp đã xác nhận</option>
+              <option value="fulfilled">Bếp đã gửi</option>
+              <option value="cancelled">Đã hủy</option>
+            </select>
+          </label>
+          <label>Ngày nhận
+            <input type="date" value={kitchenHistoryDeliveryDate} onChange={(event) => setKitchenHistoryDeliveryDate(event.target.value)} />
+          </label>
+          <label>Buổi nhận
+            <select value={kitchenHistoryDeliveryPeriod} onChange={(event) => setKitchenHistoryDeliveryPeriod(event.target.value as 'all' | SupplyDeliveryPeriod)}>
+              <option value="all">Tất cả các buổi</option>
+              <option value="morning">Sáng</option>
+              <option value="noon">Trưa</option>
+              <option value="afternoon">Chiều</option>
+            </select>
+          </label>
+          <label>Tìm đơn
+            <input value={kitchenHistorySearch} onChange={(event) => setKitchenHistorySearch(event.target.value)} placeholder="Tên hàng, chi nhánh, người đặt..." />
+          </label>
+          {(kitchenHistoryStatus !== 'all' || kitchenHistoryDeliveryDate || kitchenHistoryDeliveryPeriod !== 'all' || kitchenHistorySearch) && (
+            <button
+              type="button"
+              className="mini-button ghost"
+              onClick={() => {
+                setKitchenHistoryStatus('all')
+                setKitchenHistoryDeliveryDate('')
+                setKitchenHistoryDeliveryPeriod('all')
+                setKitchenHistorySearch('')
+              }}
+            >Xóa lọc</button>
+          )}
+        </div>
+        <div className="kitchen-history-list">
+          {kitchenHistoryRequests.map((request) => (
+            <article className="kitchen-history-row" key={request.id}>
+              <div>
+                <strong>{request.productName}</strong>
+                <small>{branchName(request.branchId)} · {request.requestedByName}</small>
+              </div>
+              <b>{formatQuantity(request.quantity)} {request.unit}</b>
+              <div>
+                <small>Ngày đặt: {formatDateTime(request.createdAt)}</small>
+                <strong>Nhận dự kiến: {formatRequestedDelivery(request)}</strong>
+              </div>
+              <span className={`kitchen-history-status ${request.status}`}>{kitchenStatusLabel(request.status)}</span>
+            </article>
+          ))}
+          {!kitchenHistoryRequests.length && <p className="empty-copy">Không có đơn phù hợp bộ lọc.</p>}
+        </div>
+      </section>
     </div>
   )
 }
@@ -254,6 +338,8 @@ function KitchenColumn({
             </div>
             <p>{formatQuantity(request.quantity)} {request.unit}</p>
             <small>{branchName(request.branchId)} · {request.requestedByName}</small>
+            <small>Ngày đặt: {formatDateTime(request.createdAt)}</small>
+            <strong className="kitchen-order-delivery">Nhận dự kiến: {formatRequestedDelivery(request)}</strong>
             {request.note && <em>{request.note}</em>}
             {(nextLabel || cancelLabel) && (
               <div className="kitchen-order-actions">
@@ -281,7 +367,7 @@ function notifyKitchen(request: SupplyRequest | undefined, tx: typeof T[keyof ty
   void playKitchenBell()
   if ('Notification' in window && Notification.permission === 'granted') {
     new Notification(tx.kitchenNotificationTitle, {
-      body: request ? `${request.productName} - ${formatQuantity(request.quantity)} ${request.unit}` : tx.kitchenNotificationFallback,
+      body: request ? `${request.productName} - ${formatQuantity(request.quantity)} ${request.unit} · ${formatRequestedDelivery(request)}` : tx.kitchenNotificationFallback,
     })
   }
 }
@@ -361,6 +447,24 @@ function branchName(branchId: string) {
 
 function formatTime(value: string) {
   return new Date(value).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString('vi-VN', {
+    hour12: false,
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function kitchenStatusLabel(status: SupplyRequestStatus) {
+  return status === 'pending' ? 'Chờ bếp xác nhận'
+    : status === 'acknowledged' ? 'Bếp đã xác nhận'
+      : status === 'fulfilled' ? 'Bếp đã gửi'
+        : 'Đã hủy'
 }
 
 function formatQuantity(value: number) {

@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useMemo, useRef, useState } from 'react'
-import { INBOUND_PRODUCTS, MOVEMENT_LABELS, PROCESS_OUTPUT_OPTIONS_BY_INPUT, PRODUCTS, getFinishedBulkProducts, getInboundProducts, getProcessInputProducts, getProducts, productById } from '../lib/constants'
+import { INBOUND_PRODUCTS, MOVEMENT_LABELS, PRODUCTS, getInboundProducts, getProcessInputProducts, getProcessingOutputOptions, getProducts, productById } from '../lib/constants'
 import { canvasToBlob, createId, shareOrDownloadBlob } from '../lib/browser'
 import { addMovements, calculateStock, deleteMovements, ensureOperationDay, saveInventoryReport } from '../lib/store'
 import { branchName as configuredBranchName } from '../lib/branches'
@@ -80,14 +80,15 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
   // Dropdown nguyên liệu nhập kho / chế biến + thành phẩm chia mẻ lấy từ SKU admin cấu hình.
   const inboundProducts = useMemo(() => getInboundProducts(), [productTick])
   const processInputProducts = useMemo(() => getProcessInputProducts(), [productTick])
-  const finishedBulkProducts = useMemo(() => getFinishedBulkProducts(), [productTick])
   const stock = useMemo(() => calculateStock(movements), [movements, productTick])
   const today = localDateKey()
   const [selectedDate, setSelectedDate] = useState(today)
   const [selectedMonth, setSelectedMonth] = useState(today.slice(0, 7))
   const [selectedYear, setSelectedYear] = useState(today.slice(0, 4))
   const [period, setPeriod] = useState<InventoryPeriod>('day')
-  const visibleOverviewStock = useMemo(() => stock.filter(isVisibleStockLine), [stock])
+  // Catalog SKU is shared company-wide. Every active SKU must remain visible at
+  // every branch even when this branch currently has zero stock.
+  const visibleOverviewStock = stock
   const outboundStockOptions = useMemo(
     () => visibleOverviewStock.filter((line) => line.expected > 0.0001),
     [visibleOverviewStock],
@@ -562,7 +563,6 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
             saving={saving}
             stock={stock}
             inputProducts={processInputProducts}
-            finishedBulkProducts={finishedBulkProducts}
             onPhase={setBatchPhase}
             onNote={setNote}
             onInputs={setProcessInputs}
@@ -1089,7 +1089,7 @@ function InboundVoucherHistory({
 }
 
 function ProcessingBatchEditor({
-  inputs, outputs, phase, note, saving, stock, inputProducts, finishedBulkProducts, onInputs, onOutputs, onPhase, onNote, onSave,
+  inputs, outputs, phase, note, saving, stock, inputProducts, onInputs, onOutputs, onPhase, onNote, onSave,
 }: {
   inputs: ProcessLine[]
   outputs: ProcessLine[]
@@ -1098,7 +1098,6 @@ function ProcessingBatchEditor({
   saving: boolean
   stock: ReturnType<typeof calculateStock>
   inputProducts: Product[]
-  finishedBulkProducts: Product[]
   onInputs: (lines: ProcessLine[]) => void
   onOutputs: (lines: ProcessLine[]) => void
   onPhase: (phase: 'opening' | 'additional') => void
@@ -1109,14 +1108,8 @@ function ProcessingBatchEditor({
   const totalCook = outputs.reduce((sum, line) => sum + Number(line.quantity || 0), 0)
   const totalLoss = totalRaw > 0 ? (totalRaw - totalCook) / totalRaw * 100 : 0
 
-  // Thành phẩm chọn khi chia mẻ: ưu tiên map mặc định theo nguyên liệu; nếu nguyên liệu (admin thêm)
-  // chưa có map thì cho chọn toàn bộ thành phẩm rời (kg) do admin cấu hình.
-  const outputOptions = (inputId: string): Product[] => {
-    const mapped = (PROCESS_OUTPUT_OPTIONS_BY_INPUT[inputId] || [])
-      .map((id) => finishedBulkProducts.find((product) => product.id === id))
-      .filter(Boolean) as Product[]
-    return mapped.length ? mapped : finishedBulkProducts
-  }
+  // Mapping đọc trực tiếp từ danh mục SKU hiện hành; không loại thành phẩm theo cái.
+  const outputOptions = (inputId: string): Product[] => getProcessingOutputOptions(inputId)
 
   function updateInput(index: number, patch: Partial<ProcessLine>) {
     onInputs(inputs.map((line, i) => i === index ? { ...line, ...patch } : line))
@@ -1706,10 +1699,6 @@ function periodLabel(period: InventoryPeriod, date: string, month: string, year:
     return m && y ? `Tháng ${m}/${y}` : 'Theo tháng'
   }
   return `Ngày ${formatDate(date)}`
-}
-function isVisibleStockLine(line: ReturnType<typeof calculateStock>[number]) {
-  return Math.abs(line.expected) > 0.0001
-    || line.actual !== undefined
 }
 function isInventoryReportProduct(product: Product) {
   if (product.category === 'packaging') return false

@@ -8,6 +8,13 @@ import { shouldUseLanApi, supabase, uniqueChannelName } from './supabase'
 import type { AppUser, ProductRecipeLine } from '../types'
 
 export const PRODUCTS_CHANGED_EVENT = 'gustino-products-updated'
+const PRODUCTS_CACHE_KEY = 'gustino:configured-products:v1'
+
+interface PersistedProductCatalog {
+  products: ConfiguredProduct[]
+  deletedProducts: ConfiguredProduct[]
+  cachedAt: string
+}
 
 interface ProductRow {
   id: string
@@ -73,7 +80,35 @@ function productToRow(product: ConfiguredProduct) {
 
 function writeLocalProducts(products: ConfiguredProduct[], deletedProducts?: ConfiguredProduct[]) {
   setConfiguredProductsCache(products, deletedProducts)
+  if (typeof window !== 'undefined') {
+    try {
+      const previous = readPersistedProducts()
+      const payload: PersistedProductCatalog = {
+        products,
+        deletedProducts: deletedProducts ?? previous?.deletedProducts ?? [],
+        cachedAt: new Date().toISOString(),
+      }
+      window.localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(payload))
+    } catch {
+      // Catalog cloud vẫn là nguồn chuẩn; cache trình duyệt chỉ là fallback khi mạng chập chờn.
+    }
+  }
   window.dispatchEvent(new CustomEvent(PRODUCTS_CHANGED_EVENT))
+}
+
+function readPersistedProducts(): PersistedProductCatalog | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(PRODUCTS_CACHE_KEY) || 'null') as Partial<PersistedProductCatalog> | null
+    if (!parsed || !Array.isArray(parsed.products) || !Array.isArray(parsed.deletedProducts)) return null
+    return {
+      products: parsed.products,
+      deletedProducts: parsed.deletedProducts,
+      cachedAt: typeof parsed.cachedAt === 'string' ? parsed.cachedAt : '',
+    }
+  } catch {
+    return null
+  }
 }
 
 function mergeCloudIntoBase(rows: ConfiguredProduct[]): ConfiguredProduct[] {
@@ -105,10 +140,20 @@ export async function fetchConfiguredProducts(user?: AppUser | null): Promise<Co
     writeLocalProducts(products, [])
     return products
   }
+  const persisted = readPersistedProducts()
+  if (persisted?.products.length) {
+    setConfiguredProductsCache(persisted.products, persisted.deletedProducts)
+  }
   const { data, error } = await supabase
     .from('products')
     .select('id, sku, name, unit, category, low_stock, active, price, source, weight_kg, counts_for_yield, inbound_unit, inbound_pack_kg, inbound_pack_quantity, recipe, deleted_at')
-  if (error) throw error
+  if (error) {
+    if (persisted?.products.length) {
+      window.dispatchEvent(new CustomEvent(PRODUCTS_CHANGED_EVENT))
+      return persisted.products
+    }
+    throw error
+  }
   const rows = (data || []).map((row) => rowToProduct(row as ProductRow))
   const merged = mergeCloudIntoBase(rows)
   writeLocalProducts(merged, rows.filter((product) => Boolean(product.deletedAt)))

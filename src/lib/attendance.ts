@@ -912,6 +912,34 @@ export async function fetchAttendanceRecords(user: AppUser, filters: AttendanceF
 
 export type AttendancePhase = 'locating' | 'saving'
 
+const ATTENDANCE_WRITE_MAX_ATTEMPTS = 2
+
+async function withAttendanceWriteRetry<T>(action: () => Promise<T>): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= ATTENDANCE_WRITE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await action()
+    } catch (error) {
+      lastError = error
+      if (attempt >= ATTENDANCE_WRITE_MAX_ATTEMPTS || !isRetryableAttendanceWriteError(error)) throw error
+      await new Promise((resolve) => window.setTimeout(resolve, 350))
+    }
+  }
+  throw lastError
+}
+
+function isDuplicateAttendanceWrite(error: unknown) {
+  const candidate = error as { code?: string; message?: string }
+  return String(candidate?.code || '') === '23505' || /duplicate|already exists|đã check-in/i.test(candidate?.message || '')
+}
+
+function isRetryableAttendanceWriteError(error: unknown) {
+  const candidate = error as { status?: number; statusCode?: number; message?: string }
+  const status = Number(candidate?.status || candidate?.statusCode || 0)
+  return status === 408 || status === 425 || status === 429 || status >= 500
+    || /fetch|network|timeout|timed out|connection|gateway|temporar|chưa xác nhận/i.test(candidate?.message || '')
+}
+
 export async function checkIn(user: AppUser, registration: ShiftRegistration, selfie: Blob, onPhase?: (phase: AttendancePhase) => void) {
   if (registration.userId !== user.id || registration.status === 'rejected') {
     throw new Error('Ca làm không hợp lệ hoặc không thuộc tài khoản này.')
@@ -949,31 +977,39 @@ export async function checkIn(user: AppUser, registration: ShiftRegistration, se
     updatedAt: now,
   }
   if (shouldUseAttendanceApi(user)) {
-    await attendanceApi(user, '/records', { method: 'POST', body: JSON.stringify(record) })
-    return record
-  }
-  const { error } = await supabase!.from('attendance_records').insert({
-    id: record.id,
-    user_id: record.userId,
-    branch_id: record.branchId,
-    shift_registration_id: record.shiftRegistrationId,
-    check_in_time: record.checkInTime,
-    selfie_url: record.selfieUrl,
-    check_in_latitude: record.checkInLatitude,
-    check_in_longitude: record.checkInLongitude,
-    check_in_accuracy: record.checkInAccuracy,
-    check_in_address: record.checkInAddress,
-  })
-  if (error) {
-    if (String(error.code || '') === '23505' || /duplicate|already exists/i.test(error.message || '')) {
-      const { data: existing } = await supabase!
-        .from('attendance_records')
-        .select('*, profiles!attendance_records_user_id_fkey(full_name, active)')
-        .eq('shift_registration_id', registration.id)
-        .eq('user_id', user.id)
-        .maybeSingle()
-      if (existing) return mapAttendance(existing)
+    try {
+      const saved = await withAttendanceWriteRetry(() => attendanceApi<AttendanceRecord>(user, '/records', {
+        method: 'POST',
+        body: JSON.stringify(record),
+      }))
+      return { ...saved, selfiePreviewUrl }
+    } catch (error) {
+      const existing = await attendanceApi<AttendanceRecord[]>(user, `/records?userId=${encodeURIComponent(user.id)}`)
+        .then((rows) => rows.find((item) => item.shiftRegistrationId === registration.id))
+        .catch(() => undefined)
+      if (existing && (isDuplicateAttendanceWrite(error) || isRetryableAttendanceWriteError(error))) return existing
+      throw error
     }
+  }
+  try {
+    await withAttendanceWriteRetry(async () => {
+      const { error } = await supabase!.from('attendance_records').insert({
+        id: record.id,
+        user_id: record.userId,
+        branch_id: record.branchId,
+        shift_registration_id: record.shiftRegistrationId,
+        check_in_time: record.checkInTime,
+        selfie_url: record.selfieUrl,
+        check_in_latitude: record.checkInLatitude,
+        check_in_longitude: record.checkInLongitude,
+        check_in_accuracy: record.checkInAccuracy,
+        check_in_address: record.checkInAddress,
+      })
+      if (error) throw error
+    })
+  } catch (error) {
+    const existing = await verifyExistingCheckIn(user.id, registration.id).catch(() => undefined)
+    if (existing && (isDuplicateAttendanceWrite(error) || isRetryableAttendanceWriteError(error))) return existing
     throw error
   }
   return record
@@ -998,30 +1034,66 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
   })
   const checkOutSelfieUrl = await uploadSelfie(user, registration, stampedSelfie)
   if (shouldUseAttendanceApi(user)) {
-    await attendanceApi(user, `/records/${record.id}`, {
+    await withAttendanceWriteRetry(() => attendanceApi(user, `/records/${record.id}`, {
       method: 'PATCH',
       body: JSON.stringify({
-        checkOutTime,
-        updatedAt: checkOutTime,
-        checkOutSelfieUrl,
-        checkOutLatitude: location.latitude,
-        checkOutLongitude: location.longitude,
-        checkOutAccuracy: location.accuracy,
-        checkOutAddress: location.address,
-      }),
-    })
+          checkOutTime,
+          updatedAt: checkOutTime,
+          checkOutSelfieUrl,
+          checkOutLatitude: location.latitude,
+          checkOutLongitude: location.longitude,
+          checkOutAccuracy: location.accuracy,
+          checkOutAddress: location.address,
+        }),
+      }))
     return
   }
-  const { error } = await supabase!.from('attendance_records').update({
-    check_out_time: checkOutTime,
-    check_out_selfie_url: checkOutSelfieUrl,
-    check_out_latitude: location.latitude,
-    check_out_longitude: location.longitude,
-    check_out_accuracy: location.accuracy,
-    check_out_address: location.address,
-    updated_at: checkOutTime,
-  }).eq('id', record.id).eq('user_id', user.id).is('check_out_time', null)
+  try {
+    await withAttendanceWriteRetry(async () => {
+      const { data, error } = await supabase!.from('attendance_records').update({
+        check_out_time: checkOutTime,
+        check_out_selfie_url: checkOutSelfieUrl,
+        check_out_latitude: location.latitude,
+        check_out_longitude: location.longitude,
+        check_out_accuracy: location.accuracy,
+        check_out_address: location.address,
+        updated_at: checkOutTime,
+      })
+        .eq('id', record.id)
+        .eq('user_id', user.id)
+        .is('check_out_time', null)
+        .select('id, check_out_time')
+        .maybeSingle()
+      if (error) throw error
+      if (data?.check_out_time || await verifyCompletedCheckout(user.id, record.id)) return
+      throw new Error('Supabase chưa xác nhận check-out. Hệ thống sẽ kiểm tra và thử lại một lần.')
+    })
+  } catch (error) {
+    if (await verifyCompletedCheckout(user.id, record.id).catch(() => false)) return
+    throw error
+  }
+}
+
+async function verifyExistingCheckIn(userId: string, registrationId: string) {
+  const { data, error } = await supabase!
+    .from('attendance_records')
+    .select('*, profiles!attendance_records_user_id_fkey(full_name, active)')
+    .eq('shift_registration_id', registrationId)
+    .eq('user_id', userId)
+    .maybeSingle()
   if (error) throw error
+  return data ? mapAttendance(data) : undefined
+}
+
+async function verifyCompletedCheckout(userId: string, recordId: string) {
+  const { data, error } = await supabase!
+    .from('attendance_records')
+    .select('id, check_out_time')
+    .eq('id', recordId)
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) throw error
+  return Boolean(data?.check_out_time)
 }
 
 async function uploadSelfie(user: AppUser, registration: ShiftRegistration, selfie: Blob) {
@@ -1035,12 +1107,19 @@ async function uploadSelfie(user: AppUser, registration: ShiftRegistration, self
     return result.url
   }
   const path = `${user.id}/${registration.branchId}/${registration.id}-${Date.now()}.jpg`
-  const { error } = await supabase!.storage.from('attendance-selfies').upload(path, selfie, {
-    contentType: 'image/jpeg',
-    upsert: false,
-  })
-  if (error) throw error
+  await uploadAttendanceSelfieWithRetry(path, selfie)
   return path
+}
+
+async function uploadAttendanceSelfieWithRetry(path: string, selfie: Blob) {
+  await withAttendanceWriteRetry(async () => {
+    const { error } = await supabase!.storage.from('attendance-selfies').upload(path, selfie, {
+      contentType: 'image/jpeg',
+      upsert: false,
+    })
+    if (!error || /duplicate|already exists/i.test(error.message || '')) return
+    throw error
+  })
 }
 
 export function buildAttendanceReport(

@@ -11,7 +11,14 @@ Status: in progress; direct iPhone verification pending.
 | MOD06-TC-GPS-01 | Accurate branch geotag | Samples GPS, selects best fix and rejects accuracy worse than 150m | Static contract Passed; real GPS pending |
 | MOD06-TC-GPS-03 | Fresh precise fix at check-in/out | Cached coordinates are forbidden; a coarse first fix triggers one additional fresh sample and the better coordinate is reverse-geocoded | `ATTENDANCE_NATIVE_CAMERA_LOCATION_OK` + TypeScript Passed; HTTPS phone pending |
 | MOD06-TC-IDEMP-01 | Repeat/stale check-in | Existing attendance row is recovered and UI refreshes after error | Static contract Passed; integration pending |
+| MOD06-TC-SYNC-01 | Change the main shift after an attendance row exists for that employee/day | Update the attended registration in place, preserve its attendance evidence, remove only unattached duplicate main rows, block OFF after check-in and refuse ambiguous multi-attended days | `SCHEDULE_ATTENDANCE_REGISTRATION_SYNC_OK`; production RPC installed and Phạm Đình Phát repair verified |
 | MOD06-TC-IOS-01 | iPhone 11 camera/GPS/permission | Check in and out without browser restart | Blocked pending physical device test |
 | MOD06-TC-POPUP-01 | Today's attendance reminder | Capybara popup distinguishes check-in from check-out using current records | Static test Passed; UI pending |
 | MOD06-TC-GPS-02 | Automatic location and concrete address | Check-in/out requests GPS without a separate permission panel; visible/stamped location is a reverse-geocoded address, never coordinate fallback | `test-attendance-native-camera-location.mjs` Passed; HTTPS iPhone pending |
 | MOD06-TC-CAMERA-02 | Native phone capture | Attendance uses the phone-native capture input with no separate live camera/filter layer; iPhone decode fallback remains | `test-attendance-native-camera-location.mjs` Passed; physical iPhone pending |
+## 2026-07-18 idempotent write/read-back
+
+- Check-in retry must reuse the same record ID and recover the existing row through the unique registration constraint.
+- Check-out must select/read back the affected row; zero updated rows cannot be reported as success unless the authoritative row is already checked out.
+- Selfie upload retries once with the same path; LAN repeated checkout returns the already-saved row.
+- Pre-fix: `scripts/test-attendance-idempotent-write.mjs` failed. Post-fix it reports `ATTENDANCE_IDEMPOTENT_WRITE_OK`; native/mobile regressions and TypeScript pass. Production read-only audit has zero duplicate registration rows/zero completed evidence gaps and 9 open rows older than 18 hours; no historical row was edited.

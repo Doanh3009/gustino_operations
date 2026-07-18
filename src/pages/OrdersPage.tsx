@@ -3,11 +3,14 @@ import { getProducts } from '../lib/constants'
 import { branchName } from '../lib/branches'
 import { fetchConfiguredProducts } from '../lib/products'
 import { canvasToBlob, shareOrDownloadBlob } from '../lib/browser'
+import { localDateKey } from '../lib/dates'
 import {
   createSupplyRequests,
   deleteSupplyRequest,
   fetchSupplyRequests,
+  formatSupplyRequestDelivery as formatRequestedDelivery,
   updateSupplyRequestStatus,
+  type SupplyDeliveryPeriod,
   type SupplyRequest,
 } from '../lib/supplyRequests'
 import type { AppUser, StockMovement } from '../types'
@@ -45,6 +48,8 @@ export function OrdersPage({ user }: Props) {
   const [statusFilter, setStatusFilter] = useState<OrderStatusFilter>('all')
   const [dateFilter, setDateFilter] = useState('')
   const [searchFilter, setSearchFilter] = useState('')
+  const [requestedDeliveryDate, setRequestedDeliveryDate] = useState(() => localDateKey())
+  const [requestedDeliveryPeriod, setRequestedDeliveryPeriod] = useState<SupplyDeliveryPeriod>('morning')
   const firstInputRef = useRef<HTMLInputElement>(null)
   const reportRef = useRef<HTMLDivElement>(null)
   const currentBranchName = branchName(user.branchId)
@@ -138,9 +143,17 @@ export function OrdersPage({ user }: Props) {
       setFeedback('Hãy nhập ít nhất một món và số lượng lớn hơn 0.')
       return
     }
+    if (!requestedDeliveryDate) {
+      setFeedback('Hãy chọn ngày nhận hàng mong muốn.')
+      return
+    }
+    if (requestedDeliveryDate < localDateKey()) {
+      setFeedback('Ngày nhận hàng mong muốn không thể trước ngày hôm nay.')
+      return
+    }
     setBusy(true)
     try {
-      await createSupplyRequests(user, validLines)
+      await createSupplyRequests(user, validLines, { requestedDeliveryDate, requestedDeliveryPeriod })
       const blank = emptyOrderLine()
       setLines([blank])
       setFeedback(`Đã gửi ${validLines.length} món đến bếp/quản lý.`)
@@ -235,6 +248,30 @@ export function OrdersPage({ user }: Props) {
             <button className="secondary-button" type="button" onClick={addLine}>+ Thêm món</button>
           </div>
           <form onSubmit={submitOrder}>
+            <div className="order-delivery-fields">
+              <label>
+                <span>Ngày nhận mong muốn</span>
+                <input
+                  type="date"
+                  min={localDateKey()}
+                  value={requestedDeliveryDate}
+                  onChange={(event) => setRequestedDeliveryDate(event.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                <span>Buổi nhận</span>
+                <select
+                  value={requestedDeliveryPeriod}
+                  onChange={(event) => setRequestedDeliveryPeriod(event.target.value as SupplyDeliveryPeriod)}
+                >
+                  <option value="morning">Sáng</option>
+                  <option value="noon">Trưa</option>
+                  <option value="afternoon">Chiều</option>
+                </select>
+              </label>
+              <p>📦 Lịch nhận này áp dụng cho tất cả món trong phiếu.</p>
+            </div>
             <div className="order-entry-table page-order-lines">
               <div className="order-entry-head" aria-hidden="true">
                 <span>#</span><span>Hàng cần đặt</span><span>Số lượng</span><span>Đơn vị</span><span>Ghi chú</span><span></span>
@@ -335,7 +372,7 @@ export function OrdersPage({ user }: Props) {
             </div>
             <table className="order-report-table">
               <thead>
-                <tr><th>#</th><th>Tên hàng</th><th>SL</th><th>Trạng thái</th><th>Người đặt</th></tr>
+                <tr><th>#</th><th>Tên hàng</th><th>SL</th><th>Ngày đặt / nhận</th><th>Trạng thái</th><th>Người đặt</th></tr>
               </thead>
               <tbody>
                 {activeRequests.length ? activeRequests.map((request, index) => (
@@ -346,11 +383,15 @@ export function OrdersPage({ user }: Props) {
                       {request.note ? <small>{request.note}</small> : null}
                     </td>
                     <td className="num">{formatNumber(request.quantity)} {request.unit}</td>
+                    <td>
+                      <small>Ngày đặt: {formatDateTime(request.createdAt)}</small>
+                      <strong>{formatRequestedDelivery(request)}</strong>
+                    </td>
                     <td><span className={`order-report-status ${request.status}`}>{statusLabel(request.status)}</span></td>
                     <td>{request.requestedByName}</td>
                   </tr>
                 )) : (
-                  <tr><td colSpan={5} className="order-report-empty">Chưa có đơn nào đang xử lý. Gửi yêu cầu đặt hàng để phiếu tự điền tên hàng.</td></tr>
+                  <tr><td colSpan={6} className="order-report-empty">Chưa có đơn nào đang xử lý. Gửi yêu cầu đặt hàng để phiếu tự điền tên hàng.</td></tr>
                 )}
               </tbody>
             </table>
@@ -365,9 +406,9 @@ export function OrdersPage({ user }: Props) {
             <label>Trạng thái
               <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as OrderStatusFilter)}>
                 <option value="all">Tất cả</option>
-                <option value="pending">Chờ nhận</option>
-                <option value="acknowledged">Đã nhận</option>
-                <option value="fulfilled">Hoàn thành</option>
+                <option value="pending">Chờ bếp xác nhận</option>
+                <option value="acknowledged">Bếp đã xác nhận</option>
+                <option value="fulfilled">Bếp đã gửi</option>
                 <option value="cancelled">Đã hủy</option>
               </select>
             </label>
@@ -426,7 +467,8 @@ function OrderRequestItem({
       <span className="supply-request-icon">↑</span>
       <span>
         <strong>{request.productName} · {formatNumber(request.quantity)} {request.unit}</strong>
-        <small>{formatDateTime(request.createdAt)} · {request.requestedByName}{request.note ? ` · "${request.note}"` : ''}</small>
+        <small>Ngày đặt: {formatDateTime(request.createdAt)} · {request.requestedByName}{request.note ? ` · "${request.note}"` : ''}</small>
+        <small className="order-request-delivery">Nhận dự kiến: {formatRequestedDelivery(request)}</small>
       </span>
       <span className="supply-request-tail">
         <span className={`supply-status-badge ${request.status}`}>{statusLabel(request.status)}</span>
@@ -440,10 +482,10 @@ function OrderRequestItem({
 }
 
 function statusLabel(status: SupplyRequest['status']) {
-  return status === 'pending' ? 'Chờ nhận'
-    : status === 'acknowledged' ? 'Đã nhận'
+  return status === 'pending' ? 'Chờ bếp xác nhận'
+    : status === 'acknowledged' ? 'Bếp đã xác nhận'
       : status === 'cancelled' ? 'Đã hủy'
-        : 'Hoàn thành'
+        : 'Bếp đã gửi'
 }
 
 function formatDateTime(value: string) {

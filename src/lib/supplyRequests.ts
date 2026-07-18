@@ -2,6 +2,12 @@
 import type { AppUser } from '../types'
 
 export type SupplyRequestStatus = 'pending' | 'acknowledged' | 'fulfilled' | 'cancelled'
+export type SupplyDeliveryPeriod = 'morning' | 'noon' | 'afternoon'
+
+export interface SupplyRequestDelivery {
+  requestedDeliveryDate: string
+  requestedDeliveryPeriod: SupplyDeliveryPeriod
+}
 
 export interface SupplyRequest {
   id: string
@@ -10,6 +16,8 @@ export interface SupplyRequest {
   quantity: number
   unit: string
   note: string
+  requestedDeliveryDate?: string
+  requestedDeliveryPeriod?: SupplyDeliveryPeriod
   requestedBy?: string
   requestedByName: string
   status: SupplyRequestStatus
@@ -52,6 +60,8 @@ function mapSupplyRequest(row: any): SupplyRequest {
     quantity: Number(row.quantity),
     unit: row.unit,
     note: row.note || '',
+    requestedDeliveryDate: row.requested_delivery_date ?? row.requestedDeliveryDate ?? undefined,
+    requestedDeliveryPeriod: row.requested_delivery_period ?? row.requestedDeliveryPeriod ?? undefined,
     requestedBy: row.requested_by ?? row.requestedBy,
     requestedByName: row.requested_by_name ?? row.requestedByName,
     status: row.status,
@@ -77,7 +87,7 @@ async function fetchAllSupplyRequestRows(
 
 export async function createSupplyRequest(
   user: AppUser,
-  data: { productName: string; quantity: number; unit: string; note: string },
+  data: { productName: string; quantity: number; unit: string; note: string } & SupplyRequestDelivery,
 ) {
   if (shouldUseLanApi(user)) {
     await supplyApi<SupplyRequest>(user, '', {
@@ -88,6 +98,8 @@ export async function createSupplyRequest(
         quantity: data.quantity,
         unit: data.unit,
         note: data.note,
+        requestedDeliveryDate: data.requestedDeliveryDate,
+        requestedDeliveryPeriod: data.requestedDeliveryPeriod,
         requestedByName: user.name,
       }),
     })
@@ -99,6 +111,8 @@ export async function createSupplyRequest(
     quantity: data.quantity,
     unit: data.unit,
     note: data.note,
+    requested_delivery_date: data.requestedDeliveryDate,
+    requested_delivery_period: data.requestedDeliveryPeriod,
     requested_by: user.id,
     requested_by_name: user.name,
     status: 'pending',
@@ -108,6 +122,7 @@ export async function createSupplyRequest(
 export async function createSupplyRequests(
   user: AppUser,
   lines: Array<{ productName: string; quantity: number; unit: string; note: string }>,
+  delivery: SupplyRequestDelivery,
 ) {
   const validLines = lines.filter((line) => line.productName.trim() && Number(line.quantity) > 0)
   if (!validLines.length) throw new Error('Chưa có món hợp lệ để gửi bếp.')
@@ -117,6 +132,8 @@ export async function createSupplyRequests(
       body: JSON.stringify({
         branchId: user.branchId,
         requestedByName: user.name,
+        requestedDeliveryDate: delivery.requestedDeliveryDate,
+        requestedDeliveryPeriod: delivery.requestedDeliveryPeriod,
         items: validLines,
       }),
     })
@@ -128,6 +145,8 @@ export async function createSupplyRequests(
     quantity: line.quantity,
     unit: line.unit,
     note: line.note,
+    requested_delivery_date: delivery.requestedDeliveryDate,
+    requested_delivery_period: delivery.requestedDeliveryPeriod,
     requested_by: user.id,
     requested_by_name: user.name,
     status: 'pending',
@@ -178,7 +197,7 @@ export async function acknowledgeSupplyRequest(user: AppUser, requestId: string)
 export async function updateSupplyRequest(
   user: AppUser,
   requestId: string,
-  patch: Partial<Pick<SupplyRequest, 'productName' | 'quantity' | 'unit' | 'note' | 'status'>>,
+  patch: Partial<Pick<SupplyRequest, 'productName' | 'quantity' | 'unit' | 'note' | 'requestedDeliveryDate' | 'requestedDeliveryPeriod' | 'status'>>,
 ): Promise<void> {
   if (shouldUseLanApi(user)) {
     await supplyApi<SupplyRequest>(user, `/${requestId}`, {
@@ -192,12 +211,28 @@ export async function updateSupplyRequest(
   if (patch.quantity !== undefined) row.quantity = patch.quantity
   if (patch.unit !== undefined) row.unit = patch.unit
   if (patch.note !== undefined) row.note = patch.note
+  if (patch.requestedDeliveryDate !== undefined) row.requested_delivery_date = patch.requestedDeliveryDate || null
+  if (patch.requestedDeliveryPeriod !== undefined) row.requested_delivery_period = patch.requestedDeliveryPeriod || null
   if (patch.status !== undefined) row.status = patch.status
   const { error } = await supabase!
     .from('supply_requests')
     .update(row)
     .eq('id', requestId)
   if (error) throw new Error(error.message)
+}
+
+export function supplyDeliveryPeriodLabel(period?: SupplyDeliveryPeriod) {
+  return period === 'morning' ? 'Buổi sáng'
+    : period === 'noon' ? 'Buổi trưa'
+      : period === 'afternoon' ? 'Buổi chiều'
+        : 'Chưa chọn buổi'
+}
+
+export function formatSupplyRequestDelivery(request: Pick<SupplyRequest, 'requestedDeliveryDate' | 'requestedDeliveryPeriod'>) {
+  if (!request.requestedDeliveryDate) return 'Chưa chọn ngày nhận'
+  const [year, month, day] = request.requestedDeliveryDate.split('-')
+  const dateLabel = day ? `${day}/${month}/${year}` : request.requestedDeliveryDate
+  return `${dateLabel} · ${supplyDeliveryPeriodLabel(request.requestedDeliveryPeriod)}`
 }
 
 export async function deleteSupplyRequest(user: AppUser, requestId: string): Promise<void> {

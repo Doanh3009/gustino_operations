@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-const MINIMUM_VISIBLE_MS = 700
-const USER_ACTIVITY_WINDOW_MS = 500
+const DISPLAY_DELAY_MS = 280
+const MINIMUM_VISIBLE_MS = 320
+const USER_ACTIVITY_WINDOW_MS = 900
 const LOADING_MASCOTS = [
   '/mascots/capy-loading-1.png',
   '/mascots/capy-loading-2.png',
@@ -22,10 +23,11 @@ export function GlobalLoadingOverlay() {
   const [visible, setVisible] = useState(false)
   const tokenSequence = useRef(0)
   const activeTokens = useRef(new Set<number>())
-  const pulseTimers = useRef(new Set<number>())
+  const showTimers = useRef(new Map<number, number>())
   const hideTimer = useRef<number | null>(null)
   const shownAt = useRef(0)
-  const activityWindowUntil = useRef(performance.now() + 1800)
+  const overlayShown = useRef(false)
+  const activityWindowUntil = useRef(0)
   const mounted = useRef(true)
 
   const show = useCallback(() => {
@@ -34,35 +36,44 @@ export function GlobalLoadingOverlay() {
       hideTimer.current = null
     }
     shownAt.current = Date.now()
+    overlayShown.current = true
     setVisible(true)
   }, [])
 
   const begin = useCallback(() => {
     const token = ++tokenSequence.current
     activeTokens.current.add(token)
-    show()
+    if (overlayShown.current && hideTimer.current !== null) {
+      window.clearTimeout(hideTimer.current)
+      hideTimer.current = null
+    }
+    const timer = window.setTimeout(() => {
+      showTimers.current.delete(token)
+      if (activeTokens.current.has(token)) show()
+    }, DISPLAY_DELAY_MS)
+    showTimers.current.set(token, timer)
     return token
   }, [show])
 
   const end = useCallback((token: number) => {
+    const showTimer = showTimers.current.get(token)
+    if (showTimer !== undefined) {
+      window.clearTimeout(showTimer)
+      showTimers.current.delete(token)
+    }
     activeTokens.current.delete(token)
     if (!mounted.current || activeTokens.current.size) return
+    if (!overlayShown.current) return
     const remaining = Math.max(0, MINIMUM_VISIBLE_MS - (Date.now() - shownAt.current))
     if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
     hideTimer.current = window.setTimeout(() => {
       hideTimer.current = null
-      if (!activeTokens.current.size) setVisible(false)
+      if (!activeTokens.current.size) {
+        overlayShown.current = false
+        setVisible(false)
+      }
     }, remaining)
   }, [])
-
-  const pulse = useCallback(() => {
-    const token = begin()
-    const timer = window.setTimeout(() => {
-      pulseTimers.current.delete(timer)
-      end(token)
-    }, MINIMUM_VISIBLE_MS)
-    pulseTimers.current.add(timer)
-  }, [begin, end])
 
   useEffect(() => {
     mounted.current = true
@@ -74,7 +85,6 @@ export function GlobalLoadingOverlay() {
 
     const markUserActivity = () => {
       activityWindowUntil.current = performance.now() + USER_ACTIVITY_WINDOW_MS
-      pulse()
     }
 
     const onClick = (event: MouseEvent) => {
@@ -118,11 +128,11 @@ export function GlobalLoadingOverlay() {
       document.removeEventListener('submit', onSubmit, true)
       document.removeEventListener('change', onChange, true)
       if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
-      pulseTimers.current.forEach((timer) => window.clearTimeout(timer))
-      pulseTimers.current.clear()
+      showTimers.current.forEach((timer) => window.clearTimeout(timer))
+      showTimers.current.clear()
       activeTokens.current.clear()
     }
-  }, [begin, end, pulse])
+  }, [begin, end])
 
   return <CapyLoadingWindow visible={visible} />
 }

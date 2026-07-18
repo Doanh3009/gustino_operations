@@ -13,3 +13,9 @@ Status: in progress; visual and live-data verification pending.
 | MOD10-TC-SKU-01 | Admin-configured/custom SKU has positive stock and the count form opens or receives a realtime product refresh | Voucher includes the SKU, uses its configured name/unit and does not crash or reset entered count values | Pre-fix failed; `REPORT_INVENTORY_UX_OK` and TypeScript Passed after configured-product source alignment |
 | MOD10-TC-DATE-01 | Inventory page remains open across local midnight or opens before 07:00 UTC+7 | Default report/filter date is the local business date, never the prior UTC date | BUG-037 fixed; only the unrelated Supabase POS migration assertion remains in `test-business-date-contract.mjs` |
 | MOD10-TC-CARD-01 | Open current-stock mode | The four large Phiếu nhập/Phiếu xuất/Sắp hết/Phiếu kiểm kê count cards are absent; low-stock alert and current-stock list remain | Direct owner change; `DEPLOY_UI_BUSINESS_POLISH_OK` + inventory regression Passed |
+## 2026-07-18 cake processing-output linkage
+
+- Fixture: input `cake-raw` must resolve active configured `cake-ready` even though its unit is `cái`, not `kg`.
+- If the mapped system output is tombstoned, an active compatible warehouse-finished SKU such as `custom-tp-banh` must remain selectable; no historical movement is rewritten.
+- Pre-fix: `scripts/test-processing-product-linkage.mjs` failed because Inventory filtered mapped IDs through kg-only `finishedBulkProducts`. Post-fix linkage/tombstone tests and TypeScript pass.
+| MOD10-TC-SKU-01 | Open inventory at a branch with no movement for a company-wide active SKU | The SKU remains visible with stock 0; branch-specific quantity is not fabricated and outbound remains unavailable until positive stock exists | `PROCESSING_PRODUCT_LINKAGE_OK`, inventory/manager/tombstone/business regressions and TypeScript pass; production verification pending |

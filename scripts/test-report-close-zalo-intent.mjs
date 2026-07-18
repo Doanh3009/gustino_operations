@@ -8,7 +8,7 @@ const [reportPage, deliveryIntent, store, types] = await Promise.all([
 ])
 
 const failures = []
-const saveCloudStart = reportPage.indexOf('async function saveCloud()')
+const saveCloudStart = reportPage.indexOf('async function saveCloud(')
 const saveCloudEnd = reportPage.indexOf('async function reopenDay()', saveCloudStart)
 const saveCloud = saveCloudStart >= 0 && saveCloudEnd > saveCloudStart
   ? reportPage.slice(saveCloudStart, saveCloudEnd)
@@ -26,8 +26,8 @@ if (!saveCloud.includes('createZaloReportIntent')) {
 if (!saveCloud.includes('zaloIntent')) {
   failures.push('Luồng chốt chưa lưu zaloIntent theo ca.')
 }
-if (saveCloud.includes('queueCurrentReportImages(') || saveCloud.includes('sendZaloShiftReports(')) {
-  failures.push('Nút Chốt báo cáo vẫn gọi kết nối Zalo/n8n trực tiếp thay vì chừa điểm nối.')
+if (!saveCloud.includes('queueCurrentReportImages(freshLeaderShiftSession, true)')) {
+  failures.push('Bàn giao chưa tự động đưa đúng gói ảnh báo cáo vào n8n để gửi ngay.')
 }
 if (!saveCloud.includes('saveShiftReportSnapshot(user, businessDate, shiftEntry)')) {
   failures.push('Ca 1 không còn lưu riêng snapshot ca.')
@@ -38,11 +38,11 @@ if (!saveCloud.includes('finalizeDailyReport(user, businessDate')) {
 if (!saveCloud.includes('freshDailyReport.openShiftCount > 0')) {
   failures.push('Ca 2 thiếu chốt chặn không được đóng ngày khi còn ca mở.')
 }
-if (!reportPage.includes('Chốt báo cáo Ca 1 & bàn giao Ca 2')) {
-  failures.push('Nút Ca 1 chưa nói rõ chỉ bàn giao sang Ca 2.')
+if (!reportPage.includes("window.sessionStorage.removeItem('gustino:handover-report')")) {
+  failures.push('Ý định bàn giao chưa được xóa sau khi lưu và gửi báo cáo thành công.')
 }
-if (!reportPage.includes('Chốt báo cáo Ca 2 & kết thúc ngày')) {
-  failures.push('Nút Ca 2 chưa nói rõ sẽ kết thúc ngày.')
+if (!reportPage.includes('Về màn hình chính')) {
+  failures.push('Màn hoàn tất bàn giao chưa có lối về màn hình chính.')
 }
 if (!store.includes('zaloIntent?: Record<string, unknown>') || !types.includes('zaloIntent?: Record<string, unknown>')) {
   failures.push('Kiểu snapshot chưa chừa trường zaloIntent cho phần tích hợp sau.')

@@ -34,9 +34,23 @@ select jsonb_pretty(jsonb_build_object(
       and policyname = 'admin or owner reads active sessions'
   ),
   'admin_attendance_correction_function', exists (select 1 from public_functions where proname = 'admin_update_attendance_record'),
+  'admin_attendance_delete_function', exists (select 1 from public_functions where proname = 'admin_delete_attendance_record'),
   'product_deleted_at_column', exists (
     select 1 from information_schema.columns
     where table_schema = 'public' and table_name = 'products' and column_name = 'deleted_at'
+  ),
+  'supply_request_delivery_columns', (
+    select count(*) = 2
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'supply_requests'
+      and column_name in ('requested_delivery_date', 'requested_delivery_period')
+  ),
+  'supply_request_delivery_period_check', exists (
+    select 1
+    from pg_constraint
+    where conname = 'supply_requests_delivery_period_check'
+      and conrelid = 'public.supply_requests'::regclass
   )
 )) as latest_migration_runtime_audit;
 

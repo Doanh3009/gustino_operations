@@ -109,10 +109,6 @@ function PersonalRecords({ user, onNavigate }: { user: AppUser; onNavigate: (pag
         <label>Từ ngày<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
         <label>Đến ngày<input type="date" value={to} min={from} onChange={(event) => setTo(event.target.value)} /></label>
         <button className="secondary-button" onClick={() => void refresh(true)}>Làm mới</button>
-        {/* Chỉ ca trưởng được vào màn chốt báo cáo cuối ngày. */}
-        {user.role === 'shift_leader' && (
-          <button className="primary-button" onClick={() => onNavigate('report')}>Báo cáo cuối ngày</button>
-        )}
       </section>
 
       <section className="my-record-kpis">

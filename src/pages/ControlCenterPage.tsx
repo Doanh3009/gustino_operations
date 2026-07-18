@@ -1362,11 +1362,10 @@ function mergeRecipeLines(lines: ProductRecipeLine[]) {
   return Array.from(map.values())
 }
 
-// Món menu = đúng thành phẩm nhân viên bán trên POS (khớp getSaleProducts):
-// thành phẩm đóng túi (category 'finished', đơn vị KHÁC kg). Bao bì/nguyên liệu/mẻ kg
-// dù có đặt giá vẫn nằm ở SKU KHO, không lẫn vào danh mục món bán.
+// Món menu = thành phẩm nhân viên thực sự có thể bán trên POS: khác kg và có giá.
+// Thành phẩm kho theo cái nhưng giá 0 (vd TP-BANH trước khi đóng hộp) vẫn là SKU KHO.
 function isMenuProduct(product: ConfigProduct) {
-  return product.category === 'finished' && product.unit !== 'kg'
+  return product.category === 'finished' && product.unit !== 'kg' && Number(product.price || 0) > 0
 }
 
 function reconciliationLabel(status: ReturnType<typeof buildReconciliationRows>[number]['status']) {

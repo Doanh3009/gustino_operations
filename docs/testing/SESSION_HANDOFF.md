@@ -1,5 +1,76 @@
 # Session Handoff
 
+## 2026-07-18 — Active local redesign plus urgent BUG-072 fix
+
+- Active modules: MOD-13 handover/report UX, MOD-04/MOD-14 CRM presentation, MOD-10/MOD-15 shared SKU reliability.
+- Latest completed batch: BUG-072 custom `TP-BANH` recurrence root cause fixed locally by durable last-known-good catalog+tombstone fallback.
+- Latest commands: processing linkage, product tombstone, report/inventory UX, and app TypeScript all passed.
+- No production read/write, migration, webhook call, deployment, or Git push occurred.
+- In-progress files for the owner-requested preview: `ShiftHandoverPage.tsx`, `ReportPage.tsx`, and `AppShell.tsx`; exact next action is targeted report-flow regression, then Admin CRM drill-down and local visual preview.
+- Report/CRM implementation is now locally buildable. Local dev is running at `http://localhost:5173` with LAN API on 5177 (exec session 45180). In-app Browser is unavailable (`[]`), so exact next action is owner visual review or opening a Codex in-app Browser, followed by UI iteration. Do not deploy until explicit approval.
+- Owner subsequently approved deployment and GitHub push. Production deployment `dpl_DVUDaw7pumgDSEkU9Mc1Rpb2CmLd` is READY/live with `index-DLIBEm1N.js`; HTTP checks passed. Exact next action is commit the reviewed source/test/migration set (excluding `supabase.zip` and `supabase/.temp/cli-latest`) and push `main`.
+
+## Active release — BUG-074 shared SKU visibility
+
+- Owner clarified the catalog is company-wide: every active SKU must appear at every branch, even when that branch has zero stock.
+- Production read-only audit proves `custom-tp-banh` (`TP-BANH`, `Thành phẩm bánh hạt dẻ`, unit `cái`, category `finished`) is active. Lotte 23/10 has a 10-piece `processing_in` on 2026-07-18; the old system `cake-ready` remains tombstoned and historical movements are preserved.
+- Root cause: `InventoryPage` filtered catalog-derived stock rows through `isVisibleStockLine`, so zero-stock SKUs disappeared at branches without movements/counts. The overview now renders all active catalog SKUs with branch quantity 0. Outbound options still require positive stock, count-form defaults still include only positive stock, and movement/formula logic is unchanged.
+- Processing linkage, product tombstone, report/inventory, manager workspace, core business guards, TypeScript and diff safety pass. Next: build, inspected prebuild, production deploy and live asset verification.
+- Production build/prebuild passed with 700 modules and `PRODUCTION_SUPABASE_BUNDLE_OK (index-B_0LI7gf.js)`; inspected output has 123 files and zero forbidden database/env/archive artifacts. Deployment `dpl_9Nys88HQDf8YAwTPGAbV9YmirXK2` is Ready and aliased to the main URL. Live index, server-time, main and `InventoryPage-Bl68jXbz.js` return 200. Signed-in branch-by-branch visual verification remains pending.
+
+## Active release — BUG-072/073 loading and inactive-account cleanup
+
+- Owner reports excessive loading and says “Xóa sạch test” removed an account from view while its username remained occupied.
+- Source root cause for loading: the mounted global overlay associated every fetch within 900 ms of any click/select/file change, including unrelated polling/realtime reconciliation. The root interceptor is now unmounted; explicit auth, lazy-route/page and local button loaders remain.
+- Production read-only account audit: 37 Auth users and 37 profiles, zero Auth/profile orphans, zero tombstoned Auth rows and zero orphan identities. Four inactive Auth/profile pairs remain and reserve usernames: `nhanvien1`, `catruong1`, `catruong2`, `nhanvien2`.
+- Source root cause for cleanup: inactive profiles are visible in account administration but “Xóa sạch test” was disabled for `active=false`. The button is now available for inactive accounts, the UI explicitly warns that the username remains reserved until hard-delete, and the signed-in account remains protected. The deployed Edge Function already deletes Auth before profile and refuses partial hidden success.
+- Focused loading/account/performance/lazy-route/business regressions, app TypeScript and diff safety pass. No legacy inactive account was automatically deleted; Admin must choose exact accounts after deployment. Next: build, inspected Vercel prebuild, production deploy and live readback.
+- Production build/prebuild passed with 700 modules and `PRODUCTION_SUPABASE_BUNDLE_OK (index-BT7XTrnq.js)`; inspected output has 123 files and no SQL/migration/seed/purge/env/archive artifact. Deployment `dpl_7Ux5BJabP5Ljowiq6d2B4zpB1hLr` is Ready and aliased to the main URL. Live index, server-time, main and Admin assets return 200 with the intended loading/account markers.
+- During the deploy window account counts changed from 37/37 to 32/32, consistent with concurrent Admin cleanup rather than the frontend package (which invokes no delete on load). Postdeploy audit has zero inactive profiles, Auth/profile orphans, tombstoned Auth users or orphan identities. Do not restore the five intentionally/concurrently removed accounts.
+
+## Active diagnosis — BUG-071 schedule/attendance mismatch
+
+- Owner screenshots show Phạm Đình Phát scheduled 09:00–13:00 on 2026-07-18 while attendance shows both 09:00–13:00 and an open 09:00–17:00 row checked in at 09:02.
+- Production read-only audit proves the 09:00–17:00 registration `0a054d1f-4a55-4909-83e3-bcf118ca4cef` was created 2026-07-13 and is the exact foreign-key owner of attendance record `5c1a8847-e4d9-4ee1-9f13-9e66612c9e2a`. A second 09:00–13:00 registration was created at 09:47 local time on 2026-07-18 and has no attendance.
+- Root cause is `set_schedule_registration_safe`: it preserves any attended main registration, then inserts the newly selected shift. The board chooses the newest main registration while attendance renders both legitimate IDs. This is not a timezone, photo, GPS or realtime-read failure.
+- Do not mutate the current records until the owner confirms whether 09:00–17:00 or 09:00–13:00 is authoritative. Safe implementation direction for future edits is to reject a main-shift change once attendance exists and direct Admin to the audited correction flow; add a regression before migration.
+- The white-screen stale-chunk recovery is present in the deployed source, but Browser runtime discovery is still `[]`; a real signed-in reproduction remains unavailable. Old tabs may need one hard refresh to enter the new bundle, after which recognized stale chunks should auto-reload once.
+- Owner confirmed 09:00–13:00 as authoritative and requested a definitive fix. Migration `20260718_schedule_attendance_registration_sync.sql` replaces the RPC so an edit updates the one attended main registration in place, preserves attendance evidence, deletes only unattached duplicate main rows, blocks OFF after check-in and refuses ambiguous multiple-attended-main days.
+- During the repair window Phát checked in to the correct 09:00–13:00 registration at 10:01, so the first guarded repair correctly aborted when its expected “unattended replacement” condition was no longer true. A fresh audit proved two attendance rows; the revised exact-ID/time guarded transaction saved the stale 09:00–17:00 attendance/registration before-state to `control_audit_entries`, deleted only those two stale rows and preserved the correct 09:00–13:00 attendance.
+- Final production audit: 18/07 contains only registration `a2fdc682-bc53-448f-944c-61dcca1cb703` (09:00–13:00) and attendance `144a046e-0c5d-4b15-a0ea-46cae9c4f8ed` (local check-in 10:01, open). The 19/07 14:15–22:15 registration remains unchanged. BUG-071 is closed.
+
+## Active 2026-07-18 reliability/data-synchronization batch
+
+- Owner re-authorized migration audit, production deployment and GitHub publication. Production read-only predeploy baseline is 37 profiles, 280 attendance records, 367 registrations, 879 receipts/1,016 items, 832 stock movements, 57 bag sessions and 4 inventory reports; all eight required realtime tables remain published.
+- The latest-object audit proved only the nullable supply delivery columns/constraint were absent. Applied only `20260717_supply_request_delivery_schedule.sql` through targeted linked SQL; post-apply catalog audit proves both columns and `supply_requests_delivery_period_check` are installed. No history repair, bulk push, data update/delete or replay occurred.
+- Post-migration verification passed: eight focused regressions, app TypeScript, LAN syntax, `git diff --check`, 700-module production build and `PRODUCTION_SUPABASE_BUNDLE_OK (index-Bz5nGoeM.js)`. Next: deploy `manage-employee`, produce/inspect the Vercel prebuilt output, deploy production and run live/postdeploy read-only checks.
+- GitHub publication is currently blocked because required GitHub CLI `gh` is not installed; do not stage/commit the mixed worktree until the publish prerequisite is available.
+- `manage-employee` Edge Function deployed successfully. The inspected Vercel prebuilt output contains 123 files, the expected cron, zero SQL/migration/seed/purge/env/archive artifacts and passes the Supabase bundle guard. Production deployment `dpl_AamLCSkfjbCL9yQe94oNo2rSWwzW` is Ready and aliased to `https://gustino-operations.vercel.app`; live index, server-time and the new main/Kitchen/Orders assets all return 200.
+- Postdeploy read-only counts are 36 profiles/Auth users, 281 attendance records, 367 registrations, 886 receipts/1,023 items, 834 stock movements, 56 bag sessions and 4 inventory reports. Compared with the predeploy baseline, business rows increased while one synchronized Auth+profile and one bag session disappeared during the release window. The deployed package contains no database action and account audit proves 36/36 synchronization with zero orphan rows; treat these as concurrent production operations, not deployment-caused loss. No restore/recreation was attempted.
+- Owner requests less intrusive loading, account username/data synchronization, cake SKU linkage, migration reconciliation, reliable check-in/out and redeploy.
+- Pre-fix tests failed as expected. Targeted fixes now pass loading, account orphan, processing linkage/tombstone, attendance idempotency/native/mobile, supply schedule and app TypeScript regressions.
+- Read-only production account audit: 37 `auth.users`, 37 `profiles`, zero Auth-without-profile and zero profile-without-Auth. Source additionally proves the account list hid all inactive login profiles despite fetching them; this is fixed locally without adding inactive staff to operational reports. Do not delete or recreate a production account without an exact username.
+- Read-only cake audit: historical `cake-ready` movements remain; the system row has `deleted_at=2026-07-09`, while active custom `TP-BANH` (`custom-tp-banh`, unit `cái`, price-zero warehouse SKU) was created 2026-07-18. The UI filters mapped outputs through kg-only products and classifies every non-kg finished SKU as menu; BUG-069 is active. Do not rewrite prior movements, including 2026-07-17 cake inputs that were posted to chestnut output.
+- Read-only attendance audit: zero duplicate registration records, zero completed checkout evidence gaps, 19 currently open rows and 9 older than 18 hours. Preserve them for owner review; BUG-070 adds bounded retry and checkout read-back without changing evidence/business rules.
+- BUG-067 removed the 700 ms click pulse and delays the overlay until an associated fetch remains pending beyond 280 ms. Explicit auth/lazy route loaders remain.
+- BUG-068–070 are fixed locally; no synchronized account, product history or attendance history was mutated. Twenty focused/cross-module tests, TypeScript, LAN syntax, `git diff --check`, 700-module build and production Supabase bundle guard pass; only unchanged BUG-002 failed when deliberately executed. Browser discovery is `[]`.
+- Migration history is still unaligned; never bulk push/repair. The linked audit and Vercel prebuild escalations were rejected by the execution platform's tool-usage limit, so production remains unchanged. Resume only after fresh explicit approval/capacity: read-only runtime audit → apply only the reviewed nullable supply-delivery migration if absent → deploy `manage-employee` → rebuild/inspect Vercel output → deploy frontend → live read-only verification.
+
+## Active feature — MOD11/MOD12 requested delivery schedule and classified Kitchen history
+
+- Direct owner scope: order form captures desired receiving date and morning/noon/afternoon; both leader and Kitchen see order date plus receiving schedule; Kitchen exposes a review list filterable by status/date/period/search.
+- Direct owner status wording: Kitchen confirms then marks sent; leader must see both. Reuse current `acknowledged` and `fulfilled` states as `Bếp đã xác nhận` and `Bếp đã gửi`, preserving database enum and transitions.
+- New delivery columns must be nullable for historical records; legacy orders render `Chưa chọn` instead of fabricated dates. The migration/schema/LAN/Supabase paths all need the same fields.
+- Pre-fix `node scripts/test-supply-request-delivery-schedule.mjs` fails 24 expected assertions. Next: implement migration/model/LAN/Orders/Kitchen/history filters, then run pagination/business/UI/type/build regression. Owner authorized deploy and GitHub push after verification.
+
+## Active diagnosis — BUG-066 blank screen immediately after login
+
+- Owner screenshot: production `#kitchen` becomes entirely blank immediately after login and works only after manual reload.
+- Live read-only evidence: obsolete `/assets/KitchenPage-D0nm0nQ8.js` returns 404 while current `/assets/KitchenPage-BgTVD0Dy.js` returns 200. This matches a tab opened before deployment requesting its old lazy chunk only after login.
+- Source evidence: all business pages use raw `React.lazy`; Suspense only handles pending imports, not rejected imports; there is no route error boundary. `App` also renders `null` while correcting a route that the newly logged-in role cannot access.
+- Pre-fix `node scripts/test-login-lazy-route-recovery.mjs` fails ten expected assertions. Authorized fix scope is implementation-only: one automatic reload for recognized stale-chunk errors, marker cleanup after success, an actionable persistent-failure boundary and visible route-correction loading. Preserve all auth/session/role/permission/default-page logic.
+- In-app Browser runtime discovery returned `[]`; no alternate browser backend was used. Next: implement, run focused/auth/performance regressions and TypeScript/build, update tracking immediately. Do not deploy/push without owner request.
+
 ## Active implementation — MOD13 per-shift report close/Zalo intent
 
 - Direct owner rule: `Chốt báo cáo` is the business trigger for a future Zalo send. Ca 1 records only `shift-1`, completes its own handover and leaves Ca 2/day open; Ca 2 records `shift-2` plus `day` and closes that operation day.

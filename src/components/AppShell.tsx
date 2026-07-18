@@ -132,10 +132,9 @@ const OPERATION_GUIDE_ITEMS: Array<{
   { id: 'inventory', label: 'Kho & rang', shortLabel: 'Kho', icon: '2', canShow: (user) => canUseOperations(user.role) },
   { id: 'sales', label: 'Bán hàng', shortLabel: 'Bán', icon: '3', canShow: (user) => canUseOperations(user.role) || canUseSales(user.role) },
   { id: 'handover', label: 'Bàn giao ca', shortLabel: 'Bàn giao', icon: '4', canShow: (user) => canUseOperations(user.role) },
-  { id: 'report', label: 'Báo cáo cuối ngày', shortLabel: 'Báo cáo', icon: '5', canShow: (user) => canUseOperations(user.role) },
 ]
 
-const OPERATION_GUIDE_PAGES: Page[] = ['today', 'inventory', 'sales', 'handover', 'report']
+const OPERATION_GUIDE_PAGES: Page[] = ['today', 'inventory', 'sales', 'handover']
 
 const EN_NAV_LABELS: Partial<Record<Page, { label: string; shortLabel?: string }>> = {
   dashboard: { label: 'Revenue' },

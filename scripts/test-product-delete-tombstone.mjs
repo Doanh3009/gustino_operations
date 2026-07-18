@@ -16,7 +16,7 @@ if (!products.includes('markConfiguredProductDeleted(deletedProduct)')) failures
 if (!constants.includes('options.filter((option) => currentProductIds.has(option.productId))')) failures.push('Danh sách đóng gói vẫn có thể hiện SKU đã xóa.')
 const inboundProductsBody = sourceBetween(constants, 'export function getInboundProducts()', '\n}\n\n// Nguyên liệu đưa vào chế biến')
 if (inboundProductsBody.includes('baseConfiguredProducts()')) failures.push('Danh sách nhập kho vẫn có fallback làm SKU hệ thống đã xóa xuất hiện lại.')
-if (!inventory.includes('.map((id) => finishedBulkProducts.find((product) => product.id === id))')) failures.push('Danh sách thành phẩm chế biến vẫn tra cứu cả SKU tombstone.')
+if (!inventory.includes('getProcessingOutputOptions(inputId)')) failures.push('Danh sách thành phẩm chế biến chưa dùng helper chỉ tra cứu SKU đang hoạt động.')
 
 const calculateStockBody = sourceBetween(
   store,

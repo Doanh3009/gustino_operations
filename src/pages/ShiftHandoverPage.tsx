@@ -287,8 +287,8 @@ export function ShiftHandoverPage({
       if (openingPhotoSynced) setOpeningPhoto('')
       if (closingPhotoSynced) setClosingPhoto('')
       setFeedback(openSession.sequence >= 2
-        ? `Đã chốt ${shiftLabel(openSession.sequence)}. Chuyển sang báo cáo cuối ngày để chốt doanh thu và đóng ngày.`
-        : `Đã chốt ${shiftLabel(openSession.sequence)}. Tồn thành phẩm sẽ thành tồn đầu ca 2.`)
+        ? `Đã chốt ${shiftLabel(openSession.sequence)}. Đang tạo báo cáo Ca 2 và Tổng ngày.`
+        : `Đã chốt ${shiftLabel(openSession.sequence)}. Đang tạo báo cáo Ca 1 để bàn giao Ca 2.`)
       await Promise.all([refresh(), onChanged()])
       options.afterClose?.()
     } catch (error) {
@@ -433,11 +433,18 @@ export function ShiftHandoverPage({
               <button
                 className="primary-button wide"
                 disabled={busy}
-                onClick={() => openSession.sequence >= 2
-                  ? void handleCloseShift({ afterClose: () => onNavigate('report') })
-                  : void handleCloseShift()}
+                onClick={() => void handleCloseShift({
+                  afterClose: () => {
+                    window.sessionStorage.setItem('gustino:handover-report', JSON.stringify({
+                      shiftId: openSession.id,
+                      sequence: openSession.sequence,
+                      businessDate: today,
+                    }))
+                    onNavigate('report')
+                  },
+                })}
               >
-                {openSession.sequence >= 2 ? 'Báo cáo cuối ngày' : 'Chốt & bàn giao ca'}
+                {busy ? 'Đang chốt bàn giao…' : 'Chốt & bàn giao ca'}
               </button>
             </section>
           </div>
@@ -455,10 +462,6 @@ export function ShiftHandoverPage({
                 <span className="handover-history-photos">
                   {session.openingPhotoUrl ? <img src={session.openingPhotoUrl} alt={`${shiftLabel(session.sequence)} đầu ca`} /> : <em>Thiếu đầu ca</em>}
                   {session.closingPhotoUrl ? <img src={session.closingPhotoUrl} alt={`${shiftLabel(session.sequence)} cuối ca`} /> : <em>Thiếu cuối ca</em>}
-                </span>
-                <span className="handover-history-photo-actions">
-                  <PhotoPickers kind="opening" prefix={session.openingPhotoUrl ? 'Sửa đầu ca' : 'Bổ sung đầu ca'} compact onPick={(file) => void saveShiftPhoto('opening', file, session)} />
-                  <PhotoPickers kind="closing" prefix={session.closingPhotoUrl ? 'Sửa cuối ca' : 'Bổ sung cuối ca'} compact onPick={(file) => void saveShiftPhoto('closing', file, session)} />
                 </span>
               </span>
               <b>Đã bàn giao</b>
