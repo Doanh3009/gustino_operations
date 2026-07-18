@@ -107,15 +107,24 @@ async function authenticatedOperator(authorization: string | undefined) {
   const token = String(authorization || '').replace(/^Bearer\s+/i, '')
   const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL
   const anonKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY
+  console.log('[n8n-shift-photo] token exists:', Boolean(token), 'url exists:', Boolean(url), 'anonKey exists:', Boolean(anonKey))
   if (!token || !url || !anonKey) return null
   const authResponse = await fetch(`${url}/auth/v1/user`, { headers: { apikey: anonKey, Authorization: `Bearer ${token}` } })
-  if (!authResponse.ok) return null
+  console.log('[n8n-shift-photo] supabase auth status:', authResponse.status)
+  if (!authResponse.ok) {
+    const errText = await authResponse.text().catch(() => '')
+    console.log('[n8n-shift-photo] supabase auth error body:', errText.slice(0, 300))
+    return null
+  }
   const authUser = await authResponse.json()
+  console.log('[n8n-shift-photo] authUser id:', authUser?.id)
   const profileResponse = await fetch(`${url}/rest/v1/profiles?id=eq.${encodeURIComponent(authUser.id)}&select=id,role,active,name`, {
     headers: { apikey: anonKey, Authorization: `Bearer ${token}`, Accept: 'application/json' },
   })
+  console.log('[n8n-shift-photo] profile status:', profileResponse.status)
   if (!profileResponse.ok) return null
   const profiles = await profileResponse.json()
+  console.log('[n8n-shift-photo] profiles found:', profiles?.length, JSON.stringify(profiles))
   return profiles?.[0] ? { ...profiles[0], accessToken: token, supabaseUrl: url, anonKey } : null
 }
 
