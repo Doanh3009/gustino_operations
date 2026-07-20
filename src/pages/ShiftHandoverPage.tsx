@@ -7,6 +7,8 @@ import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordFo
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { formatLocalDate, localDateKey } from '../lib/dates'
 import { fetchConfiguredProducts } from '../lib/products'
+import { branchName as configuredBranchName } from '../lib/branches'
+import { notifyN8nShiftPhoto } from '../lib/n8nShiftPhoto'
 import type { Page } from '../components/AppShell'
 import {
   closeBagShift,
@@ -217,9 +219,26 @@ export function ShiftHandoverPage({
     }
     if (targetSession) {
       try {
-        await uploadBagShiftPhoto(user, targetSession, kind, dataUrl)
+       const updatedSession = await uploadBagShiftPhoto(user, targetSession, kind, dataUrl)
         await refresh()
-        setFeedback(kind === 'opening' ? 'Đã đồng bộ ảnh đầu ca vào sổ ca.' : 'Đã đồng bộ ảnh cuối ca vào sổ ca.')
+       setFeedback(kind === 'opening' ? 'Đã đồng bộ ảnh đầu ca vào sổ ca.' : 'Đã đồng bộ ảnh cuối ca vào sổ ca.')
+
+        if (kind === 'closing' && targetSession.status === 'closed' && updatedSession.closingPhotoUrl) {
+          void notifyN8nShiftPhoto(user, {
+            shiftId: targetSession.id,
+            branchId: targetSession.branchId,
+            branchName: configuredBranchName(targetSession.branchId),
+            businessDate: targetSession.businessDate,
+            shiftSequence: targetSession.sequence,
+            kind: 'closing',
+            photoUrl: updatedSession.closingPhotoUrl,
+          }).then((result) => {
+            if (!result.sent && result.mode !== 'skipped' && result.mode !== 'disabled') {
+              setFeedback(`Đã đồng bộ ảnh cuối ca, nhưng chưa gửi được sang n8n/Zalo: ${result.message || 'lỗi không rõ.'}`)
+            }
+          })
+        }
+
         return
       } catch (error) {
         setFeedback(error instanceof Error ? error.message : 'Không thể đồng bộ ảnh bàn giao.')
@@ -290,6 +309,22 @@ export function ShiftHandoverPage({
       setFeedback(openSession.sequence >= 2
         ? `Đã chốt ${shiftLabel(openSession.sequence)}. Đang tạo báo cáo Ca 2 và Tổng ngày.`
         : `Đã chốt ${shiftLabel(openSession.sequence)}. Đang tạo báo cáo Ca 1 để bàn giao Ca 2.`)
+      const closingPhotoUrl = openSession.closingPhotoUrl
+      if (closingPhotoUrl) {
+        void notifyN8nShiftPhoto(user, {
+          shiftId: openSession.id,
+          branchId: openSession.branchId,
+          branchName: configuredBranchName(openSession.branchId),
+          businessDate: openSession.businessDate,
+          shiftSequence: openSession.sequence,
+          kind: 'closing',
+          photoUrl: closingPhotoUrl,
+        }).then((result) => {
+          if (!result.sent && result.mode !== 'skipped' && result.mode !== 'disabled') {
+            setFeedback(`Đã chốt ca, nhưng chưa gửi được ảnh cuối ca sang n8n/Zalo: ${result.message || 'lỗi không rõ.'}`)
+          }
+        })
+      }
       await Promise.all([refresh(), onChanged()])
       options.afterClose?.()
     } catch (error) {

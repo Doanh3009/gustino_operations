@@ -81,6 +81,7 @@ async function fetchProductPrices(supabase: any): Promise<Map<string, number>> {
 function priceFor(productId: string, priceMap: Map<string, number>): number {
   return priceMap.get(productId) || defaultProductSalePrice(productId)
 }
+
 function productSaleValues(productId: string, quantity: number, priceMap: Map<string, number>) {
   const price = priceFor(productId, priceMap)
   return { price, revenue: Math.round(quantity * price) }
@@ -154,7 +155,7 @@ async function fetchReceiptsInRange(supabase: any, filters: Filters) {
     if (filters.from) query = query.gte('business_date', filters.from)
     if (filters.to) query = query.lte('business_date', filters.to)
     const { data, error } = await query
-if (error) throw new Error(`sales_receipts: ${error.message}`)
+    if (error) throw new Error(`sales_receipts: ${error.message}`)
     const page = data ?? []
     rows.push(...page)
     if (page.length < PAGE_SIZE) break
@@ -219,7 +220,7 @@ function liveAllocationRows(allocations: any[], priceMap: Map<string, number>): 
     if (!reportDate) return
     const sold = soldBagQuantity({
       soldQuantity: allocation.sold_quantity === null || allocation.sold_quantity === undefined
-? undefined : Number(allocation.sold_quantity),
+        ? undefined : Number(allocation.sold_quantity),
       settledAt: allocation.settled_at || undefined,
       issuedQuantity: Number(allocation.issued_quantity || 0),
       returnedQuantity: Number(allocation.returned_quantity || 0),
@@ -289,7 +290,7 @@ function liveMovementRows(movements: any[], priceMap: Map<string, number>): Dail
     const values = productSaleValues(movement.product_id, Number(movement.quantity || 0), priceMap)
     current.revenue += values.revenue
     current.totalSold += Number(movement.quantity || 0)
-if (movement.created_at > current.createdAt) current.createdAt = movement.created_at
+    if (movement.created_at > current.createdAt) current.createdAt = movement.created_at
     rows.set(key, current)
   })
   return Array.from(rows.values())
@@ -347,7 +348,8 @@ export default async function handler(req: any, res: any) {
   try {
     const supabase = getSupabaseAdmin()
     const filters: Filters = { branchId, from, to }
-const [rawSnapshots, priceMap, rawReceipts, rawAllocations, rawMovements] = await Promise.all([
+
+    const [rawSnapshots, priceMap, rawReceipts, rawAllocations, rawMovements] = await Promise.all([
       fetchSnapshots(supabase, filters),
       fetchProductPrices(supabase),
       fetchReceiptsInRange(supabase, filters),
