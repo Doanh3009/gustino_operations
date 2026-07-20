@@ -57,7 +57,10 @@ export async function queueN8nReportImages(user: AppUser, input: QueueInput): Pr
   }
 
   const jobs: Record<string, Record<string, unknown>> = {}
-  for (const report of input.reports) {
+let isFirst = true
+for (const report of input.reports) {
+  if (!isFirst) await new Promise((resolve) => setTimeout(resolve, 3000))
+  isFirst = false
     let response: Response
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), N8N_API_TIMEOUT_MS)
