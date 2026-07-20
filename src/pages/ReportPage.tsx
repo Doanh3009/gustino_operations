@@ -10,7 +10,7 @@ import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { localDateKey } from '../lib/dates'
 import { canvasToBlob, shareOrDownloadBlob } from '../lib/browser'
-import { createZaloReportIntent } from '../lib/reportDeliveryIntent'
+import { sendZaloShiftReports, type ZaloReportKind } from '../lib/zaloReports'
 import { queueN8nReportImages, type N8nQueueResult, type N8nReportKind } from '../lib/n8nReports'
 import type { InventoryTab, Page } from '../components/AppShell'
 import type { AppUser, AttendanceRecord, BagAllocation, BagShiftSession, ReportSnapshot, ShiftRegistration, StockMovement } from '../types'
@@ -95,7 +95,7 @@ interface ShiftReportRow {
   id: string
   sequence: number
   leaderName: string
-  status: BagShiftSession['status']
+status: BagShiftSession['status']
   startedAt: string
   endedAt?: string
   employeeCount: number
@@ -199,7 +199,7 @@ interface ReportLedgerData {
   snapshots: ReportSnapshot[]
 }
 
-export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
+export function ReportPage({ user, movements, onRefresh }: Props) {
   const infographicRef = useRef<HTMLDivElement>(null)
   const n8nDayPosterRef = useRef<HTMLDivElement>(null)
   const n8nShiftOnePosterRef = useRef<HTMLDivElement>(null)
@@ -214,15 +214,12 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
   const [finalized, setFinalized] = useState(false)
   const [bagSessions, setBagSessions] = useState<BagShiftSession[]>([])
   const [bagAllocations, setBagAllocations] = useState<BagAllocation[]>([])
-  const [shiftRegistrations, setShiftRegistrations] = useState<ShiftRegistration[]>([])
+const [shiftRegistrations, setShiftRegistrations] = useState<ShiftRegistration[]>([])
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([])
   const [salesReceipts, setSalesReceipts] = useState<SalesReceipt[]>([])
   const [employeeKpiTargets, setEmployeeKpiTargets] = useState<Record<string, number>>({})
   const [reportScope, setReportScope] = useState<ReportScope>('day')
   const [reportSnapshot, setReportSnapshot] = useState<ReportSnapshot | null>(null)
-  const handoverIntentRef = useRef(readHandoverReportIntent())
-  const autoFinalizeAttemptRef = useRef('')
-  const [handoverComplete, setHandoverComplete] = useState(false)
   const businessDate = localDateKey()
 
   async function loadReportLedger(): Promise<ReportLedgerData> {
@@ -287,7 +284,7 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
 
   useEffect(() => {
     const client = user.authToken ? null : supabase
-    if (!client) {
+if (!client) {
       const timer = window.setInterval(() => {
         void Promise.all([
           refreshLedger(),
@@ -359,7 +356,7 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
   const selectedShift = reportScope === 'day'
     ? undefined
     : bagSessions.find((item) => item.sequence === (reportScope === 'shift-1' ? 1 : 2))
-  const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
+const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
   const hasShiftTwo = bagSessions.some((item) => item.sequence === 2)
   const report = useMemo(() => {
     if (reportScope === 'day' || !selectedShift) return dailyReport
@@ -410,21 +407,20 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
             ? 'Ca 2 chỉ được chốt khi không còn ca nào đang mở, vì nút này đồng thời chốt Tổng ngày.'
             : ''
   const canFinalize = !finalizeBlockedReason
-  const finalizeActionLabel = leaderShiftSession?.sequence === 1
-    ? 'Chốt báo cáo Ca 1 & bàn giao Ca 2'
-    : leaderShiftSession?.sequence === 2
-      ? 'Chốt báo cáo Ca 2 & kết thúc ngày'
-      : 'Chốt báo cáo'
-  const automaticPosterScopes: ReportScope[] = leaderShiftSession?.sequence === 1
-    ? ['shift-1']
-    : leaderShiftSession?.sequence === 2
-      ? ['shift-2', 'day']
-      : []
+ const automaticPosterScopes: ReportScope[] = Array.from(new Set<ReportScope>([
+    ...(leaderShiftSession?.sequence === 1 ? ['shift-1' as ReportScope]
+      : leaderShiftSession?.sequence === 2 ? ['shift-2' as ReportScope]
+      : []),
+'day',
+  ]))
   const visibleMessage = friendlyReportMessage(message)
   const messageTone = reportMessageTone(message)
 
   async function queueCurrentReportImages(session: BagShiftSession, sendNow = false): Promise<N8nQueueResult> {
-    const reportKinds: N8nReportKind[] = session.sequence === 1 ? ['shift-1'] : ['shift-2', 'day']
+    const reportKinds: N8nReportKind[] = Array.from(new Set<N8nReportKind>([
+      session.sequence === 1 ? 'shift-1' : 'shift-2',
+      'day',
+    ]))
     const reports = []
     for (const kind of reportKinds) {
       const target = n8nPosterRefs[kind].current
@@ -475,8 +471,8 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
     }
   }
 
-  async function saveCloud(fromHandover = false) {
-    if (finalized && !fromHandover) {
+  async function saveCloud() {
+    if (finalized) {
       setMessage('Ngày đã kết thúc. Chúc cả đội ngủ ngon.')
       return
     }
@@ -490,7 +486,7 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
         .sort((a, b) => {
           if (a.status !== b.status) return a.status === 'closed' ? -1 : 1
           return b.sequence - a.sequence || b.startedAt.localeCompare(a.startedAt)
-        })[0]
+})[0]
       if (!freshLeaderShiftSession) {
         throw new Error('Không tìm thấy ca do bạn phụ trách trong ngày hôm nay.')
       }
@@ -514,21 +510,6 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
       const freshCanResumeSecondShiftFinalization = Boolean(
         freshIsSecondShiftFinalization && freshShiftReportEntry && !finalized,
       )
-      if (fromHandover && freshShiftReportEntry && (freshIsSecondShiftFinalization ? finalized : true)) {
-        await waitForReportPosters()
-        const delivery = await queueCurrentReportImages(freshLeaderShiftSession, true)
-        await saveShiftReportSnapshot(user, businessDate, {
-          ...freshShiftReportEntry,
-          n8nDelivery: { ...delivery, updatedAt: new Date().toISOString() },
-        })
-        await refreshLedger()
-        window.sessionStorage.removeItem('gustino:handover-report')
-        setHandoverComplete(true)
-        setMessage(freshIsSecondShiftFinalization
-          ? 'Đã chốt Ca 2 và Tổng ngày. Hai hình báo cáo đã được gửi tự động vào nhóm Zalo.'
-          : 'Đã chốt Ca 1. Hình báo cáo ca đã được gửi tự động vào nhóm Zalo.')
-        return
-      }
       if (freshShiftReportEntry && !freshCanResumeSecondShiftFinalization) {
         throw new Error(`Báo cáo Ca ${freshLeaderShiftSession.sequence} đã được chốt trước đó.`)
       }
@@ -548,14 +529,6 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
         businessDate,
         employeeKpiTargets,
       )
-      const zaloIntent = createZaloReportIntent({
-        branchId: user.branchId,
-        businessDate,
-        shiftId: freshLeaderShiftSession.id,
-        shiftSequence: freshLeaderShiftSession.sequence as 1 | 2,
-        requestedBy: user.id,
-        requestedByName: user.name,
-      })
       const shiftEntry = {
         shiftId: freshLeaderShiftSession.id,
         sequence: freshLeaderShiftSession.sequence,
@@ -563,7 +536,6 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
         leaderId: user.id,
         leaderName: user.name,
         report: shiftReport as unknown as Record<string, unknown>,
-        zaloIntent: zaloIntent as unknown as Record<string, unknown>,
       }
       if (freshIsSecondShiftFinalization) {
         const previousShiftReports = freshSnapshot?.payload.shiftReports || {}
@@ -579,7 +551,7 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
           reportDate: businessDate,
           state: freshDailyReport.legacyState,
           openingImage: freshDailyReport.proofImages.find((item) => item.label.includes('Đầu'))?.url || '',
-          closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.label.includes('Cuối'))?.url || '',
+closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.label.includes('Cuối'))?.url || '',
           bagShiftSummary: freshDailyReport.bagShiftSummary,
           dailyReport: freshDailyReport,
           summary: freshDailyReport.summary,
@@ -589,25 +561,50 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
       } else {
         await saveShiftReportSnapshot(user, businessDate, shiftEntry)
       }
-      await refreshLedger()
-      if (fromHandover) {
-        await waitForReportPosters()
-        const delivery = await queueCurrentReportImages(freshLeaderShiftSession, true)
-        await saveShiftReportSnapshot(user, businessDate, {
-          ...shiftEntry,
-          n8nDelivery: { ...delivery, updatedAt: new Date().toISOString() },
-        })
-        await refreshLedger()
-        window.sessionStorage.removeItem('gustino:handover-report')
-        setHandoverComplete(true)
-        setMessage(freshIsSecondShiftFinalization
-          ? 'Đã chốt Ca 2 và Tổng ngày. Hai hình báo cáo đã được gửi tự động vào nhóm Zalo.'
-          : 'Đã chốt Ca 1. Hình báo cáo ca đã được gửi tự động vào nhóm Zalo.')
-      } else {
-        setMessage(freshIsSecondShiftFinalization
-          ? 'Đã chốt Ca 2 và kết thúc ngày.'
-          : 'Đã đóng Ca 1, chốt báo cáo và bàn giao cho Ca 2.')
+
+      const reportKinds: ZaloReportKind[] = freshIsSecondShiftFinalization ? ['shift-2', 'day'] : ['shift-1']
+      const reports = reportKinds.map((kind) => {
+        const model = kind === 'day' ? freshDailyReport : shiftReport
+        return {
+          kind,
+          label: reportKindLabel(kind),
+          revenue: model.totals.revenue,
+          sold: model.totals.sold,
+          employeeCount: model.employeeRows.length,
+        }
+      })
+      let n8nResult: N8nQueueResult
+      try {
+        n8nResult = await queueCurrentReportImages(freshLeaderShiftSession)
+      } catch (error) {
+        n8nResult = {
+          queued: false,
+          mode: 'error',
+          message: error instanceof Error ? error.message : 'Không tạo được ảnh để đưa vào n8n.',
+          jobs: {},
+        }
       }
+      const zaloResult = n8nResult.mode === 'not-configured'
+        ? await sendZaloShiftReports(user, {
+            branchId: user.branchId,
+            branchName: freshDailyReport.branchName,
+            businessDate,
+            shiftId: freshLeaderShiftSession.id,
+            shiftSequence: freshLeaderShiftSession.sequence as 1 | 2,
+            reportKinds,
+            reports,
+          })
+        : null
+      await saveShiftReportSnapshot(user, businessDate, {
+        ...shiftEntry,
+        n8nDelivery: { ...n8nResult, updatedAt: new Date().toISOString() },
+        ...(zaloResult ? { zaloDelivery: { ...zaloResult } } : {}),
+      })
+      await refreshLedger()
+      const deliveryMessage = zaloResult?.message || n8nResult.message
+      setMessage(freshIsSecondShiftFinalization
+        ? `Đã chốt Ca 2 và Tổng ngày. ${deliveryMessage}`
+        : `Đã chốt báo cáo Ca 1. ${deliveryMessage}`)
     } catch (error) {
       const detail = error instanceof Error ? error.message : ''
       setMessage(detail ? `Không thể lưu báo cáo: ${detail}` : 'Không thể lưu báo cáo.')
@@ -615,16 +612,6 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
       setBusy(false)
     }
   }
-
-  useEffect(() => {
-    const intent = handoverIntentRef.current
-    if (!intent || intent.businessDate !== businessDate || !leaderShiftSession) return
-    if (intent.shiftId !== leaderShiftSession.id || leaderShiftSession.status !== 'closed') return
-    if (autoFinalizeAttemptRef.current === intent.shiftId) return
-    autoFinalizeAttemptRef.current = intent.shiftId
-    setMessage('Đang tạo và gửi hình báo cáo tự động…')
-    void saveCloud(true)
-  }, [businessDate, leaderShiftSession?.id, leaderShiftSession?.status])
 
   async function reopenDay() {
     if (!window.confirm('Mở lại ngày vận hành để bổ sung/sửa số liệu? Sau khi xong nhớ bấm Chốt báo cáo lại.')) return
@@ -636,7 +623,7 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
       await Promise.all([onRefresh(), refreshLedger()])
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Không thể mở lại ngày vận hành.')
-    } finally {
+} finally {
       setBusy(false)
     }
   }
@@ -693,7 +680,7 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
     <div className="report-page">
       <div className="report-toolbar">
         <div className="report-toolbar-summary">
-          <strong>{handoverComplete ? 'Bàn giao hoàn tất' : finalized ? 'Đã chốt Ca 2 và Tổng ngày' : `Báo cáo ${reportScopeLabel.toLowerCase()}`}</strong>
+          <strong>{finalized ? 'Đã chốt Ca 2 và Tổng ngày' : `Báo cáo ${reportScopeLabel.toLowerCase()}`}</strong>
         </div>
         <div className="report-toolbar-controls">
           <label className="report-scope-select">
@@ -711,17 +698,14 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
           </label>
 
           <div className="report-essential-actions">
-            <button className="secondary-button report-backup-image-button" onClick={() => void exportInfographicImage()} disabled={busy}>
-              Lưu ảnh
-            </button>
+<button className="secondary-button" onClick={() => void exportInfographicImage()} disabled={busy}>Tải ảnh</button>
             {shiftReportEntry && (
-              <button className="secondary-button" onClick={() => void sendReportToZalo()} disabled={busy}>
-                {busy ? 'Đang gửi…' : 'Gửi Zalo'}
-              </button>
+              <button className="secondary-button" onClick={() => void sendReportToZalo()} disabled={busy}>Gửi Zalo</button>
             )}
-            {handoverComplete
-              ? <button className="primary-button" onClick={() => onNavigate('today')}>Về màn hình chính</button>
-              : finalized
+            {(finalized || shiftReportEntry) && (
+              <button className="secondary-button report-share-zalo-button" onClick={() => void shareInfographicToZalo()} disabled={busy}>Chia sẻ ảnh Zalo</button>
+            )}
+            {finalized
               ? <button className="secondary-button report-reopen-button" onClick={() => void reopenDay()} disabled={busy}>Mở lại ngày</button>
               : shiftReportEntry && !canResumeSecondShiftFinalization
                 ? <span className="report-finalized-status">✓ Đã chốt Ca {leaderShiftSession?.sequence}</span>
@@ -731,7 +715,7 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
                     disabled={busy}
                     title={canFinalize ? undefined : finalizeBlockedReason}
                   >
-                    {busy ? 'Đang chốt…' : finalizeActionLabel}
+                    {busy ? 'Đang chốt…' : 'Chốt báo cáo'}
                   </button>}
           </div>
 
@@ -760,28 +744,6 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
   )
 }
 
-interface HandoverReportIntent {
-  shiftId: string
-  sequence: number
-  businessDate: string
-}
-
-function readHandoverReportIntent(): HandoverReportIntent | null {
-  try {
-    const value = window.sessionStorage.getItem('gustino:handover-report')
-    if (!value) return null
-    const parsed = JSON.parse(value) as Partial<HandoverReportIntent>
-    if (!parsed.shiftId || !parsed.businessDate || !Number.isFinite(parsed.sequence)) return null
-    return parsed as HandoverReportIntent
-  } catch {
-    return null
-  }
-}
-
-async function waitForReportPosters() {
-  await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())))
-}
-
 function ReportPoster({
   report,
   scopeLabel,
@@ -802,7 +764,7 @@ function ReportPoster({
 
   return (
     <div className={`rp-poster${density ? ` ${density}` : ''}`} ref={posterRef}>
-      <header className={`rp-head rp-tone-${tone}`}>
+<header className={`rp-head rp-tone-${tone}`}>
         <div className="rp-brand">
           <span>🌰 HẠT DẺ ÔNG LÝ</span>
           <h1>{report.branchName}</h1>
@@ -857,7 +819,7 @@ function ReportPoster({
                   </div>
                   <div className="rp-bar"><i style={{ width: `${Math.max(4, row.revenue / maxRevenue * 100)}%` }} /></div>
                   <div className="rp-racer-meta">
-                    <span>{formatNumber(row.sold)}/{formatNumber(row.issued)} sản phẩm</span>
+<span>{formatNumber(row.sold)}/{formatNumber(row.issued)} sản phẩm</span>
                     <span>Hạng {row.rank} · {row.kpi}% KPI</span>
                     <b>{formatMoney(row.revenue)}</b>
                   </div>
@@ -923,7 +885,7 @@ function ReportPoster({
         <span>GUSTINO · Hệ thống vận hành nội bộ</span>
         <span>Xuất {new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} · {report.dateLabel}</span>
       </footer>
-    </div>
+</div>
   )
 }
 
@@ -987,7 +949,7 @@ function buildDailyReport(
   const totalIssued = productRows.reduce((sum, item) => sum + item.issued, 0)
   const totalSold = productRows.reduce((sum, item) => sum + item.sold, 0)
   const totalReturned = productRows.reduce((sum, item) => sum + item.returned, 0)
-  const totalDamaged = productRows.reduce((sum, item) => sum + item.damaged, 0)
+const totalDamaged = productRows.reduce((sum, item) => sum + item.damaged, 0)
   const totalRevenue = productRows.reduce((sum, item) => sum + item.revenue, 0)
   const commission = employeeRows.reduce((sum, item) => sum + item.commission, 0)
   const processingRawKg = batchRows.reduce((sum, item) => sum + item.raw, 0)
@@ -1009,11 +971,9 @@ function buildDailyReport(
   const closedShiftCount = todaySessions.filter((item) => item.status === 'closed').length
   const openShiftCount = todaySessions.filter((item) => item.status === 'open').length
   const outstandingCount = todayAllocations.filter((item) => !item.settledAt).length
-  const morningSession = todaySessions.find((item) => item.sequence === 1)
-  const eveningSession = todaySessions.find((item) => item.sequence === 2)
-  const morningLeaderName = resolveShiftLeaderName(morningSession, todayRegistrations, todayAttendanceRecords)
-  const eveningLeaderName = resolveShiftLeaderName(eveningSession, todayRegistrations, todayAttendanceRecords)
-  const leaderNames = unique([morningLeaderName, eveningLeaderName].filter(Boolean))
+  const leaderNames = unique(todaySessions.map((item) => item.leaderName).filter(Boolean))
+  const morningLeaderName = todaySessions.find((item) => item.sequence === 1)?.leaderName || ''
+  const eveningLeaderName = todaySessions.find((item) => item.sequence === 2)?.leaderName || ''
   const blockingIssues = [
     openShiftCount > 0 ? `Còn ${openShiftCount} ca bàn giao quầy đang mở.` : '',
   ].filter(Boolean)
@@ -1026,7 +986,7 @@ function buildDailyReport(
     todayRegistrations.some((registration) => {
       const record = findAttendanceRecordForRegistration(todayAttendanceRecords, registration)
       return record && !record.checkOutTime
-    }) ? 'Có nhân viên đã check-in nhưng chưa check-out. Giờ công sẽ cập nhật tiếp khi nhân viên kết ca.' : '',
+}) ? 'Có nhân viên đã check-in nhưng chưa check-out. Giờ công sẽ cập nhật tiếp khi nhân viên kết ca.' : '',
   ].filter(Boolean)
   const legacyPatch = buildOperationalReportPatch(user, movements, businessDate)
   const legacyState = mergeBagSalesIntoReportState({
@@ -1092,33 +1052,6 @@ function buildDailyReport(
   }
 }
 
-function resolveShiftLeaderName(
-  session: BagShiftSession | undefined,
-  registrations: ShiftRegistration[],
-  attendanceRecords: AttendanceRecord[],
-) {
-  if (!session) return ''
-  const sessionStart = new Date(session.startedAt).getTime()
-  const sessionEnd = session.endedAt ? new Date(session.endedAt).getTime() : Number.POSITIVE_INFINITY
-  const attendedLeader = registrations
-    .filter((registration) => registration.employmentType === 'leader' && registration.status !== 'rejected')
-    .map((registration) => ({
-      registration,
-      attendance: findAttendanceRecordForRegistration(attendanceRecords, registration),
-    }))
-    .filter((item) => {
-      if (!item.attendance) return false
-      const checkIn = new Date(item.attendance.checkInTime).getTime()
-      const checkOut = item.attendance.checkOutTime
-        ? new Date(item.attendance.checkOutTime).getTime()
-        : Number.POSITIVE_INFINITY
-      return checkIn <= sessionEnd && checkOut >= sessionStart
-    })
-    .sort((a, b) => Math.abs(new Date(a.attendance!.checkInTime).getTime() - sessionStart)
-      - Math.abs(new Date(b.attendance!.checkInTime).getTime() - sessionStart))[0]
-  return attendedLeader?.registration.userName || session.leaderName
-}
-
 function allocationBusinessDate(allocation: BagAllocation, sessions: BagShiftSession[]) {
   if (allocation.businessDate) return allocation.businessDate
   const session = sessions.find((item) => item.id === allocation.shiftId || item.id === allocation.settlementShiftId)
@@ -1139,7 +1072,7 @@ function buildShiftRows(sessions: BagShiftSession[], allocations: BagAllocation[
       startedAt: session.startedAt,
       endedAt: session.endedAt,
       employeeCount: employees.size,
-      issued: rows.reduce((sum, item) => sum + item.issuedQuantity, 0),
+issued: rows.reduce((sum, item) => sum + item.issuedQuantity, 0),
       sold,
       returned: rows.reduce((sum, item) => sum + item.returnedQuantity, 0),
       damaged: rows.reduce((sum, item) => sum + item.damagedQuantity, 0),
@@ -1207,7 +1140,7 @@ function buildProductReportRows(allocations: BagAllocation[]): ProductReportRow[
     const sold = soldQuantity(allocation)
     current.issued += allocation.issuedQuantity
     current.sold += sold
-    current.returned += allocation.returnedQuantity
+current.returned += allocation.returnedQuantity
     current.damaged += allocation.damagedQuantity
     current.outstanding += allocation.settledAt ? 0 : allocation.issuedQuantity
     current.remaining += Math.max(0, allocation.issuedQuantity - sold - allocation.damagedQuantity)
@@ -1266,13 +1199,17 @@ function buildEmployeeRows(
   const rows = new Map<string, EmployeeReportRow & { productMap: Map<string, EmployeeProductRow> }>()
   const registrationByEmployee = new Map(registrations.map((item) => [item.userId, item]))
   const registrationByName = new Map(registrations.map((item) => [normalizeName(item.userName), item]))
+  const registeredRowKeys = new Set(registrations.flatMap((item) => [
+    `${item.branchId}|${item.userId}`,
+    `${item.branchId}|${normalizeName(item.userName)}`,
+  ]))
   const ensureRow = (
     branchId: string,
     employeeKey: string,
     employeeName: string,
     registration?: ShiftRegistration,
   ) => {
-    const key = `${branchId}|${employeeKey}`
+const key = `${branchId}|${employeeKey}`
     const current = rows.get(key)
     if (current) return current
     const attendance = employeeAttendanceSummary(employeeKey, registrations, attendanceRecords)
@@ -1349,7 +1286,7 @@ function buildEmployeeRows(
     )
     current.achievedCommission = current.revenue >= current.targetRevenue
     const product = productById(allocation.productId)
-    const productRow = current.productMap.get(allocation.productId) || {
+const productRow = current.productMap.get(allocation.productId) || {
       productId: allocation.productId,
       name: product?.name || allocation.productId,
       issued: 0,
@@ -1419,6 +1356,10 @@ function buildEmployeeRows(
   })
 
   return Array.from(rows.values())
+    .filter((row) => {
+      const branchId = row.key.split('|')[0]
+return registeredRowKeys.has(row.key) || registeredRowKeys.has(`${branchId}|${normalizeName(row.name)}`)
+    })
     .map(({ productMap, ...row }) => ({
       ...row,
       kpi: Math.min(200, Math.round(row.revenue / Math.max(1, row.targetRevenue) * 100)),
@@ -1490,7 +1431,7 @@ function buildStockRows(movements: StockMovement[], branchId: string, businessDa
 function groupProductQuantities(rows: StockMovement[]): ProductQuantityRow[] {
   const grouped = new Map<string, ProductQuantityRow & { documentIds: Set<string> }>()
   rows.forEach((row) => {
-    const product = productById(row.productId)
+const product = productById(row.productId)
     const current = grouped.get(row.productId) || {
       productId: row.productId,
       name: product?.name || row.productId,
@@ -1579,7 +1520,7 @@ function groupByDocument(rows: StockMovement[]) {
 
 function summarizeMovementProducts(rows: StockMovement[]) {
   if (!rows.length) return 'Chưa ghi nhận'
-  return rows.map((item) => {
+return rows.map((item) => {
     const product = productById(item.productId)
     return `${formatNumber(item.quantity)} ${product?.unit || ''} ${product?.name || item.productId}`
   }).join(' · ')
@@ -1665,7 +1606,7 @@ function buildProofImages(sessions: BagShiftSession[], branchId: string, busines
   const sorted = [...sessions]
     .filter((item) => item.businessDate === businessDate)
     .sort((a, b) => a.sequence - b.sequence)
-  const images = sorted.flatMap((session) => [
+const images = sorted.flatMap((session) => [
     {
       key: `${session.id}-opening`,
       label: `${shiftLabel(session.sequence)} · Đầu ca`,
@@ -1744,7 +1685,7 @@ function blobToBase64(blob: Blob) {
     const reader = new FileReader()
     reader.onload = () => {
       const result = String(reader.result || '')
-      const comma = result.indexOf(',')
+const comma = result.indexOf(',')
       if (comma < 0) reject(new Error('Không đọc được dữ liệu infographic.'))
       else resolve(result.slice(comma + 1))
     }
