@@ -17,6 +17,9 @@ const staff = {
   id: `qa-staff-${Date.now()}`,
   name: 'Nhan vien QA',
   role: 'staff',
+  branchId,
+  branchIds: [branchId],
+  authToken: 'qa-staff-token',
 }
 
 const browser = await chromium.launch({
@@ -37,9 +40,8 @@ try {
   await seedShiftPrerequisites(page)
   await page.reload({ waitUntil: 'networkidle' })
   await page.locator('.handover-page').waitFor()
-
-  await page.getByRole('button', { name: 'Nhận ca', exact: true }).click()
   await page.locator('.handover-shift-chip.open').waitFor()
+  await page.getByText('Ca sáng đang mở', { exact: true }).waitFor()
 
   await seedSalesReceipt(page)
   await page.reload({ waitUntil: 'networkidle' })
@@ -51,13 +53,15 @@ try {
   const firstCountInput = page.locator('.handover-count-grid input').first()
   await firstCountInput.fill('12')
   await page.getByRole('button', { name: 'Chốt & bàn giao ca' }).click()
-  await page.locator('.handover-history').waitFor()
+  await page.locator('.report-page').waitFor()
 
-  await page.getByRole('button', { name: 'Nhận ca', exact: true }).click()
+  await page.goto(`${baseUrl}/#handover`, { waitUntil: 'networkidle' })
+  await page.locator('.handover-page').waitFor()
   await page.locator('.handover-shift-chip.open').waitFor()
+  await page.getByText('Ca tối đang mở', { exact: true }).waitFor()
   await page.locator('.handover-count-grid input').first().waitFor()
 
-  await page.getByRole('button', { name: 'Báo cáo cuối ngày' }).click()
+  await page.getByRole('button', { name: 'Chốt & bàn giao ca' }).click()
   await page.locator('.report-page').waitFor()
 
   console.log('HANDOVER_QA_OK')
@@ -84,9 +88,12 @@ async function seedShiftPrerequisites(page) {
   })
   const leaderRegistration = buildRegistration(leader.id, leader.name)
   const staffRegistration = buildRegistration(staff.id, staff.name)
-  for (const registration of [leaderRegistration, staffRegistration]) {
+  for (const [registration, registrant] of [
+    [leaderRegistration, leader],
+    [staffRegistration, staff],
+  ]) {
     const response = await page.request.post(`${baseUrl}/api/attendance/registrations`, {
-      headers,
+      headers: headersFor(registrant),
       data: registration,
     })
     if (!response.ok()) throw new Error(`Khong the tao ca QA: ${await response.text()}`)
@@ -107,7 +114,7 @@ async function seedShiftPrerequisites(page) {
 
 async function seedSalesReceipt(page) {
   const response = await page.request.post(`${baseUrl}/api/sales-receipts`, {
-    headers: headersFor({ ...staff, branchId, branchIds: [branchId], authToken: 'qa-staff-token' }),
+    headers: headersFor(staff),
     data: {
       id: crypto.randomUUID(),
       code: `HDQA-${Date.now()}`,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   buildAttendanceReport,
   buildAttendanceDetailRows,
@@ -10,37 +10,53 @@ import {
   fetchShiftRegistrations,
   fetchWorkShifts,
   hardDeleteEmployeeAccount,
+  ensureDefaultWorkShifts,
   permittedBranchIds,
   resetEmployeePassword,
   updateAttendanceRecordByAdmin,
   updateEmployeeDetails,
+  updateEmployeeCrmDetails,
   updateEmployeeRole,
 } from '../lib/attendance'
 import { formatDecimalHoursAsDuration, formatWorkDurationBetween } from '../lib/workDuration'
 import { employeePositionLabel, roleLabel } from '../lib/access'
 import { useLang } from '../lib/i18n'
 import { PRODUCTS, getPackingOptionsByOutput, getProducts, productById } from '../lib/constants'
-import { branchName as configuredBranchName, useConfiguredBranches } from '../lib/branches'
+import { branchName as configuredBranchName, syncConfiguredBranchRows, useConfiguredBranches, writeConfiguredBranchRows, type ConfigBranch } from '../lib/branches'
 import { downloadBlob, shareOrDownloadBlob } from '../lib/browser'
 import { calculateStock, fetchInventoryReports, fetchMovements, fetchReportSnapshots } from '../lib/store'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { fetchBagAllocations, fetchBagShiftSessions } from '../lib/shiftLedger'
-import { buildShiftLeaderRevenueRows } from '../lib/shiftCompetition'
+import { buildShiftLeaderReceiptSources, buildShiftLeaderRevenueRows } from '../lib/shiftCompetition'
+import { buildEmployeeCompetitionRevenueSources } from '../lib/competitionDrilldown'
+import {
+  buildCompetitionAttendanceMetrics,
+  competitionDateKeys,
+  competitionDayMatches,
+  filterCompetitionAttendanceRecords,
+  type CompetitionDayType,
+} from '../lib/competitionFairness'
+import { buildKpiEvidenceWorkbook, type KpiEvidenceSourceRow } from '../lib/kpiEvidenceWorkbook'
 import { DEFAULT_COMMISSION_RATE, DEFAULT_REVENUE_TARGET, dailyKpiBonus, employeeKpiKey, employeePeriodRevenueTarget, kpiRank, loadEmployeeRevenueTargets, fetchCommissionRules, fetchEmployeeKpiTargets, productSaleValues, saveCommissionRule, saveEmployeeRevenueTarget, soldBagQuantity, summarizeEmployeeBagSales, weeklyKpiBonus } from '../lib/commission'
 import { buildDailyRevenueRows } from '../lib/revenue'
-import { fetchPayrollEntries, fetchRoleSalaryDefaults, upsertPayrollEntry, upsertRoleSalaryDefault, type PayrollEntry, type RoleSalaryDefault } from '../lib/payroll'
+import { fetchEmployeePayrollHistory, fetchPayrollEntries, fetchRoleSalaryDefaults, upsertPayrollEntry, upsertRoleSalaryDefault, type PayrollEntry, type RoleSalaryDefault } from '../lib/payroll'
 import { fetchSalesReceiptsRange, type SalesReceipt } from '../lib/salesReceipts'
 import { emailToUsername, validateUsername } from '../lib/authIdentity'
-import { fetchSupplyRequests, acknowledgeSupplyRequest, updateSupplyRequestStatus, type SupplyRequest } from '../lib/supplyRequests'
+import { fetchSupplyRequests, type SupplyRequest } from '../lib/supplyRequests'
 import { fetchActiveUsers } from '../lib/activeUsers'
 import { AttendanceAdjustmentArchive } from '../components/AttendanceAdjustmentArchive'
+import { BranchesPage } from './admin/BranchesPage'
+import { DashboardPage } from './admin/DashboardPage'
+import { EmployeesPage } from './admin/EmployeesPage'
 import type {
   ActiveUserSession,
   AppUser,
   AttendanceRecord,
   BagAllocation,
   BagShiftSession,
+  Branch,
   EmployeeProfile,
+  EmploymentStatus,
   EmploymentType,
   InventoryReport,
   Product,
@@ -52,6 +68,29 @@ import type {
 } from '../types'
 
 export type AdminSection = 'overview' | 'attendance' | 'commission' | 'payroll' | 'inventory' | 'requests' | 'accounts' | 'revenue'
+type EmployeeProfileRoute = 'overview' | 'attendance' | 'sales' | 'payroll' | 'account'
+type BranchProfileRoute = 'overview' | 'revenue' | 'employees' | 'attendance' | 'inventory' | 'requests'
+
+function adminRouteFromHash() {
+  const parts = window.location.hash.replace(/^#\/?/, '').split('/')
+  const kind = parts[1]
+  const id = decodeURIComponent(parts[2] || '')
+  const detail = parts[3] || 'overview'
+  const employeeTabs: EmployeeProfileRoute[] = ['overview', 'attendance', 'sales', 'payroll', 'account']
+  const branchTabs: BranchProfileRoute[] = ['overview', 'revenue', 'employees', 'attendance', 'inventory', 'requests']
+  return {
+    directory: kind === 'branches' ? 'branches' as const : 'employees' as const,
+    employeeId: kind === 'employees' ? id : '',
+    branchId: kind === 'branches' ? id : '',
+    employeeTab: employeeTabs.includes(detail as EmployeeProfileRoute) ? detail as EmployeeProfileRoute : 'overview',
+    branchTab: branchTabs.includes(detail as BranchProfileRoute) ? detail as BranchProfileRoute : 'overview',
+  }
+}
+
+function navigateAdminHash(path: string) {
+  const nextHash = `#${path}`
+  if (window.location.hash !== nextHash) window.location.hash = nextHash
+}
 
 const INVENTORY_EXCEL_QUANTITY_FORMAT = '0.####'
 const INVENTORY_EXCEL_INTEGER_FORMAT = '0'
@@ -65,24 +104,6 @@ const ADMIN_SECTIONS: Array<{ id: AdminSection; icon: string }> = [
   { id: 'inventory', icon: '▦' },
   { id: 'requests', icon: '↑' },
   { id: 'accounts', icon: '⊕' },
-]
-
-const MANAGEMENT_FUNCTIONS: Array<{
-  id: string
-  section: AdminSection
-  icon: string
-  label: string
-  description: string
-  tone: string
-}> = [
-  { id: 'business', section: 'revenue', icon: '▤', label: 'Tình hình kinh doanh', description: 'Doanh thu, hóa đơn và so sánh chi nhánh theo kỳ', tone: 'gold' },
-  { id: 'branch_compare', section: 'revenue', icon: '▧', label: 'So sánh chi nhánh', description: 'Xếp hạng doanh thu từng điểm bán', tone: 'purple' },
-  { id: 'best_sellers', section: 'commission', icon: '▥', label: 'Mặt hàng bán chạy', description: 'Sản phẩm và nhân viên bán tốt theo POS', tone: 'purple' },
-  { id: 'employee_revenue', section: 'commission', icon: '○', label: 'Doanh thu nhân viên', description: 'KPI và sản phẩm bán từng nhân viên', tone: 'orange' },
-  { id: 'inventory_overview', section: 'inventory', icon: '▦', label: 'Tồn kho chi nhánh', description: 'Tồn đầu, nhập xuất, hao hụt và tồn cuối kỳ', tone: 'dark' },
-  { id: 'attendance', section: 'attendance', icon: '◉', label: 'Bảng công nhân viên', description: 'Ca làm, giờ công, đi trễ và quên check-out', tone: 'blue' },
-  { id: 'payroll', section: 'payroll', icon: '◇', label: 'KPI nhân viên', description: 'Doanh thu từng ca, tỷ lệ đạt KPI và thưởng ngày', tone: 'pink' },
-  { id: 'kitchen_orders', section: 'requests', icon: '↑', label: 'Đặt hàng', description: 'Tổng hợp yêu cầu đặt bếp/nhập hàng theo ngày', tone: 'violet' },
 ]
 
 const ADMIN_TEXT = {
@@ -205,6 +226,7 @@ const ADMIN_TEXT_EN = {
 
 const ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
   { value: 'kitchen', label: 'Bếp' },
+  { value: 'cashier', label: 'Thu ngân POS' },
   { value: 'staff', label: 'Nhân viên' },
   { value: 'shift_leader', label: 'Ca trưởng' },
   { value: 'manager', label: 'Quản lý' },
@@ -224,6 +246,7 @@ interface PayrollDraft {
 // Manager/admin/kitchen là vai trò giám sát hoặc hỗ trợ, không tham gia KPI bán hàng.
 const PAYROLL_ROLES: Role[] = ['shift_leader', 'staff']
 const ATTENDANCE_EDIT_PAGE_SIZE = 20
+type CompetitionRoleFilter = 'all' | 'staff' | 'shift_leader'
 
 const emptyPayrollDraft: PayrollDraft = {
   hourlyRate: '',
@@ -244,6 +267,28 @@ function lastDayOfMonth(period: string) {
   return `${period}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
 }
 
+function competitionModeLabel(mode: 'daily' | 'monthly' | 'leaders') {
+  if (mode === 'daily') return 'Nhân viên theo ngày'
+  if (mode === 'leaders') return 'Ca trưởng theo tháng'
+  return 'Nhân viên theo tháng'
+}
+
+function competitionDayTypeLabel(filter: CompetitionDayType) {
+  if (filter === 'weekday') return 'Ngày thường (Thứ Hai–Thứ Sáu)'
+  if (filter === 'weekend') return 'Cuối tuần (Thứ Bảy–Chủ Nhật)'
+  return 'Tất cả ngày'
+}
+
+function cleanNonNegativeIntegerInput(value: string) {
+  return value.replace(/[^\d]/g, '')
+}
+
+function nonNegativeFilterNumber(value: string, fallback: number) {
+  if (!value.trim()) return fallback
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : fallback
+}
+
 type ManagementDataKey = 'employees' | 'shifts' | 'registrations' | 'records' | 'movements'
   | 'inventoryReports' | 'allocations' | 'sessions' | 'requests' | 'snapshots' | 'receipts'
 
@@ -253,7 +298,7 @@ const ALL_MANAGEMENT_DATA: ManagementDataKey[] = [
 ]
 
 function managementDataNeeds(section: AdminSection, focused: boolean) {
-  if (!focused || section === 'overview') return new Set<ManagementDataKey>(ALL_MANAGEMENT_DATA)
+  if (section === 'overview') return new Set<ManagementDataKey>(ALL_MANAGEMENT_DATA)
   const bySection: Record<AdminSection, ManagementDataKey[]> = {
     overview: ALL_MANAGEMENT_DATA,
     revenue: ['employees', 'movements', 'allocations', 'snapshots', 'receipts'],
@@ -262,13 +307,13 @@ function managementDataNeeds(section: AdminSection, focused: boolean) {
     payroll: ['employees', 'shifts', 'registrations', 'records', 'allocations', 'sessions', 'receipts'],
     inventory: ['employees', 'movements', 'inventoryReports', 'sessions', 'receipts'],
     requests: ['employees', 'requests'],
-    accounts: ['employees'],
+    accounts: ['employees', 'records', 'movements', 'requests', 'receipts'],
   }
   return new Set<ManagementDataKey>(bySection[section])
 }
 
 function managementRealtimeTables(section: AdminSection, focused: boolean) {
-  if (!focused || section === 'overview') return [
+  if (section === 'overview') return [
     'sales_receipts', 'sales_receipt_items', 'shift_registrations', 'attendance_records',
     'bag_allocations', 'bag_shift_sessions', 'stock_movements', 'operation_days',
     'inventory_reports', 'supply_requests', 'report_snapshots',
@@ -281,7 +326,7 @@ function managementRealtimeTables(section: AdminSection, focused: boolean) {
     payroll: ['sales_receipts', 'sales_receipt_items', 'shift_registrations', 'attendance_records', 'bag_allocations', 'bag_shift_sessions'],
     inventory: ['stock_movements', 'operation_days', 'inventory_reports', 'bag_shift_sessions', 'sales_receipts', 'sales_receipt_items'],
     requests: ['supply_requests'],
-    accounts: [],
+    accounts: ['sales_receipts', 'sales_receipt_items', 'attendance_records', 'stock_movements', 'supply_requests'],
   }
   return bySection[section]
 }
@@ -291,14 +336,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const text = lang === 'en' ? ADMIN_TEXT_EN : ADMIN_TEXT.vi
   const branches = useConfiguredBranches({ user })
   const initialRange = monthRange()
-  const [activeSection, setActiveSection] = useState<AdminSection>(initialSection || 'revenue')
-  const [activeFunctionId, setActiveFunctionId] = useState(() =>
-    MANAGEMENT_FUNCTIONS.find((item) => item.section === (initialSection || 'revenue'))?.id || MANAGEMENT_FUNCTIONS[1].id,
-  )
+  const [activeSection, setActiveSection] = useState<AdminSection>(initialSection || 'overview')
   useEffect(() => {
     if (!initialSection) return
     setActiveSection(initialSection)
-    setActiveFunctionId(MANAGEMENT_FUNCTIONS.find((item) => item.section === initialSection)?.id || MANAGEMENT_FUNCTIONS[1].id)
   }, [initialSection])
   const [employees, setEmployees] = useState<EmployeeProfile[]>([])
   const [shifts, setShifts] = useState<WorkShift[]>([])
@@ -330,10 +371,15 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [attendanceListPage, setAttendanceListPage] = useState(1)
   const [competitionRankingMode, setCompetitionRankingMode] = useState<'daily' | 'monthly' | 'leaders'>('daily')
   const [competitionDate, setCompetitionDate] = useState(todayKey)
+  const [competitionRoleFilter, setCompetitionRoleFilter] = useState<CompetitionRoleFilter>('all')
+  const [competitionDayType, setCompetitionDayType] = useState<CompetitionDayType>('all')
+  const [competitionMinShifts, setCompetitionMinShifts] = useState('')
+  const [competitionMaxShifts, setCompetitionMaxShifts] = useState('')
   const [savingRoleId, setSavingRoleId] = useState('')
   const [accountBusyId, setAccountBusyId] = useState('')
   const [pendingDeleteId, setPendingDeleteId] = useState('')
   const [pendingHardDeleteId, setPendingHardDeleteId] = useState('')
+  const [branchDeletingId, setBranchDeletingId] = useState('')
   const [employeeDrafts, setEmployeeDrafts] = useState<Record<string, {
     branchId: string
     employmentType: EmploymentType
@@ -358,8 +404,24 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [accountRole, setAccountRole] = useState<Exclude<Role, 'admin'>>('staff')
   const [accountEmploymentType, setAccountEmploymentType] = useState<EmploymentType>('part_time')
   const [accountPositionTitle, setAccountPositionTitle] = useState('Part-time')
-  const [crmEmployeeId, setCrmEmployeeId] = useState('')
-  const [crmBranchId, setCrmBranchId] = useState('')
+  const initialAdminRoute = adminRouteFromHash()
+  const [crmEmployeeId, setCrmEmployeeId] = useState(initialAdminRoute.employeeId)
+  const [crmBranchId, setCrmBranchId] = useState(initialAdminRoute.branchId)
+  const [accountsDirectory, setAccountsDirectory] = useState<'employees' | 'branches'>(initialAdminRoute.directory)
+  const [branchProfileTab, setBranchProfileTab] = useState<BranchProfileRoute>(initialAdminRoute.branchTab)
+  const [employeeProfileTab, setEmployeeProfileTab] = useState<EmployeeProfileRoute>(initialAdminRoute.employeeTab)
+  const [showCreateAccount, setShowCreateAccount] = useState(false)
+  const [showCreateBranch, setShowCreateBranch] = useState(false)
+  const [branchDraft, setBranchDraft] = useState({ id: '', name: '', address: '', manager: '' })
+  const [employeeCrmDraft, setEmployeeCrmDraft] = useState({
+    employmentStatus: 'working' as EmploymentStatus,
+    employmentStartDate: '',
+    probationEndDate: '',
+    employmentEndDate: '',
+    employmentNote: '',
+  })
+  const [employeePayrollHistory, setEmployeePayrollHistory] = useState<PayrollEntry[]>([])
+  const [employeeCrmSaving, setEmployeeCrmSaving] = useState(false)
   const [temporaryCredential, setTemporaryCredential] = useState<{ username: string; password: string } | null>(null)
   const [showSupplyReport, setShowSupplyReport] = useState(false)
   const [inventoryDetailBranchId, setInventoryDetailBranchId] = useState('')
@@ -383,6 +445,19 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const managementRefreshQueuedRef = useRef(false)
   const managementRefreshContextRef = useRef({ activeSection, focused, from, to, rankingMonthFrom, rankingMonthTo })
   managementRefreshContextRef.current = { activeSection, focused, from, to, rankingMonthFrom, rankingMonthTo }
+
+  useEffect(() => {
+    const syncAdminRoute = () => {
+      const route = adminRouteFromHash()
+      setCrmEmployeeId(route.employeeId)
+      setCrmBranchId(route.branchId)
+      setAccountsDirectory(route.directory)
+      setEmployeeProfileTab(route.employeeTab)
+      setBranchProfileTab(route.branchTab)
+    }
+    window.addEventListener('hashchange', syncAdminRoute)
+    return () => window.removeEventListener('hashchange', syncAdminRoute)
+  }, [])
 
   async function refresh(showLoading = true) {
     if (managementRefreshInFlightRef.current) {
@@ -435,7 +510,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       setSalesReceipts(nextSalesReceipts)
       setError('')
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu quản lý.')
+        if (showLoading) setError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu quản lý.')
       } finally {
         if (showLoading) setLoading(false)
       }
@@ -470,7 +545,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       void fetchActiveUsers(user).then((items) => {
         if (active) setActiveUsers(items)
       }).catch((reason) => {
-        if (active) setError(reason instanceof Error ? reason.message : 'Không thể đồng bộ danh sách người dùng online.')
+        // Presence is optional background context. Reconciliation keeps retrying
+        // without replacing the user's workspace with a recurring warning.
+        void reason
       })
     }
     loadActiveUsers()
@@ -598,6 +675,15 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     && (!employeeId || employee.id === employeeId)
     && (employee.hasLoginAccount !== false || Boolean(employee.email)),
   )
+  const unassignedEmployeeReceipts = salesReceipts.filter((receipt) => {
+    if (receipt.businessDate < from || receipt.businessDate > to) return false
+    if (receipt.sellerId) return !accountEmployees.some((employee) => employee.id === receipt.sellerId)
+    const matches = accountEmployees.filter((employee) =>
+      employee.branchId === receipt.branchId
+      && normalizeName(employee.name) === normalizeName(receipt.sellerName),
+    )
+    return matches.length !== 1
+  })
   const rangeRegistrations = registrations.filter((item) =>
     (!branchId || item.branchId === branchId)
     && (!employeeId || item.userId === employeeId)
@@ -859,44 +945,68 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     [bagAllocations, salesReceipts, payrollEmployees, attendanceDetailRows, branchId, from, to],
   )
   const monthlyCompetitionRows = useMemo(() => {
+    const includedDates = competitionDayType === 'all'
+      ? undefined
+      : competitionDateKeys(rankingMonthFrom, rankingMonthTo, competitionDayType)
     const rows = buildCommissionRows(
       bagAllocations.filter((item) => {
         const date = allocationReportDate(item)
-        return soldBagQuantity(item) > 0 && date >= rankingMonthFrom && date <= rankingMonthTo && (!branchId || item.branchId === branchId)
+        return soldBagQuantity(item) > 0
+          && date >= rankingMonthFrom && date <= rankingMonthTo
+          && competitionDayMatches(date, competitionDayType)
+          && (!branchId || item.branchId === branchId)
       }),
       payrollEmployees,
       [],
-      salesReceipts.filter((receipt) => receipt.businessDate >= rankingMonthFrom && receipt.businessDate <= rankingMonthTo && (!branchId || receipt.branchId === branchId)),
+      salesReceipts.filter((receipt) =>
+        receipt.businessDate >= rankingMonthFrom
+        && receipt.businessDate <= rankingMonthTo
+        && competitionDayMatches(receipt.businessDate, competitionDayType)
+        && (!branchId || receipt.branchId === branchId),
+      ),
       commissionRuleDrafts,
       employeeKpiDrafts,
       rankingMonthFrom,
       rankingMonthTo,
+      includedDates,
     )
-    return buildCompetitionRows(
-      rows,
-      registrations.filter((item) => item.workDate >= rankingMonthFrom && item.workDate <= rankingMonthTo && (!branchId || item.branchId === branchId)),
-      payrollEmployees,
-    ).slice(0, 10)
-  }, [bagAllocations, payrollEmployees, salesReceipts, registrations, commissionRuleDrafts, employeeKpiDrafts, branchId, rankingMonthFrom, rankingMonthTo])
+    const checkedInRecords = filterCompetitionAttendanceRecords(records, registrations, {
+      from: rankingMonthFrom,
+      to: rankingMonthTo,
+      dayType: competitionDayType,
+      branchId,
+    })
+    return buildCompetitionRows(rows, checkedInRecords, payrollEmployees)
+  }, [bagAllocations, payrollEmployees, salesReceipts, registrations, records, commissionRuleDrafts, employeeKpiDrafts, branchId, rankingMonthFrom, rankingMonthTo, competitionDayType])
   const dailyCompetitionRows = useMemo(() => {
+    const dateIncluded = competitionDayMatches(competitionDate, competitionDayType)
+    const includedDates = competitionDayType === 'all' ? undefined : dateIncluded ? [competitionDate] : []
     const rows = buildCommissionRows(
-      bagAllocations.filter((item) => allocationReportDate(item) === competitionDate && (!branchId || item.branchId === branchId)),
+      bagAllocations.filter((item) => dateIncluded && allocationReportDate(item) === competitionDate && (!branchId || item.branchId === branchId)),
       payrollEmployees,
       [],
-      salesReceipts.filter((receipt) => receipt.businessDate === competitionDate && (!branchId || receipt.branchId === branchId)),
+      salesReceipts.filter((receipt) => dateIncluded && receipt.businessDate === competitionDate && (!branchId || receipt.branchId === branchId)),
       commissionRuleDrafts,
       employeeKpiDrafts,
       competitionDate,
       competitionDate,
+      includedDates,
     )
-    return buildCompetitionRows(
-      rows,
-      registrations.filter((item) => item.workDate === competitionDate && (!branchId || item.branchId === branchId)),
-      payrollEmployees,
-    ).slice(0, 10)
-  }, [bagAllocations, payrollEmployees, salesReceipts, registrations, commissionRuleDrafts, employeeKpiDrafts, branchId, competitionDate])
+    const checkedInRecords = dateIncluded
+      ? filterCompetitionAttendanceRecords(records, registrations, {
+          from: competitionDate,
+          to: competitionDate,
+          dayType: competitionDayType,
+          branchId,
+        })
+      : []
+    return buildCompetitionRows(rows, checkedInRecords, payrollEmployees)
+  }, [bagAllocations, payrollEmployees, salesReceipts, registrations, records, commissionRuleDrafts, employeeKpiDrafts, branchId, competitionDate, competitionDayType])
   const leaderCompetitionRows = useMemo(() => {
-    return buildShiftLeaderRevenueRows(bagSessions, salesReceipts, {
+    return buildShiftLeaderRevenueRows(
+      bagSessions.filter((session) => competitionDayMatches(session.businessDate, competitionDayType)),
+      salesReceipts,
+      {
       branchIds: selectedBranches.map((branch) => branch.id),
       from: rankingMonthFrom,
       to: rankingMonthTo,
@@ -930,24 +1040,52 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           revenue: row.revenue,
           commission: 0,
           totalHours: 0,
+          shiftCount: row.shiftCount,
+          role: 'shift_leader' as Role,
+          targetRevenue: row.targetRevenue,
           progress: row.progress,
           rank: kpiRank(row.progress),
           score: Math.round(row.revenue / 10000 + row.progress),
           detail: `${row.shiftCount} ca · ${row.achievedShiftCount} ca đạt KPI`,
         }
       })
-      .slice(0, 10)
-  }, [bagSessions, salesReceipts, employees, branchId, rankingMonthFrom, rankingMonthTo, selectedBranches.length])
-  const competitionRankingRows = competitionRankingMode === 'daily'
+  }, [bagSessions, salesReceipts, employees, branchId, rankingMonthFrom, rankingMonthTo, selectedBranches.length, competitionDayType])
+  const competitionBaseRows = competitionRankingMode === 'daily'
     ? dailyCompetitionRows
     : competitionRankingMode === 'monthly'
       ? monthlyCompetitionRows
       : leaderCompetitionRows
-  const competitionRankingTitle = competitionRankingMode === 'daily'
+  const effectiveCompetitionRole = competitionRankingMode === 'leaders' ? 'shift_leader' : competitionRoleFilter
+  const minimumCompetitionShifts = nonNegativeFilterNumber(competitionMinShifts, 0)
+  const maximumCompetitionShifts = nonNegativeFilterNumber(competitionMaxShifts, Number.POSITIVE_INFINITY)
+  const competitionFilteredRows = competitionBaseRows.filter((row) =>
+    (effectiveCompetitionRole === 'all' || row.role === effectiveCompetitionRole)
+    && row.shiftCount >= minimumCompetitionShifts
+    && row.shiftCount <= maximumCompetitionShifts,
+  )
+  const competitionRankingRows = competitionFilteredRows.slice(0, 10)
+  const competitionRangeFrom = competitionRankingMode === 'daily' ? competitionDate : rankingMonthFrom
+  const competitionRangeTo = competitionRankingMode === 'daily' ? competitionDate : rankingMonthTo
+  const competitionEvidenceAllocations = useMemo(
+    () => bagAllocations.filter((item) => competitionDayMatches(allocationReportDate(item), competitionDayType)),
+    [bagAllocations, competitionDayType],
+  )
+  const competitionEvidenceReceipts = useMemo(
+    () => salesReceipts.filter((receipt) => competitionDayMatches(receipt.businessDate, competitionDayType)),
+    [salesReceipts, competitionDayType],
+  )
+  const competitionEvidenceSessions = useMemo(
+    () => bagSessions.filter((session) => competitionDayMatches(session.businessDate, competitionDayType)),
+    [bagSessions, competitionDayType],
+  )
+  const competitionRankingBaseTitle = competitionRankingMode === 'daily'
     ? `Nhân viên theo ngày ${formatDate(competitionDate)}`
     : competitionRankingMode === 'monthly'
       ? `Nhân viên theo tháng ${rankingPeriod}`
       : `Ca trưởng theo tháng ${rankingPeriod}`
+  const competitionRankingTitle = competitionDayType === 'all'
+    ? competitionRankingBaseTitle
+    : `${competitionRankingBaseTitle} · ${competitionDayTypeLabel(competitionDayType)}`
   const businessProductRows = useMemo(
     () => buildBusinessProductRows(salesReceipts, bagAllocations, {
       branchIds: selectedBranches.map((branch) => branch.id),
@@ -1012,22 +1150,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const periodRevenueRows = buildDailyRevenueRows(reportSnapshots, bagAllocations, movements, { branchId, from, to, receipts: salesReceipts })
   const adminRevenueTrendRows = buildAdminDailyTrendRows(periodRevenueRows, { from, to })
   const adminRevenueArea = buildAdminAreaChart(adminRevenueTrendRows, Math.max(...adminRevenueTrendRows.map((row) => row.revenue), 1))
-  const visibleManagementFunctions = user.role === 'admin'
-    ? MANAGEMENT_FUNCTIONS
-    : MANAGEMENT_FUNCTIONS.filter((item) => !['attendance', 'payroll', 'requests', 'accounts'].includes(item.section))
-  const activeFunction = visibleManagementFunctions.find((item) => item.id === activeFunctionId) || visibleManagementFunctions[0] || MANAGEMENT_FUNCTIONS[1]
-  const activeFunctionStats = buildFunctionStats(activeFunction.id, {
-    revenue: periodRevenueRows.reduce((sum, row) => sum + row.revenue, 0),
-    sold: periodRevenueRows.reduce((sum, row) => sum + row.totalSold, 0),
-    branches: selectedBranches.length,
-    employees: filteredEmployees.length,
-    lowStock: lowStockRows.length,
-    pendingRequests,
-    payroll: dailyKpiRows.reduce((sum, row) => sum + row.revenue, 0),
-    commission: commissionRows.reduce((sum, row) => sum + row.commission, 0),
-    waste: wasteRows.reduce((sum, row) => sum + row.quantity, 0),
-  })
-
   function setQuickRange(kind: 'today' | 'month' | 'previousMonth') {
     const range = kind === 'today' ? { from: localDateKey(), to: localDateKey() }
       : kind === 'month' ? monthRange()
@@ -1072,6 +1194,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       setAccountRole('staff')
       setAccountEmploymentType('part_time')
       setAccountPositionTitle('Part-time')
+      setShowCreateAccount(false)
       setFeedback(`Đã tạo tài khoản và mật khẩu cho ${employee.name}.`)
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : 'Không thể tạo tài khoản.'
@@ -1161,6 +1284,111 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     }))
   }
 
+  function openEmployeeCrm(employee: EmployeeProfile) {
+    navigateAdminHash(`/admin/employees/${encodeURIComponent(employee.id)}/overview`)
+    setCrmBranchId('')
+    setCrmEmployeeId(employee.id)
+    setEmployeeProfileTab('overview')
+  }
+
+  useEffect(() => {
+    if (!crmEmployeeId) return
+    const employee = employees.find((item) => item.id === crmEmployeeId)
+    if (!employee) return
+    setEmployeeCrmDraft({
+      employmentStatus: employee.employmentStatus || (employee.active === false ? 'ended' : 'working'),
+      employmentStartDate: employee.employmentStartDate || '',
+      probationEndDate: employee.probationEndDate || '',
+      employmentEndDate: employee.employmentEndDate || '',
+      employmentNote: employee.employmentNote || '',
+    })
+    setEmployeePayrollHistory([])
+    void fetchEmployeePayrollHistory(user, employee.id)
+      .then(setEmployeePayrollHistory)
+      .catch((reason) => setError(reason instanceof Error ? reason.message : 'Không thể tải lịch sử lương.'))
+  }, [crmEmployeeId, employees, user.id])
+
+  async function saveEmployeeCrm(employee: EmployeeProfile) {
+    setEmployeeCrmSaving(true)
+    try {
+      const updated = await updateEmployeeCrmDetails(user, employee.id, employeeCrmDraft)
+      setEmployees((items) => items.map((item) => item.id === employee.id ? { ...item, ...updated } : item))
+      setFeedback(`Đã cập nhật trạng thái việc làm của ${employee.name}.`)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Không thể cập nhật trạng thái việc làm.')
+    } finally {
+      setEmployeeCrmSaving(false)
+    }
+  }
+
+  async function createBranchFromCrm(event: React.FormEvent) {
+    event.preventDefault()
+    const name = branchDraft.name.trim()
+    const id = (branchDraft.id || name)
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    if (!id || !name) return
+    const branch: ConfigBranch = {
+      id,
+      name,
+      address: branchDraft.address.trim(),
+      manager: branchDraft.manager.trim(),
+      active: true,
+      source: 'custom',
+    }
+    const next: ConfigBranch[] = [
+      branch,
+      ...branches.filter((item) => item.id !== id).map((item) => ({
+        ...item,
+        address: 'address' in item ? String(item.address || '') : '',
+        manager: 'manager' in item ? String(item.manager || '') : '',
+        active: 'active' in item ? item.active !== false : true,
+        source: 'source' in item && item.source === 'custom' ? 'custom' as const : 'system' as const,
+      })),
+    ]
+    try {
+      await syncConfiguredBranchRows(user, next)
+      writeConfiguredBranchRows(next)
+      await ensureDefaultWorkShifts(user, branch)
+      setBranchDraft({ id: '', name: '', address: '', manager: '' })
+      setShowCreateBranch(false)
+      setFeedback(`Đã tạo chi nhánh ${name} và khung ca mặc định.`)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Không thể tạo chi nhánh.')
+    }
+  }
+
+  async function removeBranchFromOperations(branchToRemove: Branch) {
+    if (user.role !== 'admin') {
+      setError('Chỉ Admin hệ thống được xóa chi nhánh khỏi danh sách hoạt động.')
+      return
+    }
+    const confirmed = window.confirm(
+      `Xóa chi nhánh “${branchToRemove.name}” khỏi danh sách hoạt động?\n\n`
+      + 'Dữ liệu bán hàng, kho, chấm công, lương và báo cáo cũ vẫn được giữ nguyên. Chi nhánh có thể được mở lại sau.',
+    )
+    if (!confirmed) return
+    const next = branches.map((branch) => ({
+      ...branch,
+      address: 'address' in branch ? String(branch.address || '') : '',
+      manager: 'manager' in branch ? String(branch.manager || '') : '',
+      active: branch.id === branchToRemove.id ? false : ('active' in branch ? branch.active !== false : true),
+      source: 'source' in branch && branch.source === 'custom' ? 'custom' as const : 'system' as const,
+    }))
+    setBranchDeletingId(branchToRemove.id)
+    setError('')
+    try {
+      await syncConfiguredBranchRows(user, next)
+      writeConfiguredBranchRows(next)
+      if (branchId === branchToRemove.id) setBranchId('')
+      setFeedback(`Đã xóa chi nhánh ${branchToRemove.name} khỏi danh sách hoạt động. Dữ liệu lịch sử vẫn được giữ nguyên.`)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Không thể xóa chi nhánh khỏi danh sách hoạt động.')
+    } finally {
+      setBranchDeletingId('')
+    }
+  }
+
   async function saveEmployeeDetails(employee: EmployeeProfile) {
     const draft = employeeDraft(employee)
     setSavingEmployeeDetailsId(employee.id)
@@ -1221,26 +1449,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       && date >= from && date <= to
   })
 
-  async function handleAcknowledge(requestId: string) {
-    try {
-      await acknowledgeSupplyRequest(user, requestId)
-      setSupplyRequests((items) => items.map((r) => r.id === requestId ? { ...r, status: 'acknowledged' as const } : r))
-      setFeedback('Đã ghi nhận yêu cầu đặt hàng.')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Không thể cập nhật yêu cầu.')
-    }
-  }
-
-  async function handleCancelRequest(requestId: string) {
-    try {
-      await updateSupplyRequestStatus(user, requestId, 'cancelled')
-      setSupplyRequests((items) => items.map((r) => r.id === requestId ? { ...r, status: 'cancelled' as const } : r))
-      setFeedback('Đã hủy yêu cầu đặt hàng.')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Không thể hủy yêu cầu.')
-    }
-  }
-
   async function runExport(kind: string, emptyMessage: string, task: () => void | Promise<void>, successMessage: string) {
     if (exportBusy) return
     if (emptyMessage) {
@@ -1286,6 +1494,67 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     } finally {
       setExportBusy('')
     }
+  }
+
+  async function exportKpiEvidenceExcel() {
+    const sourcesByRow = buildCompetitionSourcesByRow(
+      competitionFilteredRows,
+      competitionRankingMode,
+      competitionRangeFrom,
+      competitionRangeTo,
+      competitionEvidenceAllocations,
+      competitionEvidenceSessions,
+      competitionEvidenceReceipts,
+    )
+    const sourceRows: KpiEvidenceSourceRow[] = competitionFilteredRows.flatMap((row) =>
+      (sourcesByRow.get(competitionRowKey(row)) || []).map((source) => ({
+        businessDate: source.businessDate,
+        employeeKey: row.employeeKey,
+        employeeName: row.employeeName,
+        branchId: row.branchId,
+        branchName: branchName(row.branchId),
+        roleLabel: roleLabel(row.role),
+        sourceType: source.kind === 'receipt' ? 'Hóa đơn POS' : 'Phiếu giao túi',
+        sourceId: source.id,
+        sourceCode: source.sourceCode,
+        shiftLabel: source.shiftLabel,
+        detail: source.detail,
+        meta: source.meta,
+        quantity: source.soldQuantity,
+        revenue: source.revenue,
+        createdAt: source.createdAt,
+      })),
+    )
+    const workbook = await buildKpiEvidenceWorkbook({
+      title: `KPI DOANH THU CÓ BẰNG CHỨNG · ${formatDate(competitionRangeFrom)} - ${formatDate(competitionRangeTo)}`,
+      generatedAt: new Date(),
+      filters: [
+        { label: 'Phân loại', value: competitionModeLabel(competitionRankingMode) },
+        { label: 'Kỳ dữ liệu', value: `${formatDate(competitionRangeFrom)} - ${formatDate(competitionRangeTo)}` },
+        { label: 'Chi nhánh', value: branchId ? branchName(branchId) : 'Toàn hệ thống' },
+        { label: 'Nhân sự toàn cục', value: employeeId ? employees.find((employee) => employee.id === employeeId)?.name || employeeId : 'Tất cả' },
+        { label: 'Vai trò thi đua', value: effectiveCompetitionRole === 'all' ? 'Tất cả' : roleLabel(effectiveCompetitionRole) },
+        { label: 'Loại ngày', value: competitionDayTypeLabel(competitionDayType) },
+        { label: 'Số ca tối thiểu', value: competitionMinShifts || 'Không giới hạn' },
+        { label: 'Số ca tối đa', value: competitionMaxShifts || 'Không giới hạn' },
+        { label: 'Thời điểm xuất', value: formatDateTime(new Date().toISOString()) },
+      ],
+      summaryRows: competitionFilteredRows.map((row) => ({
+        employeeKey: row.employeeKey,
+        employeeName: row.employeeName,
+        branchId: row.branchId,
+        branchName: branchName(row.branchId),
+        roleLabel: roleLabel(row.role),
+        shiftCount: row.shiftCount,
+        revenue: row.revenue,
+        targetRevenue: row.targetRevenue,
+        progress: row.progress,
+        rank: row.rank,
+        reward: row.commission,
+      })),
+      sourceRows,
+    })
+    await saveWorkbook(workbook, `kpi-bang-chung-${competitionRankingMode}-${competitionRangeFrom}-${competitionRangeTo}.xlsx`)
   }
 
   async function exportAttendance() {
@@ -1611,22 +1880,37 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     await saveWorkbook(workbook, `bao-cao-kho-${from}-${to}.xlsx`)
   }
 
-  function exportSupplyReport() {
-    const rows = rangeSupplyRequests.map((req) => [
-      formatDate(req.createdAt.slice(0, 10)),
-      branchName(req.branchId),
-      req.requestedByName,
-      req.productName,
-      req.quantity,
-      req.unit,
-      supplyStatusLabel(req.status),
-      req.note || '',
-    ])
-    const csv = [
-      ['Ngày', 'Chi nhánh', 'Người đặt', 'Món hàng', 'Số lượng', 'ĐVT', 'Trạng thái', 'Ghi chú'],
-      ...rows,
-    ].map((line) => line.map(csvCell).join(',')).join('\n')
-    download(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }), `bao-cao-dat-hang-${from}-${to}.csv`)
+  async function exportSupplyReportExcel() {
+    const ExcelJS = await import('exceljs')
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet('Danh sách đặt hàng')
+    sheet.columns = [
+      { header: 'Ngày đặt', key: 'createdAt', width: 20 },
+      { header: 'Ngày nhận', key: 'delivery', width: 22 },
+      { header: 'Chi nhánh', key: 'branch', width: 26 },
+      { header: 'Người đặt', key: 'requester', width: 24 },
+      { header: 'Món hàng', key: 'product', width: 32 },
+      { header: 'Số lượng', key: 'quantity', width: 13 },
+      { header: 'ĐVT', key: 'unit', width: 10 },
+      { header: 'Trạng thái', key: 'status', width: 18 },
+      { header: 'Ghi chú', key: 'note', width: 38 },
+    ]
+    rangeSupplyRequests.forEach((req) => sheet.addRow({
+      createdAt: formatDateTime(req.createdAt),
+      delivery: req.requestedDeliveryDate
+        ? `${formatDate(req.requestedDeliveryDate)} · ${req.requestedDeliveryPeriod || '-'}`
+        : '-',
+      branch: branchName(req.branchId),
+      requester: req.requestedByName,
+      product: req.productName,
+      quantity: req.quantity,
+      unit: req.unit,
+      status: supplyStatusLabel(req.status),
+      note: req.note || '',
+    }))
+    sheet.getColumn('quantity').numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
+    styleSheet(sheet, `DANH SÁCH ĐẶT HÀNG ${formatDate(from)} - ${formatDate(to)}`)
+    await saveWorkbook(workbook, `danh-sach-dat-hang-${from}-${to}.xlsx`)
   }
 
   function updatePayrollDraft(employeeKey: string, patch: Partial<PayrollDraft>) {
@@ -1763,9 +2047,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       })
       await refresh(false)
       setAttendanceDelete(null)
-      setFeedback(`Đã xóa ca công của ${attendanceDelete.employeeName} ngày ${formatDate(attendanceDelete.workDate)} và đồng bộ lại bảng lương.`)
+      setFeedback(`Đã xóa ca của ${attendanceDelete.employeeName} ngày ${formatDate(attendanceDelete.workDate)} và đồng bộ lại bảng lương.`)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Không thể xóa ca công của nhân viên.')
+      setError(reason instanceof Error ? reason.message : 'Không thể xóa ca của nhân viên.')
     } finally {
       setAttendanceDeleteSaving(false)
     }
@@ -1780,8 +2064,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
 
   return (
     <div className="page admin-page">
-      {/* Bộ lọc quản lý — ẩn ở màn tạo/quản lý tài khoản vì không lọc theo chi nhánh/ngày */}
-      {activeSection !== 'accounts' && (
       <div className="admin-filter-bar admin-date-filters">
           <label>{text.branch}
             <select value={branchId} onChange={(event) => { setBranchId(event.target.value); setEmployeeId('') }}>
@@ -1797,68 +2079,20 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
             <button onClick={() => setQuickRange('previousMonth')}>{text.previousMonth}</button>
           </div>
       </div>
-      )}
 
       {error && <div className="feedback-bar">{error}<button onClick={() => setError('')}>×</button></div>}
       {feedback && <div className="feedback-bar success">{feedback}<button onClick={() => setFeedback('')}>×</button></div>}
 
       {/* Layout 2 cột: nav trái + nội dung phải */}
       <div className={`admin-layout${focused ? ' focused-management-layout' : ''}`}>
-        {!focused && <nav className="management-function-list" aria-label={text.navLabel}>
-          <div className="management-function-head">
-            <span>Báo cáo</span>
-            <strong>{visibleManagementFunctions.length}</strong>
-          </div>
-          {visibleManagementFunctions.map((item) => (
-            <button
-              key={item.id}
-              className={`management-function-item tone-${item.tone}${activeFunctionId === item.id ? ' active' : ''}`}
-              onClick={() => {
-                setActiveFunctionId(item.id)
-                setActiveSection(item.section)
-              }}
-            >
-              <span className="management-function-icon">{item.icon}</span>
-              <span className="management-function-copy">
-                <strong>{item.label}</strong>
-                <small>{item.description}</small>
-              </span>
-              {item.section === 'requests' && pendingRequests > 0 && (
-                <span className="admin-section-badge">{pendingRequests}</span>
-              )}
-              <b>›</b>
-            </button>
-          ))}
-        </nav>}
-
         {/* Nội dung theo section */}
         <div className="admin-section-content">
-          <section className={`management-function-detail tone-${activeFunction.tone}`}>
-            <span className="management-function-icon">{activeFunction.icon}</span>
-            <div>
-              <small>Đang xem</small>
-              <h1>{activeFunction.label}</h1>
-              <p>{activeFunction.description}</p>
-            </div>
-            <div className="management-function-metrics">
-              {activeFunctionStats.map((stat) => (
-                <article key={stat.label}>
-                  <span>{stat.label}</span>
-                  <strong>{stat.value}</strong>
-                </article>
-              ))}
-            </div>
-          </section>
-
           {/* ===== DOANH THU ===== */}
           {activeSection === 'revenue' && (
             <>
               {/* Overview card: CukCuk Tổng quan style */}
               {(() => {
                 const grandTotal = periodRevenueRows.reduce((sum, s) => sum + s.revenue, 0)
-                const maxRevenue = Math.max(...selectedBranches.map((b) =>
-                  periodRevenueRows.filter((s) => s.branchId === b.id).reduce((sum, s) => sum + s.revenue, 0)
-                ), 0)
                 const fmtMoney = (n: number) => n >= 1000000 ? `${(n / 1000000).toFixed(1)} tr` : n.toLocaleString('vi-VN') + 'đ'
                 return (
                   <div className="rev-overview-card">
@@ -1867,27 +2101,25 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       <span className="rev-overview-amount">{fmtMoney(grandTotal)}</span>
                       <span className="rev-overview-sub">{periodRevenueRows.length} ngày có doanh thu · {selectedBranches.length} chi nhánh</span>
                     </div>
-                    {selectedBranches.map((branch) => {
+                    <div className="rev-branch-list">{selectedBranches.map((branch) => {
                       const snaps = periodRevenueRows.filter((s) => s.branchId === branch.id)
                       const rev = snaps.reduce((sum, s) => sum + s.revenue, 0)
                       const sold = snaps.reduce((sum, s) => sum + s.totalSold, 0)
-                      const isTop = rev === maxRevenue && maxRevenue > 0
                       return (
-                        <div key={branch.id} className={`rev-branch-row${isTop ? ' top-branch' : ''}`}>
-                          <span className="rbn-name">{branch.name}</span>
+                        <div key={branch.id} className="rev-branch-row">
+                          <span className="rbn-name">{/^\d+$/.test(branch.name.trim()) ? `Chi nhánh ${branch.name}` : branch.name}</span>
                           <div className="rbn-right">
                             <span className="rbn-amount">{fmtMoney(rev)}</span>
                             <span className="rbn-meta">{snaps.length} ngày · {sold} sản phẩm</span>
                           </div>
-                          <span className="rbn-chevron">›</span>
                         </div>
                       )
-                    })}
+                    })}</div>
                   </div>
                 )
               })()}
               <BusinessProductCharts rows={businessProductRows} />
-              <section className="section-card admin-revenue-chart-card">
+              <section className="erp-workspace-panel admin-revenue-chart-card">
                 <div className="section-title">
                   <div><span className="eyebrow dark">BIỂU ĐỒ DOANH THU</span><h2>Xu hướng theo bộ lọc</h2></div>
                   <span className="date-chip">{formatMoney(adminRevenueTrendRows.reduce((sum, row) => sum + row.revenue, 0))}</span>
@@ -1910,30 +2142,27 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   </div>
                 </div>
               </section>
-              <section className="section-card" style={{ marginTop: 0 }}>
+              <section className="erp-workspace-panel erp-revenue-ledger">
                 <div className="section-title">
                   <div><span className="eyebrow dark">DOANH THU THEO NGÀY</span><h2>Tất cả chi nhánh</h2></div>
                   <span className="date-chip">{periodRevenueRows.length} ngày có doanh thu</span>
                 </div>
-                <div className="rev-day-list">
-                  {periodRevenueRows.map((snap) => (
-                    <article className="rev-day" key={snap.id}>
-                      <div className="rev-day-left">
-                        <time>{formatDate(snap.reportDate)}</time>
-                        <span className="rev-day-branch">{branchName(snap.branchId)}</span>
-                      </div>
-                      <div className="rev-day-right">
-                        <strong>{snap.revenue.toLocaleString('vi-VN')}đ</strong>
-                        <div className="rev-day-chips">
-                          <span>{snap.totalSold || 0} sản phẩm</span>
-                          {snap.salesRate !== undefined && <span>NS {snap.salesRate}%</span>}
-                          {snap.kpi !== undefined && <span>KPI {snap.kpi}%</span>}
-                          {snap.grade && <span className="rev-grade">{snap.grade}</span>}
-                          <span className={snap.source === 'report' ? 'rev-src done' : 'rev-src draft'}>{snap.source === 'report' ? 'Đã chốt' : 'Tạm tính'}</span>
-                        </div>
-                      </div>
-                    </article>
-                  ))}
+                <div className="admin-data-table-scroll">
+                  <table className="admin-data-table erp-revenue-table">
+                    <thead><tr><th>Ngày</th><th>Chi nhánh</th><th className="num">Sản phẩm</th><th className="num">Doanh thu</th><th className="num">Năng suất</th><th className="num">KPI</th><th>Xếp loại</th><th>Trạng thái</th></tr></thead>
+                    <tbody>{periodRevenueRows.map((snap) => (
+                      <tr key={snap.id}>
+                        <td>{formatDate(snap.reportDate)}</td>
+                        <td>{branchName(snap.branchId)}</td>
+                        <td className="num">{snap.totalSold || 0}</td>
+                        <td className="num"><strong>{snap.revenue.toLocaleString('vi-VN')}đ</strong></td>
+                        <td className="num">{snap.salesRate !== undefined ? `${snap.salesRate}%` : '—'}</td>
+                        <td className="num">{snap.kpi !== undefined ? `${snap.kpi}%` : '—'}</td>
+                        <td>{snap.grade || '—'}</td>
+                        <td><span className={`admin-status-badge ${snap.source === 'report' ? 'working' : 'probation'}`}>{snap.source === 'report' ? 'Đã chốt' : 'Tạm tính'}</span></td>
+                      </tr>
+                    ))}</tbody>
+                  </table>
                   {!periodRevenueRows.length && (
                     <p className="empty-copy">Chưa có báo cáo doanh thu trong khoảng thời gian này. Báo cáo sẽ xuất hiện sau khi ca trưởng bấm “Chốt báo cáo” cuối ngày.</p>
                   )}
@@ -1944,66 +2173,24 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
 
           {/* ===== TỔNG QUAN ===== */}
           {activeSection === 'overview' && (
-            <>
-              {user.role === 'admin' && (
-                <section className="section-card active-users-panel" style={{ marginTop: 0, marginBottom: 18 }}>
-                  <div className="section-title">
-                    <div><span className="eyebrow dark">ONLINE</span><h2>Nguoi dang truy cap</h2></div>
-                    <span className="date-chip">{activeUsers.length} online</span>
-                  </div>
-                  <div className="active-user-list">
-                    {activeUsers.map((session) => (
-                      <article key={session.userId}>
-                        <span><strong>{session.userName}</strong><small>{roleLabel(session.role)} · {branchName(session.branchId)} · {session.page || 'app'}</small></span>
-                        <time>{new Date(session.lastSeenAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}</time>
-                      </article>
-                    ))}
-                    {!activeUsers.length && <p className="empty-copy">Chua co phien truy cap online trong 2 phut gan day.</p>}
-                  </div>
-                </section>
-              )}
-              <section className="admin-stats admin-business-stats">
-                <article><span>{text.shiftsDone}</span><strong>{formatNumber(totalShifts)}</strong><small>{text.shiftsHint}</small></article>
-                <article><span>{text.hours}</span><strong>{formatDecimalHoursAsDuration(totalHours)}</strong><small>{attendanceRows.length} {text.hoursHint}</small></article>
-                <article className={lowStockRows.length ? 'danger' : 'active'}><span>{text.lowStock}</span><strong>{lowStockRows.length}</strong><small>{activeNow} {text.activeHint}</small></article>
-                <article className={pendingRequests ? 'warning' : ''}><span>{text.orderRequests}</span><strong>{pendingRequests}</strong><small>{supplyRequests.length} {text.requestsHint}</small></article>
-              </section>
-              <div className="admin-report-grid" style={{ marginTop: 20 }}>
-                <section className="section-card">
-                  <div className="section-title">
-                    <div><span className="eyebrow dark">{text.archiveEyebrow}</span><h2>{text.archiveTitle}</h2></div>
-                    <span className="date-chip">{archiveRows.length} {text.archiveCount}</span>
-                  </div>
-                  <div className="admin-archive-list">
-                    {archiveRows.slice(0, 30).map((row) => <article key={`${row.type}-${row.id}`}>
-                      <time>{formatDate(row.date)}</time>
-                      <span><strong>{row.type}</strong><small>{branchName(row.branchId)} · {row.detail}</small></span>
-                      <b>ĐÃ LƯU</b>
-                    </article>)}
-                    {!archiveRows.length && <p className="empty-copy">{text.noArchive}</p>}
-                  </div>
-                </section>
-                <section className="section-card admin-waste-report">
-                  <div className="section-title">
-                    <div><span className="eyebrow dark">{text.wasteEyebrow}</span><h2>{text.wasteTitle}</h2></div>
-                    <span className="date-chip">{wasteRows.length} {text.wasteCount}</span>
-                  </div>
-                  <div className="admin-waste-list">
-                    {wasteRows.map((row) => <article key={`${row.branchId}-${row.productId}`}>
-                      <span><strong>{row.productName}</strong><small>{branchName(row.branchId)} · {row.count} lượt ghi nhận</small></span>
-                      <b>{formatNumber(row.quantity)} {row.unit}</b>
-                    </article>)}
-                    {!wasteRows.length && <p className="empty-copy">{text.noWaste}</p>}
-                  </div>
-                </section>
-              </div>
-            </>
+            <DashboardPage
+              from={from}
+              to={to}
+              branchCount={visibleBranches.length}
+              revenue={periodRevenueRows.reduce((sum, row) => sum + row.revenue, 0)}
+              employeeCount={employees.filter((employee) => employee.active !== false).length}
+              activeUsers={activeUsers}
+              showActiveUsers={user.role === 'admin'}
+              archiveRows={archiveRows}
+              wasteRows={wasteRows}
+              branchName={branchName}
+            />
           )}
 
           {/* ===== CHẤM CÔNG ===== */}
           {activeSection === 'attendance' && (
             <>
-            <section className="section-card admin-report-section" style={{ marginTop: 0 }}>
+            <section className="erp-workspace-panel admin-report-section">
               <div className="section-title">
                 <div><span className="eyebrow dark">BẢNG CHẤM CÔNG</span><h2>Chấm công theo ngày, tháng</h2></div>
                 <button
@@ -2051,7 +2238,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               {!attendanceRows.length && <p className="empty-copy">Không có dữ liệu chấm công trong khoảng đã chọn.</p>}
             </section>
 
-            <section className="section-card attendance-detail-section">
+            <section className="erp-workspace-panel attendance-detail-section">
               <div className="section-title">
                 <div className="attendance-cute-heading">
                   <img className="attendance-cute-mascot" src="/mascots/capy-loading-2.png" alt="" aria-hidden="true" />
@@ -2182,7 +2369,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                               reason: '',
                             })
                           }}
-                        >Xóa ca công</button>
+                        >Xóa ca</button>
                       </div>
                     ) : <span className="attendance-no-record">Chưa có bản ghi</span>}
 
@@ -2211,7 +2398,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     {attendanceDelete && attendanceDelete.recordId === row.attendanceRecordId && (
                       <form className="attendance-delete-confirm" onSubmit={saveAttendanceDeletion}>
                         <div>
-                          <strong>Xóa ca công · {attendanceDelete.employeeName}</strong>
+                          <strong>Xóa ca · {attendanceDelete.employeeName}</strong>
                           <small>Ngày {formatDate(attendanceDelete.workDate)} · Chỉ bản ghi này bị xóa; lịch đăng ký ca vẫn được giữ lại.</small>
                         </div>
                         <label>Lý do xóa
@@ -2272,11 +2459,22 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
 
           {/* ===== KPI DOANH THU ===== */}
           {activeSection === 'commission' && (
-            <section className="section-card commission-section" style={{ marginTop: 0 }}>
+            <section className="erp-workspace-panel commission-section">
               <div className="section-title">
                 <div><span className="eyebrow dark">KPI DOANH THU</span><h2>Tổng kết bán hàng theo nhân viên</h2></div>
                 <div className="section-actions">
                   <span className="date-chip">{commissionRows.filter((row) => row.achieved).length} người đạt KPI</span>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={exportBusy === 'kpi-evidence'}
+                    onClick={() => void runExport(
+                      'kpi-evidence',
+                      competitionFilteredRows.length ? '' : 'Chưa có dữ liệu KPI phù hợp bộ lọc để xuất Excel.',
+                      exportKpiEvidenceExcel,
+                      'Đã xuất Excel KPI kèm bằng chứng nguồn doanh thu.',
+                    )}
+                  >{exportBusy === 'kpi-evidence' ? 'Đang xuất Excel…' : 'Xuất Excel bằng chứng'}</button>
                   <button type="button" className="secondary-button" disabled={exportBusy === 'competition-image'} onClick={() => void exportCompetitionImage()}>
                     {exportBusy === 'competition-image' ? 'Đang xuất…' : 'Xuất ảnh thi đua'}
                   </button>
@@ -2296,7 +2494,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 <div>
                   <span className="eyebrow dark">BẢNG XẾP HẠNG</span>
                   <h3>Phân loại thi đua</h3>
-                  <p>Dùng chung một bảng; đổi phân loại để xem theo ngày, theo tháng hoặc ca trưởng.</p>
+                  <p>Lọc cùng nhóm vai trò, số ca và loại ngày để so sánh công bằng; công thức KPI gốc không thay đổi.</p>
                 </div>
                 <div className="competition-ranking-controls">
                   <label>Phân loại
@@ -2319,12 +2517,75 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       onChange={(event) => { if (event.target.value) setCompetitionDate(event.target.value) }}
                     />
                   </label>}
+                  <label>Vai trò
+                    <select
+                      aria-label="Vai trò thi đua"
+                      value={effectiveCompetitionRole}
+                      disabled={competitionRankingMode === 'leaders'}
+                      onChange={(event) => setCompetitionRoleFilter(event.target.value as CompetitionRoleFilter)}
+                    >
+                      <option value="all">Tất cả</option>
+                      <option value="staff">Nhân viên bán hàng</option>
+                      <option value="shift_leader">Ca trưởng</option>
+                    </select>
+                  </label>
+                  <label>Loại ngày
+                    <select
+                      aria-label="Loại ngày thi đua"
+                      value={competitionDayType}
+                      onChange={(event) => setCompetitionDayType(event.target.value as CompetitionDayType)}
+                    >
+                      <option value="all">Tất cả ngày</option>
+                      <option value="weekday">Ngày thường</option>
+                      <option value="weekend">Cuối tuần</option>
+                    </select>
+                  </label>
+                  <label className="competition-shift-range">{competitionRankingMode === 'leaders' ? 'Ca vận hành' : 'Ca có check-in'}
+                    <span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        inputMode="numeric"
+                        aria-label="Số ca tối thiểu"
+                        placeholder="Từ"
+                        value={competitionMinShifts}
+                        onChange={(event) => setCompetitionMinShifts(cleanNonNegativeIntegerInput(event.target.value))}
+                      />
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        inputMode="numeric"
+                        aria-label="Số ca tối đa"
+                        placeholder="Đến"
+                        value={competitionMaxShifts}
+                        onChange={(event) => setCompetitionMaxShifts(cleanNonNegativeIntegerInput(event.target.value))}
+                      />
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    className="competition-filter-reset"
+                    onClick={() => {
+                      setCompetitionRoleFilter('all')
+                      setCompetitionDayType('all')
+                      setCompetitionMinShifts('')
+                      setCompetitionMaxShifts('')
+                    }}
+                  >Xóa lọc so sánh</button>
                 </div>
               </div>
               <CompetitionClassificationTable
                 title={competitionRankingTitle}
                 rows={competitionRankingRows}
                 showReward={competitionRankingMode !== 'leaders'}
+                mode={competitionRankingMode}
+                from={competitionRangeFrom}
+                to={competitionRangeTo}
+                allocations={competitionEvidenceAllocations}
+                sessions={competitionEvidenceSessions}
+                receipts={competitionEvidenceReceipts}
               />
               <div className="adm-list">
                 {commissionRows.map((row) => (
@@ -2352,7 +2613,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
 
           {/* ===== BẢNG LƯƠNG (khôi phục §27 Phase 4: đồng bộ bảng công → lương) ===== */}
           {activeSection === 'payroll' && (
-            <section className="section-card payroll-section" style={{ marginTop: 0 }}>
+            <section className="erp-workspace-panel payroll-section">
               <div className="section-title">
                 <div><span className="eyebrow dark">BẢNG LƯƠNG</span><h2>Lương tháng {formatMonthLabel(payrollPeriod)}</h2></div>
                 <div className="section-actions">
@@ -2465,10 +2726,15 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
 
           {/* ===== CHI TIẾT KPI THEO NGÀY (nguồn thưởng cộng vào bảng lương ở trên) ===== */}
           {activeSection === 'payroll' && (
-            <section className="section-card payroll-section">
+            <section className="erp-workspace-panel payroll-section">
               <div className="section-title">
                 <div><span className="eyebrow dark">CHI TIẾT KPI THEO NGÀY</span><h2>KPI & thưởng theo ngày</h2></div>
                 <span className="date-chip">{dailyKpiRows.length} dòng KPI</span>
+              </div>
+              <div className="kpi-reading-guide">
+                <strong>Cách đọc KPI</strong>
+                <span>Mỗi dòng bên dưới là một nhân viên trong một ngày. Doanh thu ngày được so với mục tiêu ngày; tỷ lệ từ 100% là đạt. Thưởng ngày và thưởng tuần dùng đúng quy tắc hiện có, không phụ thuộc riêng vào xếp hạng doanh thu.</span>
+                <small>Bộ lọc chi nhánh, nhân viên và khoảng ngày ở đầu trang áp dụng trực tiếp cho bảng này.</small>
               </div>
               <div className="payroll-summary-grid">
                 <article><span>Doanh thu KPI</span><strong>{formatMoney(dailyKpiRows.reduce((sum, row) => sum + row.revenue, 0))}</strong></article>
@@ -2519,7 +2785,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
 
           {/* ===== BÁO CÁO KHO ===== */}
           {activeSection === 'inventory' && (
-            <section className="section-card admin-report-section" style={{ marginTop: 0 }}>
+            <section className="erp-workspace-panel admin-report-section">
               <div className="section-title">
                 <div><span className="eyebrow dark">BÁO CÁO KHO</span><h2>Nhập, xuất, hao hụt và tồn kho trong kỳ</h2></div>
                 <button
@@ -2765,7 +3031,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
 
           {/* ===== ĐẶT HÀNG ===== */}
           {activeSection === 'requests' && (
-            <section className="section-card" style={{ marginTop: 0 }}>
+            <section className="erp-workspace-panel admin-requests-workspace">
               <div className="section-title">
                 <div><span className="eyebrow dark">YÊU CẦU NHẬP HÀNG</span><h2>Báo đặt hàng từ ca trưởng</h2></div>
                 <div className="section-actions">
@@ -2777,15 +3043,16 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     className="primary-button"
                     onClick={() => void runExport(
                       'supply',
-                      rangeSupplyRequests.length ? '' : 'Chưa có yêu cầu đặt hàng trong bộ lọc hiện tại để tải CSV.',
-                      exportSupplyReport,
-                      'Đã tải CSV báo cáo đặt hàng.',
+                      rangeSupplyRequests.length ? '' : 'Chưa có yêu cầu đặt hàng trong bộ lọc hiện tại để xuất Excel.',
+                      exportSupplyReportExcel,
+                      'Đã xuất Excel danh sách đặt hàng.',
                     )}
                     disabled={exportBusy === 'supply'}
-                  >{exportBusy === 'supply' ? 'Đang tải…' : 'Tải CSV'}</button>
+                  >{exportBusy === 'supply' ? 'Đang xuất…' : 'Xuất Excel'}</button>
                   <span className="date-chip">{pendingRequests} chờ duyệt</span>
                 </div>
               </div>
+              <p className="admin-readonly-note">Admin chỉ theo dõi, lọc và xuất danh sách; không đặt hàng hoặc đổi trạng thái đơn tại màn này.</p>
               {showSupplyReport && (
                 <div className="adm-list">
                   {rangeSupplyRequests.map((req) => (
@@ -2815,12 +3082,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       <span className={`supply-status-badge ${req.status}`}>
                         {req.status === 'pending' ? 'Chờ duyệt' : req.status === 'acknowledged' ? 'Đã nhận' : req.status === 'cancelled' ? 'Đã hủy' : 'Hoàn thành'}
                       </span>
-                      {req.status === 'pending' && (
-                        <button className="mini-button" onClick={() => void handleAcknowledge(req.id)}>Xác nhận nhận</button>
-                      )}
-                      {(req.status === 'pending' || req.status === 'acknowledged') && (
-                        <button className="mini-button danger-lite" onClick={() => void handleCancelRequest(req.id)}>Hủy đơn</button>
-                      )}
                     </div>
                   </div>
                 ))}
@@ -2833,41 +3094,60 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           {activeSection === 'accounts' && (
             <section className="section-card admin-accounts" style={{ marginTop: 0 }}>
               <div className="section-title">
-                <div><span className="eyebrow dark">NHÂN SỰ & TÀI KHOẢN</span><h2>Tạo và quản lý tài khoản nhân viên</h2></div>
+                <div><h2>Nhân sự & Chi nhánh</h2></div>
                 <span className="date-chip">{accountEmployees.length} tài khoản</span>
               </div>
-              <div className="admin-crm-branches" aria-label="Hồ sơ chi nhánh">
-                {visibleBranches.map((branch) => {
-                  const branchEmployees = accountEmployees.filter((employee) => employee.branchId === branch.id)
-                  const branchReceipts = salesReceipts.filter((receipt) =>
-                    receipt.branchId === branch.id && receipt.businessDate >= from && receipt.businessDate <= to,
-                  )
-                  const branchRevenue = branchReceipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0)
-                  const activeCount = branchEmployees.filter((employee) => employee.active !== false).length
-                  return (
-                    <button
-                      type="button"
-                      key={branch.id}
-                      className={crmBranchId === branch.id ? 'admin-crm-branch active' : 'admin-crm-branch'}
-                      onClick={() => {
-                        setCrmBranchId((current) => current === branch.id ? '' : branch.id)
-                        setCrmEmployeeId('')
-                      }}
-                    >
-                      <small>CHI NHÁNH</small>
-                      <strong>{branch.name}</strong>
-                      <span>{activeCount}/{branchEmployees.length} nhân sự hoạt động</span>
-                      <b>{formatMoney(branchRevenue)}</b>
-                      <em>Doanh thu {from} → {to}</em>
-                    </button>
-                  )
-                })}
-              </div>
+              {!crmEmployeeId && !crmBranchId && <nav className="admin-module-route-switch" aria-label="Module nhân sự và chi nhánh">
+                <button type="button" className={accountsDirectory === 'employees' ? 'active' : ''} onClick={() => navigateAdminHash('/admin/employees')}>Nhân viên</button>
+                <button type="button" className={accountsDirectory === 'branches' ? 'active' : ''} onClick={() => navigateAdminHash('/admin/branches')}>Chi nhánh</button>
+              </nav>}
+              {!crmEmployeeId && !crmBranchId && accountsDirectory === 'branches' && (
+                <BranchesPage
+                  branches={visibleBranches}
+                  employees={accountEmployees}
+                  receipts={salesReceipts}
+                  from={from}
+                  to={to}
+                  loading={loading}
+                  createOpen={showCreateBranch}
+                  deletingId={branchDeletingId}
+                  onToggleCreate={() => setShowCreateBranch((current) => !current)}
+                  onOpenBranch={(branch) => {
+                    navigateAdminHash(`/admin/branches/${encodeURIComponent(branch.id)}/overview`)
+                    setCrmBranchId(branch.id)
+                    setCrmEmployeeId('')
+                    setBranchProfileTab('overview')
+                  }}
+                  onDeleteBranch={user.role === 'admin' ? (branch) => void removeBranchFromOperations(branch) : undefined}
+                />
+              )}
+              {!crmEmployeeId && !crmBranchId && accountsDirectory === 'branches' && showCreateBranch && (
+                <div className="admin-crm-create-panel">
+                  <div className="admin-crm-subtitle"><strong>Tạo hồ sơ chi nhánh</strong><small>Chi nhánh mới sẽ có sẵn khung ca mặc định.</small></div>
+                  <form className="admin-crm-branch-form" onSubmit={createBranchFromCrm}>
+                    <label>Mã chi nhánh<input value={branchDraft.id} onChange={(event) => setBranchDraft({ ...branchDraft, id: event.target.value })} placeholder="Tự tạo từ tên nếu để trống" /></label>
+                    <label>Tên chi nhánh<input value={branchDraft.name} onChange={(event) => setBranchDraft({ ...branchDraft, name: event.target.value })} required /></label>
+                    <label>Địa chỉ<input value={branchDraft.address} onChange={(event) => setBranchDraft({ ...branchDraft, address: event.target.value })} /></label>
+                    <label>Quản lý phụ trách<input value={branchDraft.manager} onChange={(event) => setBranchDraft({ ...branchDraft, manager: event.target.value })} /></label>
+                    <button className="primary-button">Tạo chi nhánh</button>
+                  </form>
+                </div>
+              )}
               {crmBranchId && (() => {
-                const branch = visibleBranches.find((item) => item.id === crmBranchId)
+                const branch = visibleBranches.find((item) => item.id === crmBranchId) as ConfigBranch | undefined
                 const branchEmployees = accountEmployees.filter((employee) => employee.branchId === crmBranchId)
                 const branchReceipts = salesReceipts.filter((receipt) =>
                   receipt.branchId === crmBranchId && receipt.businessDate >= from && receipt.businessDate <= to,
+                )
+                const branchRecords = records.filter((record) => {
+                  const date = localDateKey(new Date(record.checkInTime))
+                  return record.branchId === crmBranchId && date >= from && date <= to
+                })
+                const branchMovements = movements.filter((movement) =>
+                  movement.branchId === crmBranchId && movement.shiftDate >= from && movement.shiftDate <= to,
+                )
+                const branchRequests = supplyRequests.filter((request) =>
+                  request.branchId === crmBranchId && request.createdAt.slice(0, 10) >= from && request.createdAt.slice(0, 10) <= to,
                 )
                 const revenueByDate = Array.from(new Set(branchReceipts.map((receipt) => receipt.businessDate))).sort().map((date) => ({
                   date,
@@ -2875,27 +3155,89 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 }))
                 const maxRevenue = Math.max(1, ...revenueByDate.map((item) => item.revenue))
                 return (
-                  <div className="admin-crm-detail">
+                  <div className="admin-crm-detail admin-crm-page">
                     <div className="admin-crm-detail-head">
-                      <div><small>HỒ SƠ CHI NHÁNH</small><h3>{branch?.name}</h3><p>Dữ liệu trực tiếp từ nhân sự, POS và chấm công trong kỳ đang chọn.</p></div>
-                      <button type="button" onClick={() => setCrmBranchId('')}>Đóng hồ sơ</button>
+                      <button className="admin-crm-back" type="button" onClick={() => navigateAdminHash('/admin/branches')}>← Quay lại danh bạ</button>
+                      <div><small>HỒ SƠ CHI NHÁNH</small><h3>{branch?.name}</h3><p>{branch?.address || 'Chưa cập nhật địa chỉ'} · {branch?.manager || 'Chưa gán quản lý phụ trách'}</p></div>
                     </div>
-                    <div className="admin-crm-chart">
+                    <div className="admin-crm-metrics">
+                      <article><span>Nhân sự</span><strong>{branchEmployees.length}</strong><small>{branchEmployees.filter((item) => item.active !== false).length} đang hoạt động</small></article>
+                      <article><span>Doanh thu kỳ này</span><strong>{formatMoney(branchReceipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0))}</strong><small>{branchReceipts.length} hóa đơn</small></article>
+                      <article><span>Khoảng dữ liệu</span><strong>{from}</strong><small>đến {to}</small></article>
+                    </div>
+                    <nav className="admin-employee-tabs admin-branch-tabs" aria-label="Chức năng hồ sơ chi nhánh">
+                      {([
+                        ['overview', 'Tổng quan'],
+                        ['revenue', 'Doanh thu'],
+                        ['employees', 'Nhân sự'],
+                        ['attendance', 'Chấm công'],
+                        ['inventory', 'Kho'],
+                        ['requests', 'Đơn hàng'],
+                      ] as const).map(([id, label]) => (
+                        <button type="button" key={id} className={branchProfileTab === id ? 'active' : ''} onClick={() => navigateAdminHash(`/admin/branches/${encodeURIComponent(crmBranchId)}/${id}`)}>{label}</button>
+                      ))}
+                    </nav>
+                    {(branchProfileTab === 'overview' || branchProfileTab === 'revenue') && <div className="admin-crm-chart">
                       {revenueByDate.length ? revenueByDate.map((item) => (
                         <span key={item.date} title={`${item.date}: ${formatMoney(item.revenue)}`}>
                           <i style={{ height: `${Math.max(8, item.revenue / maxRevenue * 100)}%` }} />
                           <small>{item.date.slice(8)}</small>
                         </span>
                       )) : <p>Chưa có doanh thu trong kỳ.</p>}
-                    </div>
-                    <div className="admin-crm-people">
+                    </div>}
+                    {branchProfileTab === 'revenue' && <div className="admin-crm-sales-list admin-branch-tab-list">
+                      {branchReceipts.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((receipt) => (
+                        <article key={receipt.id}>
+                          <span><b>{receipt.code}</b><small>{formatDate(receipt.businessDate)} · {receipt.sellerName || 'Chưa có nhân viên bán'}</small></span>
+                          <span><strong>{formatMoney(receipt.totalAmount)}</strong><small>{formatNumber(receipt.totalQuantity)} sản phẩm</small></span>
+                        </article>
+                      ))}
+                      {!branchReceipts.length && <p className="empty-copy">Chưa có hóa đơn trong kỳ này.</p>}
+                    </div>}
+                    {(branchProfileTab === 'overview' || branchProfileTab === 'employees') && <>
+                    <div className="admin-crm-subtitle"><strong>Nhân sự tại chi nhánh</strong></div>
+                    <div className="admin-crm-people admin-crm-people-list">
                       {branchEmployees.map((employee) => (
-                        <button type="button" key={employee.id} onClick={() => setCrmEmployeeId(employee.id)}>
-                          <b>{employee.name}</b><span>{employee.positionTitle || roleLabel(employee.role)}</span>
+                        <button type="button" key={employee.id} onClick={() => {
+                          openEmployeeCrm(employee)
+                        }}>
+                          <span className="admin-avatar">
+                            {employee.avatarUrl ? <img src={employee.avatarUrl} alt="" /> : employee.name.slice(0, 1).toUpperCase()}
+                          </span>
+                          <span><b>{employee.name}</b><small>{employee.positionTitle || roleLabel(employee.role)} · @{emailToUsername(employee.email) || employee.id}</small></span>
                           <em>{employee.active === false ? 'Ngừng hoạt động' : 'Đang hoạt động'}</em>
+                          <i>→</i>
                         </button>
                       ))}
                     </div>
+                    </>}
+                    {branchProfileTab === 'attendance' && <div className="admin-crm-sales-list admin-branch-tab-list">
+                      {branchRecords.slice().sort((a, b) => b.checkInTime.localeCompare(a.checkInTime)).map((record) => (
+                        <article key={record.id}>
+                          <span><b>{record.userName}</b><small>{formatDate(localDateKey(new Date(record.checkInTime)))}</small></span>
+                          <span><strong>{new Date(record.checkInTime).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} → {record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : 'Chưa chấm ra'}</strong></span>
+                        </article>
+                      ))}
+                      {!branchRecords.length && <p className="empty-copy">Chưa có dữ liệu chấm công trong kỳ này.</p>}
+                    </div>}
+                    {branchProfileTab === 'inventory' && <div className="admin-crm-sales-list admin-branch-tab-list">
+                      {branchMovements.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((movement) => (
+                        <article key={movement.id}>
+                          <span><b>{productById(movement.productId)?.name || movement.productId}</b><small>{formatDate(movement.shiftDate)} · {movement.type}</small></span>
+                          <span><strong>{formatNumber(movement.quantity)}</strong><small>{movement.note || 'Không có ghi chú'}</small></span>
+                        </article>
+                      ))}
+                      {!branchMovements.length && <p className="empty-copy">Chưa có biến động kho trong kỳ này.</p>}
+                    </div>}
+                    {branchProfileTab === 'requests' && <div className="admin-crm-sales-list admin-branch-tab-list">
+                      {branchRequests.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((request) => (
+                        <article key={request.id}>
+                          <span><b>{request.productName}</b><small>{formatDate(request.createdAt.slice(0, 10))} · {request.requestedByName}</small></span>
+                          <span><strong>{formatNumber(request.quantity)} {request.unit}</strong><small>{supplyStatusLabel(request.status)}</small></span>
+                        </article>
+                      ))}
+                      {!branchRequests.length && <p className="empty-copy">Chưa có đơn hàng trong kỳ này.</p>}
+                    </div>}
                   </div>
                 )
               })()}
@@ -2903,7 +3245,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 const employee = accountEmployees.find((item) => item.id === crmEmployeeId)
                 if (!employee) return null
                 const employeeReceipts = salesReceipts.filter((receipt) =>
-                  (receipt.sellerId === employee.id || normalizeName(receipt.sellerName) === normalizeName(employee.name))
+                  (receipt.sellerId === employee.id
+                    || (!receipt.sellerId
+                      && receipt.branchId === employee.branchId
+                      && normalizeName(receipt.sellerName) === normalizeName(employee.name)))
                   && receipt.businessDate >= from && receipt.businessDate <= to,
                 )
                 const employeeRecords = records.filter((record) =>
@@ -2912,26 +3257,202 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   && localDateKey(new Date(record.checkInTime)) <= to,
                 )
                 const revenue = employeeReceipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0)
+                const employeeDailyRevenue = buildEmployeeDailyRevenueRows(employeeReceipts)
+                const maxEmployeeDailyRevenue = Math.max(1, ...employeeDailyRevenue.map((row) => row.revenue))
                 const hours = employeeRecords.reduce((sum, record) => sum + Math.max(
                   0,
                   ((record.checkOutTime ? new Date(record.checkOutTime).getTime() : Date.now()) - new Date(record.checkInTime).getTime()) / 36e5,
                 ), 0)
                 return (
-                  <div className="admin-crm-detail employee">
+                  <div className="admin-crm-detail employee admin-crm-page">
                     <div className="admin-crm-detail-head">
-                      <div><small>HỒ SƠ NHÂN VIÊN</small><h3>{employee.name}</h3><p>{branchName(employee.branchId)} · {employee.positionTitle || roleLabel(employee.role)}</p></div>
-                      <button type="button" onClick={() => setCrmEmployeeId('')}>Đóng hồ sơ</button>
+                      <button className="admin-crm-back" type="button" onClick={() => navigateAdminHash('/admin/employees')}>← Quay lại danh sách nhân sự</button>
+                      <div className="admin-crm-employee-identity">
+                        <span className="admin-avatar large">
+                          {employeeDraft(employee).avatarUrl ? <img src={employeeDraft(employee).avatarUrl} alt="" /> : employee.name.slice(0, 1).toUpperCase()}
+                        </span>
+                        <div><small>HỒ SƠ NHÂN VIÊN</small><h3>{employee.name}</h3><p>{branchName(employee.branchId)} · {employee.positionTitle || roleLabel(employee.role)}</p></div>
+                      </div>
                     </div>
                     <div className="admin-crm-metrics">
-                      <article><span>Tình trạng</span><strong>{employee.active === false ? 'Ngừng làm việc' : 'Đang làm việc'}</strong></article>
+                      <article><span>Tình trạng</span><strong>{employeeCrmDraft.employmentStatus === 'probation' ? 'Thử việc' : employeeCrmDraft.employmentStatus === 'ended' ? 'Nghỉ việc' : 'Đang làm việc'}</strong><small>{employee.active === false ? 'Tài khoản đã vô hiệu hóa' : 'Tài khoản đang hoạt động'}</small></article>
                       <article><span>Doanh thu kỳ này</span><strong>{formatMoney(revenue)}</strong><small>{employeeReceipts.length} hóa đơn</small></article>
                       <article><span>Giờ công kỳ này</span><strong>{formatNumber(hours)}</strong><small>{employeeRecords.length} lượt chấm công</small></article>
                       <article><span>Tài khoản</span><strong>@{emailToUsername(employee.email) || employee.id}</strong><small>{roleLabel(employee.role)}</small></article>
                     </div>
+                    <nav className="admin-employee-tabs" aria-label="Chức năng hồ sơ nhân viên">
+                      {([
+                        ['overview', 'Tổng quan'],
+                        ['attendance', 'Chấm công'],
+                        ['sales', 'Doanh số'],
+                        ['payroll', 'Lương thưởng'],
+                        ['account', 'Tài khoản'],
+                      ] as const).map(([id, label]) => (
+                        <button type="button" key={id} className={employeeProfileTab === id ? 'active' : ''} onClick={() => navigateAdminHash(`/admin/employees/${encodeURIComponent(crmEmployeeId)}/${id}`)}>{label}</button>
+                      ))}
+                    </nav>
+                    {employeeProfileTab === 'overview' && <div className="admin-crm-profile-grid single">
+                      <section className="admin-crm-profile-panel">
+                        <div className="admin-crm-subtitle"><strong>Thông tin công việc</strong><small>Cập nhật hồ sơ của nhân viên này.</small></div>
+                        <div className="employee-profile-editor">
+                          {employee.role === 'manager' || employee.role === 'kitchen' ? (
+                            <label>Phạm vi<input value="Tất cả chi nhánh" disabled /></label>
+                          ) : (
+                            <label>Chi nhánh
+                              <select value={employeeDraft(employee).branchId} disabled={employee.active === false || savingEmployeeDetailsId === employee.id} onChange={(event) => updateEmployeeDraft(employee, { branchId: event.target.value })}>
+                                {visibleBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+                              </select>
+                            </label>
+                          )}
+                          <label>Nhóm ca
+                            <select
+                              value={employeeDraft(employee).employmentType}
+                              disabled={employee.active === false || savingEmployeeDetailsId === employee.id}
+                              onChange={(event) => {
+                                const employmentType = event.target.value as EmploymentType
+                                updateEmployeeDraft(employee, {
+                                  employmentType,
+                                  positionTitle: employmentType === 'leader' ? 'Ca trưởng' : employmentType === 'full_time' ? 'Full-time' : 'Part-time',
+                                })
+                              }}
+                            >
+                              <option value="leader">Ca trưởng / Ca phó</option>
+                              <option value="full_time">Full-time</option>
+                              <option value="part_time">Part-time</option>
+                            </select>
+                          </label>
+                          <label>Vị trí<input value={employeeDraft(employee).positionTitle} disabled={employee.active === false || savingEmployeeDetailsId === employee.id} onChange={(event) => updateEmployeeDraft(employee, { positionTitle: event.target.value })} /></label>
+                          <label>Ảnh đại diện<input type="file" accept="image/*" disabled={employee.active === false || savingEmployeeDetailsId === employee.id} onChange={(event) => void updateEmployeeAvatar(employee, event.target.files?.[0])} /></label>
+                          <button type="button" className="primary-button" disabled={employee.active === false || savingEmployeeDetailsId === employee.id} onClick={() => void saveEmployeeDetails(employee)}>
+                            {savingEmployeeDetailsId === employee.id ? 'Đang lưu…' : 'Lưu hồ sơ'}
+                          </button>
+                        </div>
+                      </section>
+                    </div>}
+                    {employeeProfileTab === 'account' && <div className="admin-crm-profile-grid single">
+                      <section className="admin-crm-profile-panel">
+                        <div className="admin-crm-subtitle"><strong>Tài khoản & bảo mật</strong><small>Các thao tác chỉ áp dụng cho nhân viên này.</small></div>
+                        <div className="admin-crm-account-actions">
+                          <label>Vai trò
+                            <select aria-label={`Vai trò của ${employee.name}`} value={employee.role === 'admin' ? 'manager' : employee.role} disabled={savingRoleId === employee.id || employee.active === false} onChange={(event) => void changeRole(employee, event.target.value as Role)}>
+                              {ROLE_OPTIONS.map((role) => <option key={role.value} value={role.value}>{roleLabel(role.value, lang)}</option>)}
+                            </select>
+                          </label>
+                          <button type="button" disabled={accountBusyId === employee.id || employee.active === false} onClick={() => void resetPassword(employee)}>Đặt lại mật khẩu</button>
+                          <button type="button" className={pendingDeleteId === employee.id ? 'danger-button compact confirming' : 'danger-button compact'} disabled={accountBusyId === employee.id || employee.id === user.id} onClick={() => void removeAccount(employee)}>
+                            {employee.id === user.id ? 'Tài khoản đang dùng' : pendingDeleteId === employee.id ? 'Xác nhận xóa' : 'Xóa tài khoản'}
+                          </button>
+                          <button type="button" className={pendingHardDeleteId === employee.id ? 'danger-button compact confirming' : 'danger-button compact'} title="Xóa vĩnh viễn tài khoản test và toàn bộ lịch làm/chấm công/lương liên quan" disabled={accountBusyId === employee.id || employee.id === user.id} onClick={() => void hardRemoveAccount(employee)}>
+                            {employee.id === user.id ? 'Tài khoản đang dùng' : pendingHardDeleteId === employee.id ? 'Xác nhận xóa sạch' : 'Xóa sạch test'}
+                          </button>
+                        </div>
+                        {employee.active === false && <p className="inactive-account-warning">Tên đăng nhập vẫn được giữ cho đến khi Admin bấm “Xóa sạch test”.</p>}
+                      </section>
+                    </div>}
+                    {employeeProfileTab === 'overview' && <div className="admin-crm-history-grid single">
+                      <section className="admin-crm-profile-panel">
+                        <div className="admin-crm-subtitle"><strong>Tình trạng lao động</strong></div>
+                        <div className="admin-crm-lifecycle-form">
+                          <label>Trạng thái
+                            <select value={employeeCrmDraft.employmentStatus} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, employmentStatus: event.target.value as EmploymentStatus })}>
+                              <option value="probation">Thử việc</option>
+                              <option value="working">Đang làm việc</option>
+                              <option value="ended">Nghỉ việc</option>
+                            </select>
+                          </label>
+                          <label>Ngày bắt đầu<input type="date" value={employeeCrmDraft.employmentStartDate} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, employmentStartDate: event.target.value })} /></label>
+                          <label>Kết thúc thử việc<input type="date" value={employeeCrmDraft.probationEndDate} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, probationEndDate: event.target.value })} /></label>
+                          {employeeCrmDraft.employmentStatus === 'ended' && <label>Ngày nghỉ việc<input type="date" required value={employeeCrmDraft.employmentEndDate} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, employmentEndDate: event.target.value })} /></label>}
+                          <label className="wide">Ghi chú quản lý<textarea value={employeeCrmDraft.employmentNote} maxLength={2000} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, employmentNote: event.target.value })} /></label>
+                          <button type="button" className="primary-button" disabled={employeeCrmSaving} onClick={() => void saveEmployeeCrm(employee)}>{employeeCrmSaving ? 'Đang lưu…' : 'Lưu trạng thái việc làm'}</button>
+                        </div>
+                      </section>
+                    </div>}
+                    {employeeProfileTab === 'payroll' && <div className="admin-crm-history-grid single">
+                      <section className="admin-crm-profile-panel">
+                        <div className="admin-crm-subtitle"><strong>Lịch sử bảng lương</strong><small>Tối đa 36 tháng từ cấu hình lương đã lưu; lương theo giờ chỉ hiển thị đơn giá, không suy đoán tiền thực nhận.</small></div>
+                        <div className="admin-crm-history-list">
+                          {employeePayrollHistory.map((entry) => {
+                            const fixedSalary = entry.fixedSalary || 0
+                            const configuredTotal = fixedSalary + entry.bonus - entry.deduction
+                            return <article key={entry.period}>
+                              <span><b>Tháng {entry.period.slice(5)}/{entry.period.slice(0, 4)}</b><small>{entry.note || 'Bảng lương đã lưu'}</small></span>
+                              <span>
+                                <strong>{entry.fixedSalary !== null ? formatMoney(configuredTotal) : `${formatMoney(entry.hourlyRate || 0)}/giờ`}</strong>
+                                <small>{entry.fixedSalary !== null
+                                  ? `Lương cố định ${formatMoney(fixedSalary)} · Thưởng ${formatMoney(entry.bonus)} · Trừ ${formatMoney(entry.deduction)}`
+                                  : `Đơn giá theo giờ · Thưởng ${formatMoney(entry.bonus)} · Trừ ${formatMoney(entry.deduction)}`}</small>
+                              </span>
+                            </article>
+                          })}
+                          {!employeePayrollHistory.length && <p className="empty-copy">Chưa có bảng lương tháng đã lưu cho nhân viên này.</p>}
+                        </div>
+                      </section>
+                    </div>}
+                    {employeeProfileTab === 'attendance' && <section className="admin-crm-profile-panel admin-crm-sales-history">
+                      <div className="admin-crm-subtitle"><strong>Chấm công</strong><small>{from} → {to}</small></div>
+                      <div className="admin-crm-sales-summary">
+                        <span><small>Tổng giờ</small><strong>{formatNumber(hours)}</strong></span>
+                        <span><small>Lượt chấm công</small><strong>{employeeRecords.length}</strong></span>
+                        <span><small>Thiếu giờ ra</small><strong>{employeeRecords.filter((record) => !record.checkOutTime).length}</strong></span>
+                      </div>
+                      <div className="admin-crm-sales-list">
+                        {employeeRecords.slice().sort((a, b) => b.checkInTime.localeCompare(a.checkInTime)).map((record) => (
+                          <article key={record.id}>
+                            <span><b>{formatDate(localDateKey(new Date(record.checkInTime)))}</b><small>{branchName(record.branchId)}</small></span>
+                            <span><strong>{new Date(record.checkInTime).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} → {record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : 'Chưa chấm ra'}</strong></span>
+                          </article>
+                        ))}
+                        {!employeeRecords.length && <p className="empty-copy">Chưa có dữ liệu chấm công trong kỳ này.</p>}
+                      </div>
+                    </section>}
+                    {employeeProfileTab === 'sales' && <section className="admin-crm-profile-panel admin-crm-sales-history">
+                      <div className="admin-crm-subtitle"><strong>Doanh thu theo ngày</strong><small>{from} → {to}</small></div>
+                      <div className="admin-crm-sales-summary">
+                        <span><small>Doanh thu</small><strong>{formatMoney(revenue)}</strong></span>
+                        <span><small>Hóa đơn</small><strong>{employeeReceipts.length}</strong></span>
+                        <span><small>Sản phẩm</small><strong>{formatNumber(employeeReceipts.reduce((sum, receipt) => sum + receipt.totalQuantity, 0))}</strong></span>
+                      </div>
+                      {employeeDailyRevenue.length > 0 && <div className="admin-employee-daily-revenue-chart" aria-label="Biểu đồ doanh thu nhân viên theo ngày">
+                        {employeeDailyRevenue.slice().reverse().map((row) => (
+                          <span key={row.date} title={`${formatDate(row.date)}: ${formatMoney(row.revenue)}`}>
+                            <i style={{ height: `${Math.max(6, row.revenue / maxEmployeeDailyRevenue * 100)}%` }} />
+                            <small>{row.date.slice(8, 10)}/{row.date.slice(5, 7)}</small>
+                          </span>
+                        ))}
+                      </div>}
+                      <div className="table-scroll">
+                        <table className="admin-data-table admin-employee-daily-revenue-table">
+                          <thead><tr><th>Ngày</th><th className="num">Hóa đơn</th><th className="num">Sản phẩm</th><th className="num">Doanh thu</th><th className="num">TB / hóa đơn</th></tr></thead>
+                          <tbody>{employeeDailyRevenue.map((row) => (
+                            <tr key={row.date}>
+                              <td><strong>{formatDate(row.date)}</strong></td>
+                              <td className="num">{row.receipts}</td>
+                              <td className="num">{formatNumber(row.quantity)}</td>
+                              <td className="num"><strong>{formatMoney(row.revenue)}</strong></td>
+                              <td className="num">{formatMoney(row.revenue / Math.max(1, row.receipts))}</td>
+                            </tr>
+                          ))}</tbody>
+                        </table>
+                      </div>
+                      {!employeeDailyRevenue.length && <p className="empty-copy">Không có doanh thu POS được ghi nhận cho nhân viên trong kỳ này.</p>}
+                    </section>}
                   </div>
                 )
               })()}
-              <form className="employee-account-form" onSubmit={createAccount}>
+              {!crmEmployeeId && !crmBranchId && accountsDirectory === 'employees' && (
+                <EmployeesPage
+                  employees={accountEmployees}
+                  branches={visibleBranches}
+                  loading={loading}
+                  createOpen={showCreateAccount}
+                  onToggleCreate={() => setShowCreateAccount((current) => !current)}
+                  onOpenEmployee={openEmployeeCrm}
+                />
+              )}
+              {!crmEmployeeId && !crmBranchId && accountsDirectory === 'employees' && showCreateAccount && <div className="admin-crm-create-panel">
+                <div className="admin-crm-subtitle"><strong>Tạo hồ sơ nhân viên</strong><small>Thông tin đăng nhập và công việc ban đầu.</small></div>
+                <form className="employee-account-form" onSubmit={createAccount}>
                 <label>Họ tên<input value={accountName} onChange={(event) => setAccountName(event.target.value)} placeholder="Nguyễn Văn A" required /></label>
                 <label>Tên đăng nhập<input value={accountUsername} onChange={(event) => setAccountUsername(event.target.value)} placeholder="Ví dụ: ngoc, quanly" autoCapitalize="none" required /></label>
                 <label>Mật khẩu<input type="password" minLength={6} value={accountPassword} onChange={(event) => setAccountPassword(event.target.value)} placeholder="Quản lý tự đặt" required /></label>
@@ -2971,7 +3492,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     const type = event.target.value as EmploymentType
                     setAccountEmploymentType(type)
                     setAccountPositionTitle(type === 'leader' ? 'Ca trưởng' : type === 'full_time' ? 'Full-time' : 'Part-time')
-                    if (accountRole !== 'manager' && accountRole !== 'kitchen') setAccountRole(type === 'leader' ? 'shift_leader' : 'staff')
+                    if (accountRole !== 'manager' && accountRole !== 'kitchen' && accountRole !== 'cashier') setAccountRole(type === 'leader' ? 'shift_leader' : 'staff')
                   }}>
                     <option value="leader">Ca trưởng / Ca phó</option>
                     <option value="full_time">Full-time</option>
@@ -2982,9 +3503,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 <button className="primary-button" disabled={accountBusyId === 'create'}>
                   {accountBusyId === 'create' ? 'Đang tạo…' : '+ Tạo tài khoản'}
                 </button>
-              </form>
-              <p className="password-safety-note">Admin hệ thống tự đặt mật khẩu cho nhân viên. Mật khẩu được Supabase mã hóa và không thể xem lại sau khi đóng khung thông tin.</p>
-              {temporaryCredential && (
+                </form>
+                <p className="password-safety-note">Admin hệ thống tự đặt mật khẩu cho nhân viên. Mật khẩu được Supabase mã hóa và không thể xem lại sau khi đóng khung thông tin.</p>
+              </div>}
+              {!crmEmployeeId && !crmBranchId && accountsDirectory === 'employees' && temporaryCredential && (
                 <div className="temporary-credential" role="status">
                   <span><strong>Thông tin đăng nhập</strong><small>Hãy sao chép và gửi trực tiếp cho nhân viên. Khung này sẽ mất khi tải lại trang.</small></span>
                   <code>{temporaryCredential.username}</code>
@@ -2996,123 +3518,21 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   <button type="button" onClick={() => setTemporaryCredential(null)}>Đóng</button>
                 </div>
               )}
-              {loading ? <p className="empty-copy">Đang tải danh sách nhân sự…</p> : (
-                <div className="admin-account-list admin-role-editor">
-                  {accountEmployees.map((employee) => {
-                    const draft = employeeDraft(employee)
-                    return <article className={employee.active === false ? 'inactive' : ''} key={employee.id}>
-                    <span className="admin-avatar">
-                      {draft.avatarUrl ? <img src={draft.avatarUrl} alt="" /> : employee.name.slice(0, 1).toUpperCase()}
-                    </span>
-                    <span>
-                      <button type="button" className="admin-crm-person-link" onClick={() => setCrmEmployeeId(employee.id)}>
-                        <strong>{employee.name}{employee.active === false ? ' · Đã vô hiệu hóa' : ''}</strong>
-                        <small>Mở hồ sơ CRM →</small>
-                      </button>
-                      <small>{employee.role === 'manager' || employee.role === 'kitchen' ? 'Tất cả chi nhánh' : branchName(employee.branchId)} · {employee.positionTitle || roleLabel(employee.role)} · @{emailToUsername(employee.email) || employee.id}</small>
-                      {employee.active === false && <small className="inactive-account-warning">Tên đăng nhập vẫn được giữ cho đến khi Admin bấm “Xóa sạch test”.</small>}
-                    </span>
-                    <div className="employee-profile-editor">
-                      {employee.role === 'manager' || employee.role === 'kitchen' ? (
-                        <label>Phạm vi
-                          <input value="Tất cả chi nhánh" disabled />
-                        </label>
-                      ) : (
-                        <label>Chi nhánh
-                          <select
-                            value={draft.branchId}
-                            disabled={employee.active === false || savingEmployeeDetailsId === employee.id}
-                            onChange={(event) => updateEmployeeDraft(employee, { branchId: event.target.value })}
-                          >
-                            {visibleBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
-                          </select>
-                        </label>
-                      )}
-                      <label>Nhóm ca
-                        <select
-                          value={draft.employmentType}
-                          disabled={employee.active === false || savingEmployeeDetailsId === employee.id}
-                          onChange={(event) => {
-                            const employmentType = event.target.value as EmploymentType
-                            updateEmployeeDraft(employee, {
-                              employmentType,
-                              positionTitle: employmentType === 'leader' ? 'Ca trưởng' : employmentType === 'full_time' ? 'Full-time' : 'Part-time',
-                            })
-                          }}
-                        >
-                          <option value="leader">Ca trưởng / Ca phó</option>
-                          <option value="full_time">Full-time</option>
-                          <option value="part_time">Part-time</option>
-                        </select>
-                      </label>
-                      <label>Vị trí
-                        <input
-                          value={draft.positionTitle}
-                          disabled={employee.active === false || savingEmployeeDetailsId === employee.id}
-                          onChange={(event) => updateEmployeeDraft(employee, { positionTitle: event.target.value })}
-                        />
-                      </label>
-                      <label>Ảnh đại diện
-                        <input
-                          type="file"
-                          accept="image/*"
-                          disabled={employee.active === false || savingEmployeeDetailsId === employee.id}
-                          onChange={(event) => void updateEmployeeAvatar(employee, event.target.files?.[0])}
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        className="mini-button"
-                        disabled={employee.active === false || savingEmployeeDetailsId === employee.id}
-                        onClick={() => void saveEmployeeDetails(employee)}
-                      >
-                        {savingEmployeeDetailsId === employee.id ? (lang === 'en' ? 'Saving...' : 'Đang lưu…') : (lang === 'en' ? 'Save profile' : 'Lưu hồ sơ')}
-                      </button>
-                      <button
-                        type="button"
-                        className={pendingHardDeleteId === employee.id ? 'danger-button compact confirming' : 'danger-button compact'}
-                        disabled={accountBusyId === employee.id || employee.id === user.id}
-                        title="Xóa vĩnh viễn tài khoản test và toàn bộ lịch làm/chấm công/lương liên quan"
-                        onClick={() => void hardRemoveAccount(employee)}
-                      >
-                        {accountBusyId === employee.id
-                          ? (lang === 'en' ? 'Deleting...' : 'Đang xóa...')
-                          : employee.id === user.id
-                            ? (lang === 'en' ? 'Current account' : 'Tài khoản đang dùng')
-                            : pendingHardDeleteId === employee.id
-                              ? (lang === 'en' ? 'Confirm hard delete' : 'Xác nhận xóa sạch')
-                              : (lang === 'en' ? 'Hard delete test' : 'Xóa sạch test')}
-                      </button>
-                    </div>
-                    <div className="employee-account-actions">
-                      <select
-                        aria-label={`Vai trò của ${employee.name}`}
-                        value={employee.role === 'admin' ? 'manager' : employee.role}
-                        disabled={savingRoleId === employee.id || employee.active === false}
-                        onChange={(event) => void changeRole(employee, event.target.value as Role)}
-                      >
-                        {ROLE_OPTIONS.map((role) => <option key={role.value} value={role.value}>{roleLabel(role.value, lang)}</option>)}
-                      </select>
-                      <button type="button" disabled={accountBusyId === employee.id || employee.active === false} onClick={() => void resetPassword(employee)}>{lang === 'en' ? 'Reset password' : 'Đặt lại mật khẩu'}</button>
-                      <button
-                        type="button"
-                        className={pendingDeleteId === employee.id ? 'danger-button compact confirming' : 'danger-button compact'}
-                        disabled={accountBusyId === employee.id || employee.id === user.id}
-                        title={employee.id === user.id ? 'Không thể xóa tài khoản đang đăng nhập' : 'Xóa vĩnh viễn tài khoản và dữ liệu nhân sự liên quan'}
-                        onClick={() => void removeAccount(employee)}
-                      >
-                        {accountBusyId === employee.id
-                          ? (lang === 'en' ? 'Deleting...' : 'Đang xóa…')
-                          : employee.id === user.id
-                            ? (lang === 'en' ? 'Current account' : 'Tài khoản đang dùng')
-                            : pendingDeleteId === employee.id
-                              ? (lang === 'en' ? 'Confirm delete' : 'Xác nhận xóa')
-                              : (lang === 'en' ? 'Delete account' : 'Xóa tài khoản')}
-                      </button>
-                    </div>
-                  </article>})}
-                  {!accountEmployees.length && <p className="empty-copy">Chưa có dữ liệu nhân sự phù hợp bộ lọc.</p>}
-                </div>
+              {!crmEmployeeId && !crmBranchId && accountsDirectory === 'employees' && Boolean(unassignedEmployeeReceipts.length) && (
+                <section className="admin-unassigned-sales">
+                  <div className="admin-crm-subtitle">
+                    <strong>Doanh số chưa phân bổ</strong>
+                    <span>{unassignedEmployeeReceipts.length} hóa đơn · {formatMoney(unassignedEmployeeReceipts.reduce((sum, receipt) => sum + receipt.totalAmount, 0))}</span>
+                  </div>
+                  <div className="admin-crm-sales-list">
+                    {unassignedEmployeeReceipts.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map((receipt) => (
+                      <article key={receipt.id}>
+                        <span><b>{receipt.code}</b><small>{formatDate(receipt.businessDate)} · {branchName(receipt.branchId)}</small></span>
+                        <span><strong>{formatMoney(receipt.totalAmount)}</strong><small>{receipt.sellerName || 'Chưa có nhân viên bán'}</small></span>
+                      </article>
+                    ))}
+                  </div>
+                </section>
               )}
             </section>
           )}
@@ -3228,11 +3648,30 @@ function CompetitionClassificationTable({
   title,
   rows,
   showReward,
+  mode,
+  from,
+  to,
+  allocations,
+  sessions,
+  receipts,
 }: {
   title: string
-  rows: Array<ReturnType<typeof buildCompetitionRows>[number] & { detail?: string }>
+  rows: CompetitionClassificationRow[]
   showReward: boolean
+  mode: 'daily' | 'monthly' | 'leaders'
+  from: string
+  to: string
+  allocations: BagAllocation[]
+  sessions: BagShiftSession[]
+  receipts: SalesReceipt[]
 }) {
+  const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null)
+  useEffect(() => setExpandedRowKey(null), [title])
+  const sourcesByRow = useMemo(
+    () => buildCompetitionSourcesByRow(rows, mode, from, to, allocations, sessions, receipts),
+    [allocations, from, mode, receipts, rows, sessions, to],
+  )
+
   return <section className={`competition-classification-table${showReward ? ' with-reward' : ''}`} aria-label={title}>
     <div className="competition-classification-title">
       <div>
@@ -3252,23 +3691,184 @@ function CompetitionClassificationTable({
       <span>Xếp loại KPI</span>
       {showReward && <span>Thưởng KPI</span>}
     </div>
-    {rows.map((row, index) => <div className="competition-classification-row" role="row" key={`${row.branchId}-${row.employeeKey}`}>
-      <span data-label="Hạng" role="cell"><b className={`leaderboard-rank rank-${index + 1}`}>{index + 1}</b></span>
-      <span data-label="Nhân sự" role="cell" className="competition-classification-person">
-        <i className="employee-top-avatar">{row.avatarUrl ? <img src={row.avatarUrl} alt="" /> : row.employeeName.slice(0, 1).toUpperCase()}</i>
-        <strong>{row.employeeName}</strong>
-      </span>
-      <span data-label="Chi nhánh" role="cell">{branchName(row.branchId)}</span>
-      <span data-label="Kết quả" role="cell">{row.detail || `${formatNumber(row.soldQuantity)} sản phẩm`}</span>
-      <span data-label="Doanh thu" role="cell"><b>{formatMoney(row.revenue)}</b></span>
-      <span data-label="Xếp loại KPI" role="cell"><b>{row.rank}</b><small>{formatNumber(row.progress)}%</small></span>
-      {showReward && <span data-label="Thưởng KPI" role="cell" className={`competition-classification-reward${row.commission > 0 ? ' earned' : ''}`}>
-        <b>{formatMoney(row.commission)}</b>
-        <small>{row.commission > 0 ? 'Đã đạt thưởng ngày/tuần' : 'Chưa đạt ngưỡng ngày/tuần'}</small>
-      </span>}
-    </div>)}
+    {rows.map((row, index) => {
+      const rowKey = competitionRowKey(row)
+      const expanded = expandedRowKey === rowKey
+      const sources = sourcesByRow.get(rowKey) || []
+      const sourceRevenue = sources.reduce((sum, source) => sum + source.revenue, 0)
+      const detailId = `competition-detail-${rowKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+      return <Fragment key={rowKey}>
+        <div className={`competition-classification-row${expanded ? ' is-expanded' : ''}`} role="row">
+          <span data-label="Hạng" role="cell"><b className={`leaderboard-rank rank-${index + 1}`}>{index + 1}</b></span>
+          <span data-label="Nhân sự" role="cell" className="competition-classification-person">
+            <i className="employee-top-avatar">{row.avatarUrl ? <img src={row.avatarUrl} alt="" /> : row.employeeName.slice(0, 1).toUpperCase()}</i>
+            <strong>{row.employeeName}</strong>
+          </span>
+          <span data-label="Chi nhánh" role="cell">{branchName(row.branchId)}</span>
+          <span data-label="Kết quả" role="cell" className="competition-classification-result">
+            <span>
+              {row.detail || `${formatNumber(row.soldQuantity)} sản phẩm`}
+              <small>{mode === 'leaders' ? `${formatNumber(row.shiftCount)} ca vận hành` : `${formatNumber(row.shiftCount)} ca có check-in`}</small>
+            </span>
+            <button
+              type="button"
+              className="competition-drilldown-trigger"
+              aria-expanded={expanded}
+              aria-controls={detailId}
+              onClick={() => setExpandedRowKey(expanded ? null : rowKey)}
+            >{expanded ? 'Thu gọn chi tiết' : `Xem ${sources.length} nguồn doanh thu`}</button>
+          </span>
+          <span data-label="Doanh thu" role="cell"><b>{formatMoney(row.revenue)}</b></span>
+          <span data-label="Xếp loại KPI" role="cell"><b>{row.rank}</b><small>{formatNumber(row.progress)}%</small></span>
+          {showReward && <span data-label="Thưởng KPI" role="cell" className={`competition-classification-reward${row.commission > 0 ? ' earned' : ''}`}>
+            <b>{formatMoney(row.commission)}</b>
+            <small>{row.commission > 0 ? 'Đã đạt thưởng ngày/tuần' : 'Chưa đạt ngưỡng ngày/tuần'}</small>
+          </span>}
+        </div>
+        {expanded && <div id={detailId} className="competition-drilldown-panel" role="region" aria-label={`Nguồn doanh thu của ${row.employeeName}`}>
+          <header>
+            <div>
+              <span className="eyebrow dark">DRILL-DOWN NGUỒN DOANH THU</span>
+              <h4>{row.employeeName} · {formatDate(from)}{to !== from ? ` - ${formatDate(to)}` : ''}</h4>
+            </div>
+            <div className="competition-drilldown-totals">
+              <span><small>Số nguồn</small><b>{formatNumber(sources.length)}</b></span>
+              <span><small>Đối chiếu</small><b>{formatMoney(sourceRevenue)}</b></span>
+            </div>
+          </header>
+          {Math.abs(sourceRevenue - row.revenue) > 1 && <p className="competition-drilldown-warning">
+            Tổng nguồn đang lệch {formatMoney(Math.abs(sourceRevenue - row.revenue))} so với bảng xếp hạng. Vui lòng kiểm tra dữ liệu chưa gắn nhân sự hoặc ca.
+          </p>}
+          <div className="competition-drilldown-list">
+            {sources.map((source) => <article key={`${source.kind}-${source.id}`}>
+              <span className={`competition-source-kind ${source.kind}`}>{source.kind === 'receipt' ? 'Hóa đơn' : 'Giao túi'}</span>
+              <div>
+                <strong>{source.heading}</strong>
+                <p>{source.detail}</p>
+                <small>{formatDate(source.businessDate)} · {formatDateTime(source.createdAt)} · {source.meta}</small>
+              </div>
+              <span><small>Số lượng</small><b>{formatNumber(source.soldQuantity)}</b></span>
+              <span><small>Doanh thu</small><b>{formatMoney(source.revenue)}</b></span>
+            </article>)}
+            {!sources.length && <p className="empty-copy">Chưa tìm thấy nguồn doanh thu khớp nhân sự và kỳ đang xem.</p>}
+          </div>
+        </div>}
+      </Fragment>
+    })}
     {!rows.length && <p className="empty-copy">Chưa có doanh thu phù hợp với phân loại và ngày đã chọn.</p>}
   </section>
+}
+
+interface CompetitionDrilldownDisplaySource {
+  id: string
+  kind: 'allocation' | 'receipt'
+  businessDate: string
+  createdAt: string
+  soldQuantity: number
+  revenue: number
+  heading: string
+  sourceCode: string
+  shiftLabel: string
+  detail: string
+  meta: string
+}
+
+type CompetitionClassificationRow = ReturnType<typeof buildCompetitionRows>[number] & { detail?: string }
+
+function buildCompetitionSourcesByRow(
+  rows: CompetitionClassificationRow[],
+  mode: 'daily' | 'monthly' | 'leaders',
+  from: string,
+  to: string,
+  allocations: BagAllocation[],
+  sessions: BagShiftSession[],
+  receipts: SalesReceipt[],
+) {
+  const result = new Map<string, CompetitionDrilldownDisplaySource[]>()
+  if (mode === 'leaders') {
+    const leaderSources = buildShiftLeaderReceiptSources(sessions, receipts, {
+      branchIds: Array.from(new Set(rows.map((row) => row.branchId))),
+      from,
+      to,
+    })
+    rows.forEach((row) => {
+      const sources = leaderSources
+        .filter((source) => source.branchId === row.branchId && (
+          source.leaderKey === row.employeeKey
+          || normalizeName(source.leaderName) === normalizeName(row.employeeName)
+        ))
+        .map((source) => ({
+          id: `${source.sessionId}-${source.receipt.id}`,
+          kind: 'receipt' as const,
+          businessDate: source.businessDate,
+          createdAt: source.receipt.createdAt,
+          soldQuantity: source.receipt.totalQuantity,
+          revenue: source.receipt.totalAmount,
+          heading: source.receipt.code || 'Hóa đơn POS',
+          sourceCode: source.receipt.code || '',
+          shiftLabel: `Ca ${source.sessionSequence}`,
+          detail: `Ca ${source.sessionSequence} · ${receiptLineSummary(source.receipt.lines)}`,
+          meta: `${source.receipt.sellerName} · ${paymentMethodLabel(source.receipt.paymentMethod)}`,
+        }))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
+      result.set(competitionRowKey(row), sources)
+    })
+    return result
+  }
+
+  rows.forEach((row) => {
+    const sources = buildEmployeeCompetitionRevenueSources(allocations, receipts, {
+      branchId: row.branchId,
+      employeeId: row.employeeKey,
+      employeeName: row.employeeName,
+      from,
+      to,
+    }).map((source): CompetitionDrilldownDisplaySource => source.kind === 'allocation'
+      ? {
+          id: source.id,
+          kind: 'allocation',
+          businessDate: source.businessDate,
+          createdAt: source.createdAt,
+          soldQuantity: source.soldQuantity,
+          revenue: source.revenue,
+          heading: 'Phiếu giao túi đã chốt',
+          sourceCode: '',
+          shiftLabel: '',
+          detail: productById(source.allocation.productId)?.name || source.allocation.productId,
+          meta: `Mã nguồn ${source.allocation.id}`,
+        }
+      : {
+          id: source.id,
+          kind: 'receipt',
+          businessDate: source.businessDate,
+          createdAt: source.createdAt,
+          soldQuantity: source.soldQuantity,
+          revenue: source.revenue,
+          heading: source.receipt.code || 'Hóa đơn POS',
+          sourceCode: source.receipt.code || '',
+          shiftLabel: '',
+          detail: receiptLineSummary(source.directLines),
+          meta: `Bán trực tiếp · ${paymentMethodLabel(source.receipt.paymentMethod)}`,
+        })
+    result.set(competitionRowKey(row), sources)
+  })
+  return result
+}
+
+function competitionRowKey(row: { branchId: string; employeeKey: string }) {
+  return `${row.branchId}-${row.employeeKey}`
+}
+
+function receiptLineSummary(lines: SalesReceipt['lines']) {
+  return lines.length
+    ? lines.map((line) => `${formatNumber(line.quantity)} × ${line.productName}`).join(', ')
+    : 'Hóa đơn không có dòng sản phẩm'
+}
+
+function paymentMethodLabel(method: SalesReceipt['paymentMethod']) {
+  if (method === 'qr') return 'QR/chuyển khoản'
+  if (method === 'card') return 'Thẻ'
+  return 'Tiền mặt'
 }
 
 function EmployeeCompetitionPoster({
@@ -3601,7 +4201,7 @@ function buildPayrollRows(
 
 function buildCompetitionRows(
   commissionRows: ReturnType<typeof buildCommissionRows>,
-  registrations: ShiftRegistration[],
+  attendanceRecords: AttendanceRecord[],
   employees: EmployeeProfile[],
 ) {
   const rows = new Map<string, {
@@ -3613,6 +4213,9 @@ function buildCompetitionRows(
     revenue: number
     commission: number
     totalHours: number
+    shiftCount: number
+    role: Role
+    targetRevenue: number
     progress: number
     rank: string
     score: number
@@ -3621,23 +4224,25 @@ function buildCompetitionRows(
     employee.branchId === branchId
     && (employee.id === employeeKey || normalizeName(employee.name) === normalizeName(employeeName))
   )
-  for (const registration of registrations.filter((item) => item.status !== 'rejected')) {
-    const employee = employeeFor(registration.branchId, registration.userId, registration.userName)
-    const key = `${registration.branchId}-${registration.userId}`
+  for (const attendance of buildCompetitionAttendanceMetrics(attendanceRecords)) {
+    const employee = employeeFor(attendance.branchId, attendance.employeeKey, attendance.employeeName)
+    const key = `${attendance.branchId}-${attendance.employeeKey}`
     const existing = rows.get(key)
-    const scheduledHours = registeredShiftHours(registration)
     rows.set(key, {
-      employeeKey: registration.userId,
-      employeeName: employee?.name || registration.userName,
-      branchId: registration.branchId,
+      employeeKey: attendance.employeeKey,
+      employeeName: employee?.name || attendance.employeeName,
+      branchId: attendance.branchId,
       avatarUrl: employee?.avatarUrl,
       soldQuantity: existing?.soldQuantity || 0,
       revenue: existing?.revenue || 0,
       commission: existing?.commission || 0,
-      totalHours: Number(((existing?.totalHours || 0) + scheduledHours).toFixed(2)),
+      totalHours: attendance.totalHours,
+      shiftCount: attendance.shiftCount,
+      role: employee?.role || 'staff',
+      targetRevenue: existing?.targetRevenue || 0,
       progress: existing?.progress || 0,
       rank: existing?.rank || 'D',
-      score: Math.round((existing?.totalHours || 0) + scheduledHours),
+      score: Math.round(attendance.totalHours),
     })
   }
   for (const row of commissionRows) {
@@ -3654,6 +4259,9 @@ function buildCompetitionRows(
       revenue: row.revenue,
       commission: row.commission,
       totalHours: existing?.totalHours || 0,
+      shiftCount: existing?.shiftCount || 0,
+      role: employee?.role || 'staff',
+      targetRevenue: row.targetQuantity,
       progress: row.progress,
       rank: row.rank,
       score: Math.round(row.revenue / 10000 + row.progress + (existing?.totalHours || 0) / 2),
@@ -3668,59 +4276,6 @@ function buildCompetitionRows(
       || b.totalHours - a.totalHours
       || a.employeeName.localeCompare(b.employeeName, 'vi'),
     )
-}
-
-function registeredShiftHours(registration: Pick<ShiftRegistration, 'workDate' | 'startTime' | 'endTime'>) {
-  const start = new Date(`${registration.workDate}T${registration.startTime}:00`)
-  const end = new Date(`${registration.workDate}T${registration.endTime}:00`)
-  if (registration.endTime <= registration.startTime) end.setDate(end.getDate() + 1)
-  return Math.max(0, (end.getTime() - start.getTime()) / 3600000)
-}
-
-function buildFunctionStats(id: string, values: {
-  revenue: number
-  sold: number
-  branches: number
-  employees: number
-  lowStock: number
-  pendingRequests: number
-  payroll: number
-  commission: number
-  waste: number
-}) {
-  if (id === 'cashflow' || id === 'payroll') {
-    return [
-      { label: 'Doanh thu KPI', value: formatMoney(values.payroll) },
-      { label: 'Hoa hồng', value: formatMoney(values.commission) },
-      { label: 'Nhân viên', value: formatNumber(values.employees) },
-    ]
-  }
-  if (id === 'kitchen_orders' || id === 'cancelled') {
-    return [
-      { label: 'Chờ xử lý', value: formatNumber(values.pendingRequests) },
-      { label: 'Chi nhánh', value: formatNumber(values.branches) },
-      { label: 'Doanh thu', value: formatMoney(values.revenue) },
-    ]
-  }
-  if (id === 'returns') {
-    return [
-      { label: 'Hao hụt', value: formatNumber(values.waste) },
-      { label: 'Cảnh báo kho', value: formatNumber(values.lowStock) },
-      { label: 'Chi nhánh', value: formatNumber(values.branches) },
-    ]
-  }
-  if (id === 'employee_revenue' || id === 'best_sellers') {
-    return [
-      { label: 'Nhân viên', value: formatNumber(values.employees) },
-      { label: 'Sản phẩm bán', value: formatNumber(values.sold) },
-      { label: 'Doanh thu', value: formatMoney(values.revenue) },
-    ]
-  }
-  return [
-    { label: 'Doanh thu', value: formatMoney(values.revenue) },
-    { label: 'Sản phẩm bán', value: formatNumber(values.sold) },
-    { label: 'Chi nhánh', value: formatNumber(values.branches) },
-  ]
 }
 
 function formatInventoryQuantity(value: number, unit: string) {
@@ -4067,6 +4622,23 @@ function buildDailyEmployeeRevenueRows(receipts: SalesReceipt[], from: string, t
   return Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date) || b.revenue - a.revenue)
 }
 
+function buildEmployeeDailyRevenueRows(receipts: SalesReceipt[]) {
+  const rows = new Map<string, { date: string; receipts: number; quantity: number; revenue: number }>()
+  receipts.forEach((receipt) => {
+    const current = rows.get(receipt.businessDate) || {
+      date: receipt.businessDate,
+      receipts: 0,
+      quantity: 0,
+      revenue: 0,
+    }
+    current.receipts += 1
+    current.quantity += receipt.totalQuantity
+    current.revenue += receipt.totalAmount
+    rows.set(receipt.businessDate, current)
+  })
+  return Array.from(rows.values()).sort((a, b) => b.date.localeCompare(a.date))
+}
+
 function buildCommissionRows(
   allocations: BagAllocation[],
   employees: EmployeeProfile[],
@@ -4076,6 +4648,7 @@ function buildCommissionRows(
   employeeKpiDrafts: Record<string, string>,
   from: string,
   to: string,
+  includedDates?: string[],
 ) {
   const allocationsByDate = new Map<string, BagAllocation[]>()
   allocations.forEach((allocation) => {
@@ -4231,14 +4804,23 @@ function buildCommissionRows(
       item.branchId === row.branchId
       && (item.userId === employeeKey || normalizeName(item.employeeName) === normalizeName(row.employeeName)),
     )
-    const formulaTarget = employeePeriodRevenueTarget(
-      row.branchId,
-      employee?.role,
-      employee?.employmentType,
-      employee?.positionTitle,
-      from,
-      to,
-    )
+    const formulaTarget = includedDates
+      ? includedDates.reduce((sum, date) => sum + employeePeriodRevenueTarget(
+          row.branchId,
+          employee?.role,
+          employee?.employmentType,
+          employee?.positionTitle,
+          date,
+          date,
+        ), 0)
+      : employeePeriodRevenueTarget(
+          row.branchId,
+          employee?.role,
+          employee?.employmentType,
+          employee?.positionTitle,
+          from,
+          to,
+        )
     const targetRevenue = formulaTarget || DEFAULT_REVENUE_TARGET
     const achieved = row.achievedDays > 0
     const progress = Math.min(200, row.revenue / targetRevenue * 100)

@@ -17,7 +17,7 @@ if (!edge.includes(".from('profiles')") || !edge.includes(".maybeSingle()")) {
 }
 const accountListSource = admin.slice(
   admin.indexOf('const accountEmployees ='),
-  admin.indexOf('const rangeRegistrations ='),
+  admin.indexOf('const unassignedEmployeeReceipts ='),
 )
 if (!accountListSource.includes('employees.filter') || accountListSource.includes('employee.active !== false')) {
   failures.push('Danh sách quản trị tài khoản vẫn giấu hồ sơ inactive dù username còn tồn tại trong Auth.')

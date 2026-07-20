@@ -5,6 +5,7 @@ import { shouldUseLanApi, supabase, uniqueChannelName } from './lib/supabase'
 import { LauncherPage } from './pages/LauncherPage'
 import { LoginPage } from './pages/LoginPage'
 import type { AdminSection } from './pages/AdminPage'
+import { adminRouteForSection, adminSectionForRoute } from './pages/admin/routeMap'
 import { canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseSales, normalizeRole } from './lib/access'
 import { fetchConfiguredProducts, subscribeConfiguredProducts } from './lib/products'
 import type { AppUser, StockMovement } from './types'
@@ -39,7 +40,7 @@ function App() {
   const [authReady, setAuthReady] = useState(!supabase)
   const [movements, setMovements] = useState<StockMovement[]>([])
   const [inventoryTab, setInventoryTab] = useState<InventoryTab>('overview')
-  const [mgmtSection, setMgmtSection] = useState<AdminSection | undefined>(undefined)
+  const [mgmtSection, setMgmtSection] = useState<AdminSection | undefined>(() => managementSectionFromHash())
   const needsMovements = ['today', 'restaurant', 'report', 'inventory', 'handover', 'orders'].includes(page)
 
   const refreshMovements = useCallback(async () => {
@@ -135,8 +136,8 @@ function App() {
       const role = normalizeRole((profile?.role || user.role) as AppUser['role'])
       const branchId = profile?.branch_id || user.branchId
       let blocked = !profile || profile.active === false
-      if ((role === 'staff' || role === 'shift_leader') && !branchId) blocked = true
-      if (!blocked && (role === 'staff' || role === 'shift_leader')) {
+      if ((role === 'staff' || role === 'shift_leader' || role === 'cashier') && !branchId) blocked = true
+      if (!blocked && (role === 'staff' || role === 'shift_leader' || role === 'cashier')) {
         const { data: branch } = await supabase
           .from('branches')
           .select('id, active')
@@ -192,7 +193,10 @@ function App() {
     }
   }, [user?.id, user?.role, user?.authToken])
   useEffect(() => {
-    const onHashChange = () => setPage(pageFromHash())
+    const onHashChange = () => {
+      setPage(pageFromHash())
+      setMgmtSection(managementSectionFromHash())
+    }
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
@@ -224,9 +228,10 @@ function App() {
 
   function navigate(nextPage: Page, section?: string) {
     setPage(nextPage)
-    setMgmtSection(nextPage === 'management' ? (section as AdminSection | undefined) : undefined)
-    const nextHash = `#${nextPage}`
-    if (window.location.hash !== nextHash) window.history.replaceState(null, '', nextHash)
+    const nextSection = nextPage === 'management' ? ((section || 'overview') as AdminSection) : undefined
+    setMgmtSection(nextSection)
+    const nextHash = nextPage === 'management' ? `#${adminRouteForSection(nextSection!)}` : `#${nextPage}`
+    if (window.location.hash !== nextHash) window.history.pushState(null, '', nextHash)
   }
 
   function handleLogin(nextUser: AppUser) {
@@ -272,7 +277,7 @@ function App() {
         <LazyRouteErrorBoundary key={page}>
           <Suspense fallback={<PageLoadFallback />}>
         {page === 'today' && <TodayPage user={user} movements={movements} onNavigate={navigate} onOpenInventory={openInventory} />}
-        {page === 'dashboard' && canUseManagement(user.role) && <ManagerDashboardPage user={user} onNavigate={navigate} />}
+        {page === 'dashboard' && user.role === 'manager' && <ManagerDashboardPage user={user} onNavigate={navigate} />}
         {page === 'sales' && <SalesPage user={user} onNavigate={navigate} />}
         {page === 'my-records' && <MyRecordsPage user={user} onNavigate={navigate} />}
         {page === 'report-archive' && <ReportArchivePage user={user} />}
@@ -307,6 +312,7 @@ function App() {
         {page === 'admin-accounts' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="accounts" focused />}
         {page === 'control' && canUseAdmin(user.role) && <ControlCenterPage user={user} />}
         {page === 'kitchen' && canUseKitchen(user.role) && <KitchenPage user={user} />}
+            <RouteLoadSettled />
           </Suspense>
         </LazyRouteErrorBoundary>
       </div>
@@ -315,11 +321,38 @@ function App() {
 }
 
 function PageLoadFallback({ label = 'Đang mở màn hình…' }: { label?: string }) {
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        if (sessionStorage.getItem(ROUTE_LOAD_WATCHDOG_KEY) === '1') return
+        sessionStorage.setItem(ROUTE_LOAD_WATCHDOG_KEY, '1')
+        window.location.reload()
+      } catch {
+        // A visible loading state remains safer than an unbounded reload loop.
+      }
+    }, 8000)
+    return () => window.clearTimeout(timer)
+  }, [])
   return <CapyLoadingWindow forced label={label} />
 }
 
+const ROUTE_LOAD_WATCHDOG_KEY = 'gustino:route-load-watchdog'
+
+function RouteLoadSettled() {
+  useEffect(() => {
+    try {
+      sessionStorage.removeItem(ROUTE_LOAD_WATCHDOG_KEY)
+    } catch {
+      // Storage can be unavailable in strict privacy modes.
+    }
+  }, [])
+  return null
+}
+
 function pageFromHash(): Page {
-  const candidate = window.location.hash.replace('#', '')
+  const hashPath = window.location.hash.replace(/^#/, '')
+  if (hashPath.startsWith('/admin/')) return 'management'
+  const candidate = hashPath.split('/')[0]
   if (candidate === 'history') return 'orders'
   if (candidate === 'admin') return 'management'
   return [
@@ -350,6 +383,16 @@ function pageFromHash(): Page {
     : 'launcher'
 }
 
+function managementSectionFromHash(): AdminSection | undefined {
+  const path = window.location.hash.replace(/^#/, '')
+  if (path.startsWith('/admin/')) return adminSectionForRoute(path)
+  const [page, section] = path.split('/')
+  if (page !== 'management') return undefined
+  return ['overview', 'revenue', 'attendance', 'commission', 'payroll', 'inventory', 'requests', 'accounts'].includes(section)
+    ? section as AdminSection
+    : 'overview'
+}
+
 export default App
 
 function movementSignature(items: StockMovement[]) {
@@ -358,16 +401,18 @@ function movementSignature(items: StockMovement[]) {
 
 function canAccessPage(user: AppUser, page: Page) {
   if (page === 'launcher') return true
-  if (page === 'attendance') return user.role !== 'kitchen' && user.role !== 'manager'
-  if (page === 'dashboard') return canUseManagement(user.role)
+  if (page === 'attendance') return user.role !== 'kitchen' && user.role !== 'manager' && user.role !== 'cashier'
+  if (page === 'dashboard') return user.role === 'manager'
   if (page === 'sales') return canUseSales(user.role)
   if (page === 'my-records') return user.role === 'staff' || user.role === 'shift_leader'
-  if (page === 'report-archive') return canUseAdmin(user.role)
+  if (page === 'report-archive') return canUseManagement(user.role)
+  if (page === 'report') return canUseOperations(user.role)
   if (page === 'inventory') return canUseOperations(user.role)
-  if (page === 'management') return canUseManagement(user.role)
+  if (page === 'orders') return canUseManagement(user.role) || canUseOperations(user.role)
+  if (page === 'management') return user.role === 'admin'
   if (page === 'manager-attendance' || page === 'manager-payroll') return canUseAdmin(user.role)
   if (page === 'manager-requests') return canUseAdmin(user.role)
-  if (['manager-revenue', 'manager-business', 'manager-inventory'].includes(page)) return canUseManagement(user.role)
+  if (['manager-revenue', 'manager-business', 'manager-inventory'].includes(page)) return user.role === 'manager'
   if (page === 'admin-accounts') return canUseAdmin(user.role)
   if (page === 'control') return canUseAdmin(user.role)
   if (page === 'kitchen') return canUseKitchen(user.role)
@@ -376,8 +421,9 @@ function canAccessPage(user: AppUser, page: Page) {
 
 function defaultPageForRole(user: AppUser): Page {
   if (user.role === 'kitchen') return 'kitchen'
-  if (user.role === 'staff') return 'sales'
-  if (canUseManagement(user.role)) return 'dashboard'
+  if (user.role === 'staff' || user.role === 'cashier') return 'sales'
+  if (user.role === 'admin') return 'management'
+  if (user.role === 'manager') return 'dashboard'
   if (canUseOperations(user.role)) return 'today'
   return 'attendance'
 }

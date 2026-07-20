@@ -230,6 +230,7 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
           movements={movements}
           onChanged={refresh}
           onFeedback={setFeedback}
+          onOpenRegistration={() => setTab('board')}
         />
       )}
       {!loading && tab === 'board' && (
@@ -262,8 +263,20 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
   )
 }
 
+function mergeAttendanceRecords(
+  records: AttendanceRecord[],
+  optimisticRecords: Record<string, AttendanceRecord>,
+) {
+  const byId = new Map(records.map((record) => [record.id, record]))
+  Object.values(optimisticRecords).forEach((record) => {
+    const serverRecord = byId.get(record.id)
+    if (!serverRecord || record.checkOutTime || !serverRecord.checkOutTime) byId.set(record.id, record)
+  })
+  return Array.from(byId.values())
+}
+
 function SchedulePanel({
-  user, registrations, records, movements, onChanged, onFeedback,
+  user, registrations, records, movements, onChanged, onFeedback, onOpenRegistration,
 }: {
   user: AppUser
   registrations: ShiftRegistration[]
@@ -271,15 +284,22 @@ function SchedulePanel({
   movements: StockMovement[]
   onChanged: () => Promise<void>
   onFeedback: (message: string) => void
+  onOpenRegistration: () => void
 }) {
   const [selfies, setSelfies] = useState<Record<string, File | undefined>>({})
   const [selfieLocalPreviews, setSelfieLocalPreviews] = useState<Record<string, string>>({})
   const [selfiePreviews, setSelfiePreviews] = useState<Record<string, string>>({})
+  const [optimisticRecords, setOptimisticRecords] = useState<Record<string, AttendanceRecord>>({})
   const [busyId, setBusyId] = useState('')
   const [busyPhase, setBusyPhase] = useState<'locating' | 'saving' | ''>('')
   const [now, setNow] = useState(() => new Date())
   const ownRegistrations = registrations.filter((item) => item.userId === user.id && item.status !== 'rejected')
+  const effectiveRecords = useMemo(
+    () => mergeAttendanceRecords(records, optimisticRecords),
+    [records, optimisticRecords],
+  )
   const today = localDateKey(now)
+  const hasTodayRegistration = ownRegistrations.some((item) => item.workDate === today)
 
   useEffect(() => {
     const updateClock = () => setNow(new Date())
@@ -319,6 +339,7 @@ function SchedulePanel({
       if (record.selfiePreviewUrl) {
         setSelfiePreviews((current) => ({ ...current, [registration.id]: record.selfiePreviewUrl! }))
       }
+      setOptimisticRecords((current) => ({ ...current, [record.id]: record }))
       pickSelfie(registration, undefined)
       let autoShiftMessage = ''
       if (user.role === 'shift_leader') {
@@ -328,8 +349,8 @@ function SchedulePanel({
           autoShiftMessage = ` Check-in đã lưu, nhưng ca vận hành chưa tự mở: ${error instanceof Error ? error.message : 'hãy thử tải lại trang.'}`
         }
       }
+      await onChanged().catch(() => undefined)
       onFeedback(`Check-in thành công.${autoShiftMessage || ' Chúc bạn một ca làm việc tốt!'}`)
-      await onChanged()
     } catch (error) {
       onFeedback(error instanceof Error ? error.message : 'Không thể check-in. Hãy thử lại.')
       await onChanged().catch(() => undefined)
@@ -348,10 +369,11 @@ function SchedulePanel({
     setBusyId(record.id)
     setBusyPhase('locating')
     try {
-      await checkOut(user, record, registration, selfie, setBusyPhase)
+      const saved = await checkOut(user, record, registration, selfie, setBusyPhase)
+      setOptimisticRecords((current) => ({ ...current, [saved.id]: saved }))
       pickSelfie(registration, undefined)
+      await onChanged().catch(() => undefined)
       onFeedback('Check-out thành công. Ảnh, GPS và địa chỉ bàn giao đã được lưu.')
-      await onChanged()
     } catch (error) {
       onFeedback(error instanceof Error ? error.message : 'Không thể check-out. Hãy thử lại.')
       await onChanged().catch(() => undefined)
@@ -363,7 +385,7 @@ function SchedulePanel({
 
   // Phân loại: ca cần chấm (chưa hoàn tất) lên đầu, ca đã chấm xong tách riêng
   const decorated = ownRegistrations.map((registration) => {
-    const record = findAttendanceRecordForRegistration(records, registration)
+    const record = findAttendanceRecordForRegistration(effectiveRecords, registration)
     const checkInWindow = getCheckInWindow(registration)
     const canCheckIn = registration.workDate === today && !record
     const isCheckedOut = Boolean(record?.checkOutTime)
@@ -502,7 +524,13 @@ function SchedulePanel({
         </div>
         <div className="shift-card-list">
           {pending.map((d) => renderCard(d, false))}
-          {!pending.length && <p className="empty-copy">Không có ca nào cần chấm công lúc này.</p>}
+          {!pending.length && !hasTodayRegistration && (
+            <div className="attendance-registration-empty">
+              <p className="empty-copy">Bạn chưa đăng ký ca hôm nay nên chưa thể check-in.</p>
+              <button type="button" className="primary-button" onClick={onOpenRegistration}>Đăng ký ca hôm nay</button>
+            </div>
+          )}
+          {!pending.length && hasTodayRegistration && <p className="empty-copy">Không có ca nào cần chấm công lúc này.</p>}
         </div>
       </section>
       <AttendanceAdjustmentForm user={user} onFeedback={onFeedback} />

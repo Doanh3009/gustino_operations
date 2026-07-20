@@ -14,6 +14,7 @@ export interface DailyRevenueRow {
   leader?: string
   source: 'report' | 'live'
   createdAt: string
+  hasRevenueSummary?: boolean
 }
 
 export function buildDailyRevenueRows(
@@ -28,9 +29,17 @@ export function buildDailyRevenueRows(
   } = {},
 ) {
   const snapshotRows = latestSnapshotRows(snapshots, options)
-  const snapshotKeys = new Set(snapshotRows.map((row) => `${row.branchId}|${row.reportDate}`))
+  // A partial/legacy snapshot can exist before its summary is populated. It must
+  // not hide authoritative POS receipts for the same branch/day.
+  const snapshotKeys = new Set(snapshotRows
+    .filter((row) => row.hasRevenueSummary)
+    .map((row) => `${row.branchId}|${row.reportDate}`))
   const receiptRows = liveReceiptRows(options.receipts || [], options)
     .filter((row) => !snapshotKeys.has(`${row.branchId}|${row.reportDate}`))
+  const receiptRowKeys = new Set(receiptRows.map((row) => `${row.branchId}|${row.reportDate}`))
+  const displayedSnapshotRows = snapshotRows.filter((row) =>
+    row.hasRevenueSummary || !receiptRowKeys.has(`${row.branchId}|${row.reportDate}`),
+  )
   const receiptKeys = new Set([...snapshotKeys, ...receiptRows.map((row) => `${row.branchId}|${row.reportDate}`)])
   const liveRows = liveAllocationRows(allocations, options)
     .filter((row) => !receiptKeys.has(`${row.branchId}|${row.reportDate}`))
@@ -38,7 +47,7 @@ export function buildDailyRevenueRows(
   const movementRows = liveMovementRows(movements, options)
     .filter((row) => !liveKeys.has(`${row.branchId}|${row.reportDate}`))
 
-  return [...snapshotRows, ...receiptRows, ...liveRows, ...movementRows]
+  return [...displayedSnapshotRows, ...receiptRows, ...liveRows, ...movementRows]
     .sort((a, b) => b.reportDate.localeCompare(a.reportDate) || b.createdAt.localeCompare(a.createdAt))
 }
 
@@ -66,6 +75,7 @@ function latestSnapshotRows(
     leader: snap.payload.summary?.leader,
     source: 'report' as const,
     createdAt: snap.createdAt,
+    hasRevenueSummary: typeof snap.payload.summary?.revenue === 'number',
   }))
 }
 

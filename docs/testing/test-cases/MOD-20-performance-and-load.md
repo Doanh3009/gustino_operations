@@ -2,6 +2,14 @@
 
 Status: in progress; source/static reproduction active and browser timing pending.
 
+## 2026-07-20 — responsive overflow hardening
+
+- Common Admin/Inventory/Orders flex/grid children receive explicit `min-width: 0`/`max-width: 100%`; long user/data text wraps; wide tables and ledgers scroll inside their own containers.
+- Removed only the mobile header Gustino logo requested by the owner. Desktop/sidebar logo remains.
+- Employee daily-revenue chart has bounded height, horizontal scrolling and phone sizing.
+- Evidence: focused owner regression, `MOBILE_HANDOVER_REPORT_OVERFLOW_OK`, fixed sidebar, role UI, operations performance, TypeScript and guarded build pass.
+- Browser skill connection is unavailable (`[]`), so signed-in responsive screenshots are pending and no visual pass is claimed.
+
 | ID | Flow | Expected result | Automation/status |
 |---|---|---|---|
 | MOD20-TC-BUNDLE-01 | Open login/one business page | Unrelated heavy pages are not part of the initial synchronous import graph | `OPERATIONS_UX_PERFORMANCE_OK`; production build emits page chunks; browser timing pending |

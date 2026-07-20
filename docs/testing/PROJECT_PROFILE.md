@@ -4,6 +4,12 @@ Last updated: 2026-07-16
 
 ## Confirmed discovery
 
+- 2026-07-20 MOD-04 isolated LAN account lifecycle/browser integration passes create, login, password reset, old/new password enforcement and deactivation, plus current Admin employee-form and staff weekly-board rendering. This does not substitute for the pending production Edge/Auth verification.
+- 2026-07-20 MOD-08 isolated LAN browser integration now passes end to end: own-shift registrations plus leader attendance automatically open Ca sáng, in-shift POS is visible during handover, and both Ca sáng/Ca tối close into the report. The QA store is isolated; cloud/multi-device verification remains pending and no application code changed.
+- 2026-07-20 corrected local UX batch: manual sale-out preserves the explicit confirm-and-continue exception. Sub-kilogram kg stock defaults outbound entry to grams, and bulk residue below the smallest configured package is not labelled ready to sell. Active priced non-kg SKUs are presented separately as POS menu items; employee CRM sales aggregates by business date; Admin purchasing is read-only with Excel export; mobile-header/overflow and competition-table layouts are tightened. These changes are local and not deployed.
+- Attendance reverse-geocode reliability: the client previously timed out at 4 seconds while two server providers could run sequentially for 10 seconds. The local API now races the providers and the client timeout is 6.5 seconds. Physical HTTPS phone verification is still pending because the in-app Browser list is empty.
+- Checked-stock RPC migration-order warning: `20260624_allow_same_batch_outputs.sql` and `schema.sql` use latest physical count plus per-SKU advisory locking, but later `20260701_inventory_dashboard_handover_repair.sql` redefines the function without either behavior. A replacement migration requires direct approval and was not created/applied.
+
 - Product: multi-branch restaurant operations web application.
 - Frontend: React 19, TypeScript, Vite; hash-based page selection in `src/App.tsx`.
 - Data/backend: Supabase Auth/PostgreSQL/RLS/RPC when configured; README states a localStorage demo fallback; LAN scripts/API also exist.

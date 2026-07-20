@@ -10,7 +10,7 @@ export function canUseAdmin(role: Role) {
 }
 
 export function canUseSales(role: Role) {
-  return ['shift_leader', 'staff'].includes(role)
+  return ['shift_leader', 'staff', 'cashier'].includes(role)
 }
 
 export function canUseOperations(role: Role) {
@@ -53,6 +53,7 @@ export function roleLabel(role: Role, lang: Lang = getLang()) {
       manager: 'Manager',
       shift_leader: 'Shift Leader',
       staff: 'Staff',
+      cashier: 'POS Cashier',
       kitchen: 'Kitchen',
     }[role]
   }
@@ -62,6 +63,7 @@ export function roleLabel(role: Role, lang: Lang = getLang()) {
     manager: tx.roleManager,
     shift_leader: tx.roleShiftLeader,
     staff: tx.roleStaff,
+    cashier: 'Thu ngân POS',
     kitchen: tx.roleKitchen,
   }[role]
 }

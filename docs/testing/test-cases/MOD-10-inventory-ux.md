@@ -2,6 +2,16 @@
 
 Status: in progress; visual and live-data verification pending.
 
+## 2026-07-20 — corrected kg/g issue, residue status, menu visibility and checked-RPC response
+
+- `MOD10-TC-NEG-ISSUE-01` Corrected and Passed (source regression): a manual `sale_out` whose grouped quantity exceeds displayed stock shows the explicit need/available confirmation and remains writable only when the operator chooses `Vẫn tiếp tục lập phiếu?`.
+- `MOD10-TC-UNIT-02` Passed (source/type): when a kg SKU has less than 1 kg available, a fresh outbound line defaults to grams. In the screenshot case, entering `5` against `5 g` converts to `0.005 kg`, while the operator can still deliberately change the selector to kg.
+- `MOD10-TC-RESIDUE-01` Passed (source): positive bulk stock below the smallest configured packing source remains visible but reads `Còn dư, chưa đủ đóng gói`, never `Đủ bán`.
+- `MOD10-TC-MENU-01` Passed (source/type/build): stock still contains every active configured SKU, but presentation separates priced non-kg POS sale items as `Món trong menu bán` and labels remaining finished bulk/process stock separately.
+- `MOD10-TC-RPC-400-01` Passed for client-side known exceptions: an explicitly confirmed insufficient processing batch or sale-out bypasses the predictably rejected checked request instead of generating HTTP 400 first.
+- `MOD10-TC-RPC-COUNT-02` Blocked — Requires direct schema approval: migration order can leave production with a checked-RPC body that ignores the latest physical count and advisory locking. No migration was created/applied.
+- Evidence: `OWNER_UX_INVENTORY_ADMIN_20260720_OK`, core business guard and TypeScript pass in the correction batch. Broader inventory regression/build rerun is pending.
+
 | ID | Flow | Expected result | Automation/status |
 |---|---|---|---|
 | MOD10-TC-ZERO-01 | Floating negative zero | Quantity renders as zero, never `-0.00` | `test-report-inventory-ux.mjs` Passed; BUG-007 closed |

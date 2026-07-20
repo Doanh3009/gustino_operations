@@ -64,6 +64,7 @@ try {
     authToken: 'qa-manager-token',
   }
   await assertRedirect(manager, 'dashboard', '.manager-dashboard-page', 'dashboard')
+  await assertRedirect(manager, 'report-archive', '.report-archive-page', 'daily report archive')
   await assertRedirect(manager, 'today', '.manager-dashboard-page', 'operations denied')
   await assertRedirect(manager, 'control', '.manager-dashboard-page', 'admin denied')
 
@@ -76,7 +77,7 @@ try {
     branchIds: ['gold-coast', 'lotte-2310', 'lotte-vt'],
     authToken: 'qa-admin-token',
   }
-  await assertRedirect(admin, 'dashboard', '.manager-dashboard-page', 'dashboard')
+  await assertRedirect(admin, 'dashboard', '.admin-page', 'admin workspace')
   await assertRedirect(admin, 'control', '.control-page', 'control center')
 
   console.log('ROLE_ACCESS_QA_OK')

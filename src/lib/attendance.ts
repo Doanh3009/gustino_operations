@@ -10,6 +10,7 @@ import type {
   AttendanceReportRow,
   Branch,
   EmployeeProfile,
+  EmploymentStatus,
   EmploymentType,
   Role,
   ScheduleEntry,
@@ -54,11 +55,17 @@ async function attendanceApi<T>(user: AppUser, path: string, init?: RequestInit)
   })
   const contentType = response.headers.get('content-type') || ''
   if (!contentType.includes('application/json')) {
-    throw new Error('Máy chủ chấm công chưa hoạt động. Hãy khởi động lại ứng dụng bằng lệnh npm run dev.')
+    throw Object.assign(
+      new Error('Máy chủ chấm công chưa hoạt động. Hãy khởi động lại ứng dụng bằng lệnh npm run dev.'),
+      { status: response.status },
+    )
   }
   if (!response.ok) {
     const payload = await response.json().catch(() => null)
-    throw new Error(payload?.error || 'Không thể xử lý dữ liệu chấm công.')
+    throw Object.assign(
+      new Error(payload?.error || 'Không thể xử lý dữ liệu chấm công.'),
+      { status: response.status },
+    )
   }
   return response.json() as Promise<T>
 }
@@ -123,7 +130,7 @@ export async function fetchEmployees(user: AppUser, options: { includeInactive?:
   const branches = permittedBranchIds(user)
   const activeBranches = await activeBranchIdSet()
   const client = supabase!
-  let query = client.from('profiles').select('id, full_name, email, role, branch_id, active, employment_type, position_title, avatar_url').order('full_name')
+  let query = client.from('profiles').select('id, full_name, email, role, branch_id, active, employment_type, position_title, avatar_url, employment_status, employment_start_date, probation_end_date, employment_end_date, employment_note').order('full_name')
   if (!options.includeInactive) query = query.eq('active', true)
   if (user.role !== 'admin') query = query.in('branch_id', branches)
   let { data, error } = await query as { data: any[] | null; error: any }
@@ -142,7 +149,48 @@ export async function fetchEmployees(user: AppUser, options: { includeInactive?:
     employmentType: row.employment_type || undefined,
     positionTitle: row.position_title || undefined,
     avatarUrl: row.avatar_url || undefined,
+    employmentStatus: row.employment_status || (row.active === false ? 'ended' : 'working'),
+    employmentStartDate: row.employment_start_date || undefined,
+    probationEndDate: row.probation_end_date || undefined,
+    employmentEndDate: row.employment_end_date || undefined,
+    employmentNote: row.employment_note || '',
   }))
+}
+
+export async function updateEmployeeCrmDetails(
+  user: AppUser,
+  employeeId: string,
+  input: {
+    employmentStatus: EmploymentStatus
+    employmentStartDate?: string
+    probationEndDate?: string
+    employmentEndDate?: string
+    employmentNote?: string
+  },
+) {
+  if (user.role !== 'admin') throw new Error('Chỉ Admin hệ thống được cập nhật hồ sơ CRM nhân viên.')
+  if (shouldUseAttendanceApi(user)) {
+    return attendanceApi<EmployeeProfile>(user, `/employees/${employeeId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    })
+  }
+  const { data, error } = await supabase!.rpc('admin_update_employee_crm', {
+    p_employee_id: employeeId,
+    p_employment_status: input.employmentStatus,
+    p_start_date: input.employmentStartDate || null,
+    p_probation_end_date: input.probationEndDate || null,
+    p_end_date: input.employmentStatus === 'ended' ? input.employmentEndDate || null : null,
+    p_note: input.employmentNote || '',
+  })
+  if (error) throw error
+  return {
+    employmentStatus: data.employment_status as EmploymentStatus,
+    employmentStartDate: data.employment_start_date || undefined,
+    probationEndDate: data.probation_end_date || undefined,
+    employmentEndDate: data.employment_end_date || undefined,
+    employmentNote: data.employment_note || '',
+  }
 }
 
 export async function fetchSchedulePeople(user: AppUser): Promise<SchedulePerson[]> {
@@ -913,6 +961,7 @@ export async function fetchAttendanceRecords(user: AppUser, filters: AttendanceF
 export type AttendancePhase = 'locating' | 'saving'
 
 const ATTENDANCE_WRITE_MAX_ATTEMPTS = 2
+const ATTENDANCE_GEOCODE_MAX_ATTEMPTS = 2
 
 async function withAttendanceWriteRetry<T>(action: () => Promise<T>): Promise<T> {
   let lastError: unknown
@@ -1034,19 +1083,36 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
   })
   const checkOutSelfieUrl = await uploadSelfie(user, registration, stampedSelfie)
   if (shouldUseAttendanceApi(user)) {
-    await withAttendanceWriteRetry(() => attendanceApi(user, `/records/${record.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-          checkOutTime,
-          updatedAt: checkOutTime,
-          checkOutSelfieUrl,
-          checkOutLatitude: location.latitude,
-          checkOutLongitude: location.longitude,
-          checkOutAccuracy: location.accuracy,
-          checkOutAddress: location.address,
-        }),
-      }))
-    return
+    try {
+      const saved = await withAttendanceWriteRetry(() => attendanceApi<AttendanceRecord>(user, `/records/${record.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+            checkOutTime,
+            updatedAt: checkOutTime,
+            checkOutSelfieUrl,
+            checkOutLatitude: location.latitude,
+            checkOutLongitude: location.longitude,
+            checkOutAccuracy: location.accuracy,
+            checkOutAddress: location.address,
+          }),
+        }))
+      return saved?.id ? saved : {
+        ...record,
+        checkOutTime,
+        checkOutSelfieUrl,
+        checkOutLatitude: location.latitude,
+        checkOutLongitude: location.longitude,
+        checkOutAccuracy: location.accuracy,
+        checkOutAddress: location.address,
+        updatedAt: checkOutTime,
+      }
+    } catch (error) {
+      const existing = await attendanceApi<AttendanceRecord[]>(user, `/records?userId=${encodeURIComponent(user.id)}`)
+        .then((rows) => rows.find((item) => item.id === record.id))
+        .catch(() => undefined)
+      if (existing?.checkOutTime && isRetryableAttendanceWriteError(error)) return existing
+      throw error
+    }
   }
   try {
     await withAttendanceWriteRetry(async () => {
@@ -1069,8 +1135,17 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
       throw new Error('Supabase chưa xác nhận check-out. Hệ thống sẽ kiểm tra và thử lại một lần.')
     })
   } catch (error) {
-    if (await verifyCompletedCheckout(user.id, record.id).catch(() => false)) return
-    throw error
+    if (!await verifyCompletedCheckout(user.id, record.id).catch(() => false)) throw error
+  }
+  return {
+    ...record,
+    checkOutTime,
+    checkOutSelfieUrl,
+    checkOutLatitude: location.latitude,
+    checkOutLongitude: location.longitude,
+    checkOutAccuracy: location.accuracy,
+    checkOutAddress: location.address,
+    updatedAt: checkOutTime,
   }
 }
 
@@ -1100,10 +1175,10 @@ async function uploadSelfie(user: AppUser, registration: ShiftRegistration, self
   if (!selfie.size) throw new Error('Ảnh selfie là bắt buộc.')
   if (shouldUseAttendanceApi(user)) {
     const dataUrl = await blobToDataUrl(selfie)
-    const result = await attendanceApi<{ url: string }>(user, '/selfies', {
-      method: 'POST',
-      body: JSON.stringify({ registrationId: registration.id, branchId: registration.branchId, dataUrl }),
-    })
+    const result = await withAttendanceWriteRetry(() => attendanceApi<{ url: string }>(user, '/selfies', {
+        method: 'POST',
+        body: JSON.stringify({ registrationId: registration.id, branchId: registration.branchId, dataUrl }),
+      }))
     return result.url
   }
   const path = `${user.id}/${registration.branchId}/${registration.id}-${Date.now()}.jpg`
@@ -1491,18 +1566,29 @@ async function getAttendanceLocation() {
   const latitude = position.coords.latitude
   const longitude = position.coords.longitude
   const accuracy = position.coords.accuracy
-  let address = ''
-  try {
-    // Có timeout để tránh treo nút chấm công khi dịch vụ địa chỉ chậm/không phản hồi.
-    const response = await fetchWithTimeout(`/api/reverse-geocode?lat=${encodeURIComponent(latitude)}&lng=${encodeURIComponent(longitude)}`, 5000)
-    if (response.ok) {
-      const payload = await response.json()
-      if (payload?.address) address = payload.address
-    }
-  } catch {}
-  if (!isConcreteAttendanceAddress(address)) address = await reverseGeocodeFromBrowser(latitude, longitude).catch(() => '')
-  address = requireConcreteAttendanceAddress(address)
+  const address = requireConcreteAttendanceAddress(
+    await reverseGeocodeAttendanceWithRetry(latitude, longitude),
+  )
   return { latitude, longitude, accuracy, address }
+}
+
+async function reverseGeocodeAttendanceWithRetry(latitude: number, longitude: number) {
+  let address = ''
+  for (let attempt = 1; attempt <= ATTENDANCE_GEOCODE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      // Retry is bounded and never substitutes coordinates for the required address.
+      const response = await fetchWithTimeout(`/api/reverse-geocode?lat=${encodeURIComponent(latitude)}&lng=${encodeURIComponent(longitude)}`, 6500)
+      if (response.ok) {
+        const payload = await response.json()
+        if (payload?.address) address = payload.address
+      }
+    } catch {}
+    if (isConcreteAttendanceAddress(address)) return address
+    if (attempt < ATTENDANCE_GEOCODE_MAX_ATTEMPTS) {
+      await new Promise((resolve) => window.setTimeout(resolve, 250))
+    }
+  }
+  return reverseGeocodeFromBrowser(latitude, longitude).catch(() => '')
 }
 
 async function getTrustedTimestamp() {

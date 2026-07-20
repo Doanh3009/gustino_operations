@@ -123,6 +123,22 @@ export async function fetchPayrollEntries(user: AppUser, period: string, branchI
   return []
 }
 
+export async function fetchEmployeePayrollHistory(user: AppUser, employeeId: string): Promise<PayrollEntry[]> {
+  if (user.role !== 'admin') throw new Error('Chỉ Admin hệ thống được xem lịch sử lương đầy đủ.')
+  if (shouldUseLanApi(user) || !supabase) return []
+  const { data, error } = await supabase
+    .from('payroll_entries')
+    .select('*')
+    .eq('employee_id', employeeId)
+    .order('period', { ascending: false })
+    .limit(36)
+  if (error) {
+    if (tableMissing(error)) return []
+    throw error
+  }
+  return (data || []).map(mapEntry)
+}
+
 export async function upsertPayrollEntry(user: AppUser, entry: PayrollEntry): Promise<void> {
   if (!shouldUseLanApi(user) && cloudReady !== false) {
     const { error } = await supabase!.from('payroll_entries').upsert({

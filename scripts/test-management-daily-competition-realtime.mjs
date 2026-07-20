@@ -10,14 +10,18 @@ assert.match(admin, /useState<'daily' \| 'monthly' \| 'leaders'>\('daily'\)/, 'T
 assert.match(admin, /const \[competitionDate, setCompetitionDate\] = useState\(todayKey\)/, 'Thiếu ngày xem thi đua.')
 assert.match(admin, /allocationReportDate\(item\) === competitionDate/, 'Thi đua ngày chưa lọc đúng ngày được chọn.')
 assert.match(admin, /receipt\.businessDate === competitionDate/, 'Doanh thu thi đua ngày chưa lọc đúng ngày được chọn.')
-assert.match(admin, /item\.workDate === competitionDate/, 'Lịch làm thi đua ngày chưa lọc đúng ngày được chọn.')
+assert.match(
+  admin,
+  /filterCompetitionAttendanceRecords\(records, registrations,[\s\S]{0,180}from: competitionDate,[\s\S]{0,80}to: competitionDate/,
+  'Ca có check-in của thi đua ngày chưa lọc đúng ngày được chọn.',
+)
 assert.doesNotMatch(admin, /TOP 3 NHÂN VIÊN HÔM NAY/, 'Thi đua ngày vẫn là card Top 3 cố định.')
 assert.doesNotMatch(admin, /<CompetitionMiniBoard/, 'Thi đua vẫn render bằng card riêng thay vì một bảng phân loại.')
 assert.match(admin, /aria-label="Phân loại bảng thi đua"/, 'Thiếu điều khiển phân loại thi đua rõ nghĩa.')
 assert.match(admin, /value="daily">Theo ngày</, 'Thiếu phân loại thi đua theo ngày.')
 assert.match(admin, /value="monthly">Theo tháng</, 'Thiếu phân loại thi đua theo tháng.')
 assert.match(admin, /value="leaders">Ca trưởng theo tháng</, 'Thiếu phân loại thi đua ca trưởng.')
-assert.match(admin, /className="competition-classification-table"/, 'Thiếu bảng thi đua dùng chung cho các phân loại.')
+assert.match(admin, /className=\{`competition-classification-table\$\{showReward \? ' with-reward' : ''\}`\}/, 'Thiếu bảng thi đua dùng chung cho các phân loại và biến thể cột thưởng.')
 assert.match(admin, /window\.addEventListener\('focus', refreshWhenActive\)/, 'Trang quản lý chưa làm mới khi quay lại tab.')
 assert.match(admin, /document\.addEventListener\('visibilitychange', refreshWhenVisible\)/, 'Trang quản lý chưa làm mới khi tab hiện lại.')
 assert.match(admin, /window\.setInterval\(refreshWhenActive, 30000\)/, 'Trang quản lý thiếu nhịp kiểm tra dự phòng khi realtime gián đoạn.')

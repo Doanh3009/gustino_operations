@@ -23,6 +23,7 @@ const bundles = await Promise.all(files.map(async (name) => ({
 const expectedHost = new URL(expectedUrl).host
 const urlBundle = bundles.find((item) => item.source.includes(expectedUrl) || item.source.includes(expectedHost))
 const keyBundle = bundles.find((item) => item.source.includes(expectedAnonKey))
+const revenueBundle = bundles.find((item) => /^revenue-[\w-]+\.js$/.test(item.name))
 assert.ok(
   urlBundle,
   'production JS does not contain the configured Supabase project URL; users would fall back to the LAN API and see empty data',
@@ -31,8 +32,13 @@ assert.ok(
   keyBundle,
   'production JS does not contain the public Supabase anon key; browser authentication/data reads cannot work',
 )
+assert.ok(revenueBundle, 'production build is missing the shared revenue bundle')
+assert.ok(
+  revenueBundle.source.includes('hasRevenueSummary') && revenueBundle.source.includes('receipt-'),
+  'production revenue bundle lost the partial-snapshot POS fallback; deploying it would hide valid receipt revenue',
+)
 
-console.log(`PRODUCTION_SUPABASE_BUNDLE_OK (${basename(urlBundle.name)})`)
+console.log(`PRODUCTION_SUPABASE_BUNDLE_OK (${basename(urlBundle.name)}; ${revenueBundle.name})`)
 
 async function readEnv(path) {
   const result = {}

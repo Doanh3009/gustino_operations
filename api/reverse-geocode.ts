@@ -4,17 +4,24 @@ export default async function handler(request: any, response: any) {
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
     return response.status(400).json({ error: 'Tọa độ không hợp lệ.' })
   }
-  const nominatimAddress = await reverseWithNominatim(latitude, longitude).catch(() => '')
-  if (nominatimAddress && !isCoordinateOnly(nominatimAddress)) {
+  // Both providers previously ran sequentially (up to 10 seconds) while the
+  // attendance client stopped waiting after 4 seconds. Race the approved
+  // providers and return the first concrete address instead.
+  const result = await Promise.any([
+    concreteProviderResult('nominatim', reverseWithNominatim(latitude, longitude)),
+    concreteProviderResult('bigdatacloud', reverseWithBigDataCloud(latitude, longitude)),
+  ]).catch(() => null)
+  if (result) {
     response.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800')
-    return response.status(200).json({ address: nominatimAddress, source: 'nominatim' })
-  }
-  const bigDataAddress = await reverseWithBigDataCloud(latitude, longitude).catch(() => '')
-  if (bigDataAddress && !isCoordinateOnly(bigDataAddress)) {
-    response.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800')
-    return response.status(200).json({ address: bigDataAddress, source: 'bigdatacloud' })
+    return response.status(200).json(result)
   }
   return response.status(502).json({ error: 'Chưa lấy được địa chỉ cụ thể từ vị trí này.' })
+}
+
+async function concreteProviderResult(source: 'nominatim' | 'bigdatacloud', request: Promise<string>) {
+  const address = await request
+  if (!address || isCoordinateOnly(address)) throw new Error('Provider did not return a concrete address')
+  return { address, source }
 }
 
 async function reverseWithNominatim(latitude: number, longitude: number) {

@@ -102,7 +102,7 @@ export async function fetchConfiguredBranchRows(user?: AppUser): Promise<ConfigB
   if (!supabase) return readConfiguredBranchRows()
   let query = supabase
     .from('branches')
-    .select('id,name,active')
+    .select('id,name,active,address,manager_name')
     .order('name')
   if (scopedBranchIds?.length) query = query.in('id', scopedBranchIds)
   const { data, error } = await query
@@ -110,6 +110,8 @@ export async function fetchConfiguredBranchRows(user?: AppUser): Promise<ConfigB
   const rows = (data || []).map((row) => normalizeBranch({
     id: row.id,
     name: row.name,
+    address: row.address || '',
+    manager: row.manager_name || '',
     active: row.active !== false,
     source: BRANCHES.some((branch) => branch.id === row.id) ? 'system' : 'custom',
   }))
@@ -139,13 +141,22 @@ export async function syncConfiguredBranchRows(user: AppUser, branches: ConfigBr
   if (!supabase || user.role !== 'admin') return
   for (const branch of rows) {
     if (branch.active !== false) {
-      const { error } = await supabase.rpc('upsert_config_branch', {
+      const { error: crmError } = await supabase.rpc('admin_upsert_crm_branch', {
         p_branch_id: branch.id,
-        p_branch_name: branch.name,
+        p_name: branch.name,
+        p_address: branch.address || '',
+        p_manager_name: branch.manager || '',
       })
-      if (error) {
-        if (!isMissingRpc(error, 'upsert_config_branch')) throw error
-        await upsertBranchDirect(branch)
+      if (crmError) {
+        if (!isMissingRpc(crmError, 'admin_upsert_crm_branch')) throw crmError
+        const { error } = await supabase.rpc('upsert_config_branch', {
+          p_branch_id: branch.id,
+          p_branch_name: branch.name,
+        })
+        if (error) {
+          if (!isMissingRpc(error, 'upsert_config_branch')) throw error
+          await upsertBranchDirect(branch)
+        }
       }
     } else {
       const { error } = await supabase.rpc('set_config_branch_active', {
@@ -204,6 +215,8 @@ async function upsertBranchDirect(branch: ConfigBranch) {
     .upsert({
       id: branch.id,
       name: branch.name,
+      address: branch.address || '',
+      manager_name: branch.manager || '',
       active: branch.active !== false,
     }, { onConflict: 'id' })
   if (error) throw error

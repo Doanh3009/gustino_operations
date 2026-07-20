@@ -68,6 +68,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   const latestClosedOwnSession = [...closedBagSessions]
     .filter((item) => item.leaderId === user.id || item.leaderName.trim().toLocaleLowerCase('vi') === user.name.trim().toLocaleLowerCase('vi'))
     .sort((a, b) => (b.endedAt || b.startedAt).localeCompare(a.endedAt || a.startedAt))[0]
+  const photoSession = openBagSession || latestClosedOwnSession
   const expectedDailyShifts = 2
   const reportReady = Boolean(latestClosedOwnSession)
   const reportDone = operationDay?.status === 'closed'
@@ -155,8 +156,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
     }, 30000)
     return () => window.clearInterval(timer)
   }, [todayKey, user.id, user.branchId])
-  const scrollToOpeningPhoto = () => document.getElementById('today-opening-photo')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  const scrollToClosingPhoto = () => document.getElementById('today-closing-photo')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  const scrollToPhotoActions = () => document.getElementById('shift-photo-quick-actions')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   const latestClosedSession = [...closedBagSessions].sort((a, b) => b.sequence - a.sequence)[0]
   const openingPhotoDone = Boolean(openBagSession?.openingPhotoUrl || latestClosedSession?.openingPhotoUrl)
   const closingPhotoDone = Boolean(openBagSession?.closingPhotoUrl || latestClosedSession?.closingPhotoUrl)
@@ -167,8 +167,8 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
       title: 'Chụp hình quầy đầu ca',
       description: 'Ca tự mở sau khi ca trưởng check-in. Chụp quầy trước khi bắt đầu bán.',
       done: openingPhotoDone,
-      action: openBagSession ? scrollToOpeningPhoto : () => onNavigate('attendance'),
-      actionLabel: openBagSession ? 'Chụp ảnh đầu ca' : 'Check-in để mở ca',
+      action: scrollToPhotoActions,
+      actionLabel: 'Đến nút chụp hình',
     },
     {
       number: 2,
@@ -203,8 +203,8 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
       title: 'Chụp hình quầy cuối ca',
       description: 'Chụp quầy cuối ca rồi vào Bàn giao để kiểm tồn và chốt ca.',
       done: closingPhotoDone && (!openBagSession || openBagSession.status === 'closed'),
-      action: openBagSession ? scrollToClosingPhoto : () => onNavigate('handover'),
-      actionLabel: openBagSession ? 'Chụp ảnh cuối ca' : 'Xem bàn giao',
+      action: scrollToPhotoActions,
+      actionLabel: 'Đến nút chụp hình',
     },
     {
       number: 6,
@@ -232,8 +232,8 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
           number: 0,
           title: 'Chụp ảnh quầy đầu ca',
           description: 'Ca đã mở. Hãy chụp hoặc tải ảnh quầy đầu ca trước khi bán để đối chiếu cuối ca.',
-          action: scrollToOpeningPhoto,
-          actionLabel: 'Chụp ảnh đầu ca',
+          action: scrollToPhotoActions,
+          actionLabel: 'Đến nút chụp hình',
         }
       : reportReady
         ? {
@@ -272,15 +272,15 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
 
   async function saveOpeningPhoto(file?: File) {
     if (!file) return
-    if (!openBagSession) {
-      setOpeningFeedback('Chưa có ca tự động. Hãy check-in ca trưởng rồi tải lại trang Hôm nay.')
+    if (!photoSession) {
+      setOpeningFeedback('Chưa tìm thấy ca hôm nay để gắn hình. Vui lòng tải lại trang rồi thử lại.')
       return
     }
     setOpeningBusy(true)
     setOpeningFeedback('')
     try {
       const dataUrl = await imageFileToDataUrl(file)
-      await uploadBagShiftPhoto(user, openBagSession, 'opening', dataUrl)
+      await uploadBagShiftPhoto(user, photoSession, 'opening', dataUrl)
       const next = await fetchBagShiftSessions(user, { branchId: user.branchId, date: todayKey })
       setBagSessions(next)
       setOpeningFeedback('Đã lưu ảnh quầy đầu ca.')
@@ -292,12 +292,16 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   }
 
   async function saveClosingPhoto(file?: File) {
-    if (!file || !openBagSession) return
+    if (!file) return
+    if (!photoSession) {
+      setClosingFeedback('Chưa tìm thấy ca hôm nay để gắn hình. Vui lòng tải lại trang rồi thử lại.')
+      return
+    }
     setClosingBusy(true)
     setClosingFeedback('')
     try {
       const dataUrl = await imageFileToDataUrl(file)
-      await uploadBagShiftPhoto(user, openBagSession, 'closing', dataUrl)
+      await uploadBagShiftPhoto(user, photoSession, 'closing', dataUrl)
       const next = await fetchBagShiftSessions(user, { branchId: user.branchId, date: todayKey })
       setBagSessions(next)
       setClosingFeedback('Đã lưu ảnh quầy cuối ca. Bây giờ vào Bàn giao để kiểm tồn và chốt ca.')
@@ -364,6 +368,22 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
           <span className={reportDone ? 'shift-status closed' : !userCheckedInToday ? 'shift-status waiting' : openBagSession ? 'shift-status open' : 'shift-status waiting'}>
             <i /> {reportDone ? 'Đã chốt ngày' : !userCheckedInToday ? 'Cần check-in' : openBagSession ? shiftLabel : 'Chờ mở ca'}
           </span>
+          <div id="shift-photo-quick-actions" className="shift-photo-quick-actions" aria-label="Chụp hình đầu ca và cuối ca">
+            <ShiftPhotoButton
+              compact
+              prefix={photoSession?.openingPhotoUrl ? 'Đổi hình đầu ca' : 'Chụp hình đầu ca'}
+              onPick={(file) => void saveOpeningPhoto(file)}
+            />
+            <ShiftPhotoButton
+              compact
+              prefix={photoSession?.closingPhotoUrl ? 'Đổi hình cuối ca' : 'Chụp hình cuối ca'}
+              onPick={(file) => void saveClosingPhoto(file)}
+            />
+            {(openingBusy || closingBusy) && <small className="shift-photo-quick-feedback">Đang lưu hình…</small>}
+            {!openingBusy && !closingBusy && (openingFeedback || closingFeedback) && (
+              <small className="shift-photo-quick-feedback">{openingFeedback || closingFeedback}</small>
+            )}
+          </div>
         </div>
       </section>
 
@@ -373,26 +393,6 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
           <strong>{attendanceReminder.title}</strong>
           <span>{attendanceReminder.message}</span>
           <button onClick={() => onNavigate('attendance')}>Mở chấm công</button>
-        </section>
-      )}
-
-      {!reportDone && (
-        <section id="today-opening-photo" className={openBagSession?.openingPhotoUrl ? 'today-opening-photo-card ready' : 'today-opening-photo-card'}>
-          <div className="today-opening-photo-copy">
-            <span className="eyebrow dark">ẢNH QUẦY ĐẦU CA</span>
-            <strong>{openBagSession?.openingPhotoUrl ? 'Đã có ảnh quầy đầu ca' : openBagSession ? 'Chụp ảnh quầy đầu ca' : 'Check-in để ca tự mở'}</strong>
-            <small>{openBagSession
-              ? 'Chụp hoặc tải 1 ảnh quầy trước khi bán để đối chiếu cuối ca. Bấm nút rồi chọn Chụp ảnh hoặc Tải ảnh lên.'
-              : 'Sau khi ca trưởng check-in thành công, hệ thống tự mở Ca 1/Ca 2 và nút chụp ảnh sẽ hiện tại đây.'}</small>
-            {openingFeedback && <em>{openingFeedback}</em>}
-          </div>
-          {openBagSession?.openingPhotoUrl && <img src={openBagSession.openingPhotoUrl} alt="Ảnh quầy đầu ca" />}
-          <div className="today-opening-photo-action">
-            {openBagSession
-              ? <ShiftPhotoButton prefix={openBagSession.openingPhotoUrl ? 'Đổi ảnh đầu ca' : 'Ảnh đầu ca'} onPick={(file) => void saveOpeningPhoto(file)} />
-              : <button type="button" className="secondary-button" onClick={() => onNavigate('attendance')}>Mở chấm công</button>}
-            {openingBusy && <small className="attendance-busy-hint">Đang lưu ảnh…</small>}
-          </div>
         </section>
       )}
 
@@ -481,23 +481,6 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
           })}
         </div>
       </section>
-
-      {!reportDone && openBagSession && (
-        <section id="today-closing-photo" className={openBagSession.closingPhotoUrl ? 'today-opening-photo-card today-closing-photo-card ready' : 'today-opening-photo-card today-closing-photo-card'}>
-          <div className="today-opening-photo-copy">
-            <span className="eyebrow dark">BƯỚC CUỐI · ẢNH QUẦY CUỐI CA</span>
-            <strong>{openBagSession.closingPhotoUrl ? 'Đã có ảnh quầy cuối ca' : 'Chụp hình quầy cuối ca'}</strong>
-            <small>Chụp ảnh sau khi kết thúc bán. Ảnh được gắn thẳng vào ca đang mở; sau đó vào Bàn giao để kiểm tồn và chốt ca.</small>
-            {closingFeedback && <em>{closingFeedback}</em>}
-          </div>
-          {openBagSession.closingPhotoUrl && <img src={openBagSession.closingPhotoUrl} alt="Ảnh quầy cuối ca" />}
-          <div className="today-opening-photo-action">
-            <ShiftPhotoButton prefix={openBagSession.closingPhotoUrl ? 'Đổi ảnh cuối ca' : 'Ảnh cuối ca'} onPick={(file) => void saveClosingPhoto(file)} />
-            <button type="button" className="secondary-button" onClick={() => onNavigate('handover')}>Mở Bàn giao</button>
-            {closingBusy && <small className="attendance-busy-hint">Đang lưu ảnh…</small>}
-          </div>
-        </section>
-      )}
 
       {lowStock.length > 0 && <section className="today-warning">
         <strong>Có {lowStock.length} mặt hàng sắp hết</strong>

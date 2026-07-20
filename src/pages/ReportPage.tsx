@@ -711,7 +711,14 @@ export function ReportPage({ user, movements, onNavigate, onRefresh }: Props) {
           </label>
 
           <div className="report-essential-actions">
-            <button className="secondary-button" onClick={() => void exportInfographicImage()} disabled={busy}>Tải ảnh</button>
+            <button className="secondary-button report-backup-image-button" onClick={() => void exportInfographicImage()} disabled={busy}>
+              Lưu ảnh
+            </button>
+            {shiftReportEntry && (
+              <button className="secondary-button" onClick={() => void sendReportToZalo()} disabled={busy}>
+                {busy ? 'Đang gửi…' : 'Gửi Zalo'}
+              </button>
+            )}
             {handoverComplete
               ? <button className="primary-button" onClick={() => onNavigate('today')}>Về màn hình chính</button>
               : finalized
@@ -1002,9 +1009,11 @@ function buildDailyReport(
   const closedShiftCount = todaySessions.filter((item) => item.status === 'closed').length
   const openShiftCount = todaySessions.filter((item) => item.status === 'open').length
   const outstandingCount = todayAllocations.filter((item) => !item.settledAt).length
-  const leaderNames = unique(todaySessions.map((item) => item.leaderName).filter(Boolean))
-  const morningLeaderName = todaySessions.find((item) => item.sequence === 1)?.leaderName || ''
-  const eveningLeaderName = todaySessions.find((item) => item.sequence === 2)?.leaderName || ''
+  const morningSession = todaySessions.find((item) => item.sequence === 1)
+  const eveningSession = todaySessions.find((item) => item.sequence === 2)
+  const morningLeaderName = resolveShiftLeaderName(morningSession, todayRegistrations, todayAttendanceRecords)
+  const eveningLeaderName = resolveShiftLeaderName(eveningSession, todayRegistrations, todayAttendanceRecords)
+  const leaderNames = unique([morningLeaderName, eveningLeaderName].filter(Boolean))
   const blockingIssues = [
     openShiftCount > 0 ? `Còn ${openShiftCount} ca bàn giao quầy đang mở.` : '',
   ].filter(Boolean)
@@ -1081,6 +1090,33 @@ function buildDailyReport(
     bagShiftSummary: buildBagShiftSummary(todaySessions, todayAllocations),
     proofImages: buildProofImages(todaySessions, user.branchId, businessDate),
   }
+}
+
+function resolveShiftLeaderName(
+  session: BagShiftSession | undefined,
+  registrations: ShiftRegistration[],
+  attendanceRecords: AttendanceRecord[],
+) {
+  if (!session) return ''
+  const sessionStart = new Date(session.startedAt).getTime()
+  const sessionEnd = session.endedAt ? new Date(session.endedAt).getTime() : Number.POSITIVE_INFINITY
+  const attendedLeader = registrations
+    .filter((registration) => registration.employmentType === 'leader' && registration.status !== 'rejected')
+    .map((registration) => ({
+      registration,
+      attendance: findAttendanceRecordForRegistration(attendanceRecords, registration),
+    }))
+    .filter((item) => {
+      if (!item.attendance) return false
+      const checkIn = new Date(item.attendance.checkInTime).getTime()
+      const checkOut = item.attendance.checkOutTime
+        ? new Date(item.attendance.checkOutTime).getTime()
+        : Number.POSITIVE_INFINITY
+      return checkIn <= sessionEnd && checkOut >= sessionStart
+    })
+    .sort((a, b) => Math.abs(new Date(a.attendance!.checkInTime).getTime() - sessionStart)
+      - Math.abs(new Date(b.attendance!.checkInTime).getTime() - sessionStart))[0]
+  return attendedLeader?.registration.userName || session.leaderName
 }
 
 function allocationBusinessDate(allocation: BagAllocation, sessions: BagShiftSession[]) {
@@ -1230,10 +1266,6 @@ function buildEmployeeRows(
   const rows = new Map<string, EmployeeReportRow & { productMap: Map<string, EmployeeProductRow> }>()
   const registrationByEmployee = new Map(registrations.map((item) => [item.userId, item]))
   const registrationByName = new Map(registrations.map((item) => [normalizeName(item.userName), item]))
-  const registeredRowKeys = new Set(registrations.flatMap((item) => [
-    `${item.branchId}|${item.userId}`,
-    `${item.branchId}|${normalizeName(item.userName)}`,
-  ]))
   const ensureRow = (
     branchId: string,
     employeeKey: string,
@@ -1387,10 +1419,6 @@ function buildEmployeeRows(
   })
 
   return Array.from(rows.values())
-    .filter((row) => {
-      const branchId = row.key.split('|')[0]
-      return registeredRowKeys.has(row.key) || registeredRowKeys.has(`${branchId}|${normalizeName(row.name)}`)
-    })
     .map(({ productMap, ...row }) => ({
       ...row,
       kpi: Math.min(200, Math.round(row.revenue / Math.max(1, row.targetRevenue) * 100)),

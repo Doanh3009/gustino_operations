@@ -42,7 +42,8 @@ requireMatch(orders, /request\.status === 'pending' \|\| request\.status === 'ac
 requireMatch(kitchen, /onNext=\{\(request\) => void changeStatus\(request, 'acknowledged'\)\}/, 'Nút bếp nhận đơn không chuyển pending → acknowledged.')
 requireMatch(kitchen, /onNext=\{\(request\) => void changeStatus\(request, 'fulfilled'\)\}/, 'Nút bếp hoàn thành không chuyển acknowledged → fulfilled.')
 
-requireMatch(inventory, /Tồn kho chưa đủ cho phiếu xuất:[\s\S]*window\.confirm|window\.confirm\(`Tồn kho chưa đủ cho phiếu xuất:/, 'Phiếu xuất vượt tồn không cảnh báo/xác nhận.')
+requireMatch(inventory, /Tồn kho chưa đủ cho phiếu xuất:[\s\S]{0,300}Vẫn tiếp tục lập phiếu\?/, 'Phiếu xuất vượt tồn thiếu xác nhận rõ số cần và số đang có.')
+requireMatch(inventory, /if \(!proceed\) return[\s\S]{0,160}allowInsufficientStock = true/, 'Phiếu xuất vượt tồn chưa dừng khi hủy hoặc chưa ghi nhận xác nhận khi tiếp tục.')
 requireMatch(inventory, /window\.confirm\(`Xóa \$\{label\}\? Toàn bộ các dòng/, 'Xóa chứng từ kho thiếu bước xác nhận.')
 
 requireMatch(admin, /if \(pendingDeleteId !== employee\.id\)[\s\S]*Bấm “Xác nhận xóa” lần nữa/, 'Xóa tài khoản chưa có xác nhận hai bước.')

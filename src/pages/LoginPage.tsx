@@ -78,11 +78,11 @@ export function LoginPage({ onLogin }: Props) {
             ...((assignments || []) as Array<{ branch_id: string }>).map((item) => item.branch_id),
           ].filter(Boolean)))
         }
-        if ((role === 'staff' || role === 'shift_leader') && !profileBranchId) {
+        if ((role === 'staff' || role === 'shift_leader' || role === 'cashier') && !profileBranchId) {
           await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined)
           throw new Error('Tài khoản nhân viên chưa được gán chi nhánh. Liên hệ Admin để cập nhật trước khi đăng nhập.')
         }
-        if ((role === 'staff' || role === 'shift_leader') && profileBranchId) {
+        if ((role === 'staff' || role === 'shift_leader' || role === 'cashier') && profileBranchId) {
           const { data: branch } = await supabase
             .from('branches')
             .select('id, active')

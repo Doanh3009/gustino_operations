@@ -93,6 +93,7 @@ const ROLE_LABELS: Record<PermissionRole, string> = {
   manager: 'Quản lý',
   shift_leader: 'Ca trưởng',
   staff: 'Nhân viên bán hàng',
+  cashier: 'Thu ngân POS',
   kitchen: 'Bếp',
 }
 
@@ -861,7 +862,6 @@ export function ControlCenterPage({ user }: { user: AppUser }) {
           ['masterdata', 'Dữ liệu nền'],
           ['permissions', 'Phân quyền'],
           ['audit', 'Nhật ký thao tác'],
-          ['cleanup', 'Dọn dữ liệu'],
         ].map(([id, label]) => (
           <button key={id} className={tab === id ? 'active' : ''} onClick={() => setTab(id as ControlTab)}>
             {label}
@@ -1025,31 +1025,6 @@ export function ControlCenterPage({ user }: { user: AppUser }) {
             </div>
           </section>
 
-          <section className="section-card control-branch-card">
-            <div className="section-title">
-              <div><span className="eyebrow dark">CHI NHÁNH / KIOSK</span><h2>Cấu hình điểm bán</h2></div>
-              <span className="date-chip">{branches.filter((item) => item.active).length} đang hoạt động</span>
-            </div>
-            <form className="control-form-grid branch-form" onSubmit={addBranch}>
-              <input value={branchDraft.id} onChange={(event) => setBranchDraft({ ...branchDraft, id: event.target.value })} placeholder="Mã chi nhánh" />
-              <input value={branchDraft.name} onChange={(event) => setBranchDraft({ ...branchDraft, name: event.target.value })} placeholder="Tên chi nhánh" />
-              <input value={branchDraft.address} onChange={(event) => setBranchDraft({ ...branchDraft, address: event.target.value })} placeholder="Địa chỉ" />
-              <input value={branchDraft.manager} onChange={(event) => setBranchDraft({ ...branchDraft, manager: event.target.value })} placeholder="Quản lý phụ trách" />
-              <button className="primary-button">Thêm chi nhánh</button>
-            </form>
-            <div className="control-branch-list">
-              {activeBranches.map((branch) => (
-                <article key={branch.id}>
-                  <span className="admin-avatar">{branch.name.slice(0, 1).toUpperCase()}</span>
-                  <span><strong>{branch.name}</strong><small>{branch.address || 'Chưa có địa chỉ'} · {branch.manager || 'Chưa gán quản lý'}</small></span>
-                  <div className="control-row-actions">
-                    <button className="mini-button" onClick={() => toggleBranch(branch.id)}>{branch.active ? 'Tạm ngưng' : 'Mở lại'}</button>
-                    <button className="mini-button danger" onClick={() => void deleteBranch(branch.id)}>Xóa</button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
         </div>
       )}
 
@@ -1130,37 +1105,6 @@ export function ControlCenterPage({ user }: { user: AppUser }) {
         </section>
       )}
 
-      {tab === 'cleanup' && (
-        <section className="section-card">
-          <div className="section-title">
-            <div><span className="eyebrow dark">DỌN DỮ LIỆU TEST</span><h2>Xóa vĩnh viễn dữ liệu theo chi nhánh & khoảng ngày</h2></div>
-            <span className="date-chip warning-chip">Không thể khôi phục</span>
-          </div>
-          <p className="commission-note">
-            Chọn chi nhánh và khoảng ngày ở bộ lọc phía trên, tick các nhóm dữ liệu cần xóa rồi bấm nút.
-            Dùng để dọn dữ liệu chạy thử trước khi vận hành thật. Hành động được ghi vào nhật ký thao tác.
-          </p>
-          <div className="cleanup-target-grid">
-            {CLEANUP_TARGETS.map((target) => (
-              <label key={target.id} className={cleanupTargets.includes(target.id) ? 'cleanup-target active' : 'cleanup-target'}>
-                <input
-                  type="checkbox"
-                  checked={cleanupTargets.includes(target.id)}
-                  onChange={() => setCleanupTargets((current) => current.includes(target.id)
-                    ? current.filter((id) => id !== target.id)
-                    : [...current, target.id])}
-                />
-                <span><strong>{target.label}</strong><small>{target.hint}</small></span>
-              </label>
-            ))}
-          </div>
-          {cleanupResult && <div className="feedback-bar">{cleanupResult}<button onClick={() => setCleanupResult('')}>×</button></div>}
-          <button className="primary-button danger-button" disabled={cleanupBusy} onClick={() => void handlePurgeTestData()}>
-            {cleanupBusy ? 'Đang xóa…' : '🗑 Xóa dữ liệu đã chọn'}
-          </button>
-        </section>
-      )}
-
       {tab === 'audit' && (
         <section className="section-card">
           <div className="section-title">
@@ -1225,12 +1169,14 @@ function loadPermissions(): PermissionMatrix {
     manager: {},
     shift_leader: {},
     staff: {},
+    cashier: {},
     kitchen: {},
   }
   MODULES.forEach((module) => {
     matrix.manager[module.id] = allActions
     matrix.shift_leader[module.id] = ['inventory', 'handover', 'report', 'orders', 'pos', 'attendance'].includes(module.id) ? operate : viewOnly
     matrix.staff[module.id] = ['pos', 'attendance', 'schedule'].includes(module.id) ? operate : []
+    matrix.cashier[module.id] = module.id === 'pos' ? operate : []
     matrix.kitchen[module.id] = module.id === 'kitchen' ? operate : module.id === 'orders' ? viewOnly : []
   })
   matrix.shift_leader.report = [...operate, 'export']

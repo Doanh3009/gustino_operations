@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useMemo, useRef, useState } from 'react'
-import { INBOUND_PRODUCTS, MOVEMENT_LABELS, PRODUCTS, getInboundProducts, getProcessInputProducts, getProcessingOutputOptions, getProducts, productById } from '../lib/constants'
+import { INBOUND_PRODUCTS, MOVEMENT_LABELS, PACKING_OPTIONS_BY_OUTPUT, PRODUCTS, getInboundProducts, getProcessInputProducts, getProcessingOutputOptions, getProducts, productById } from '../lib/constants'
 import { canvasToBlob, createId, shareOrDownloadBlob } from '../lib/browser'
 import { addMovements, calculateStock, deleteMovements, ensureOperationDay, saveInventoryReport } from '../lib/store'
 import { branchName as configuredBranchName } from '../lib/branches'
@@ -28,6 +28,7 @@ interface VoucherLine { id: string; productId: string; quantity: string; note: s
 interface ProcessLine { id: string; productId: string; quantity: string }
 type InventoryCrmMode = 'stock' | 'inbound' | 'outbound' | 'count'
 type InboundSub = 'material' | 'processing'
+type StockDisplayCategory = 'all' | 'raw' | 'packaging' | 'finished' | 'sale'
 type InventoryPeriod = 'day' | 'month' | 'year' | 'all'
 
 function crmModeFromTab(tab: InventoryTab): InventoryCrmMode {
@@ -49,7 +50,6 @@ const newOutboundLine = (): VoucherLine => ({
   productId: '',
   quantity: '',
   note: '',
-  entryWeightUnit: 'kg',
 })
 
 const newProcessLine = (kind: 'input' | 'output'): ProcessLine => ({
@@ -93,7 +93,7 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
     () => visibleOverviewStock.filter((line) => line.expected > 0.0001),
     [visibleOverviewStock],
   )
-  const lowStockLines = visibleOverviewStock.filter((line) => line.expected <= line.product.lowStock)
+  const lowStockLines = visibleOverviewStock.filter(stockNeedsAttention)
   const periodMovements = useMemo(
     () => movements.filter((item) => {
       if (period === 'all') return true
@@ -228,7 +228,16 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
       .map((line) => {
         const productId = line.productId || defaultProductId
         const product = productById(productId)
-        return { ...line, productId, quantityValue: product ? quantityInProductUnit(product, line) : Number(line.quantity) }
+        const stockLine = stock.find((item) => item.product.id === productId)
+        const normalizedLine = {
+          ...line,
+          productId,
+          entryWeightUnit: line.entryWeightUnit || preferredOutboundWeightUnit(product, stockLine?.expected),
+        }
+        return {
+          ...normalizedLine,
+          quantityValue: product ? quantityInProductUnit(product, normalizedLine) : Number(line.quantity),
+        }
       })
       .filter((line) => line.productId && line.quantityValue > 0)
     if (!validLines.length) {
@@ -244,12 +253,15 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
       const stockLine = stock.find((line) => line.product.id === productId)
       const available = stockLine?.expected || 0
       if (requested > available + 0.0001) {
-        shortLines.push(`${stockLine?.product.name || productId}: cần ${formatNumber(requested)} ${stockLine?.product.unit || ''}, tồn ${formatNumber(available)}`)
+        const unit = stockLine?.product.unit || ''
+        shortLines.push(`${stockLine?.product.name || productId}: cần ${formatStockQuantity(requested, unit)}, tồn ${formatStockQuantity(available, unit)}`)
       }
     }
+    let allowInsufficientStock = false
     if (shortLines.length) {
       const proceed = window.confirm(`Tồn kho chưa đủ cho phiếu xuất:\n\n${shortLines.join('\n')}\n\nVẫn tiếp tục lập phiếu?`)
       if (!proceed) return
+      allowInsufficientStock = true
     }
     setSaving(true)
     const documentId = createId()
@@ -271,7 +283,7 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
           createdAt: now,
           measuredWeightKg: product?.unit === 'kg' ? line.quantityValue : undefined,
         }
-      }), user)
+      }), user, { allowInsufficientStock })
       setFeedback(`Đã lưu phiếu xuất kho gồm ${validLines.length} dòng hàng.`)
       resetOutboundVoucher()
       await onChanged()
@@ -730,22 +742,29 @@ function SmartStockList({
   text: typeof INVENTORY_TEXT[keyof typeof INVENTORY_TEXT]
   compact?: boolean
 }) {
-  const [category, setCategory] = useState<'all' | 'raw' | 'packaging' | 'finished'>('all')
+  const [category, setCategory] = useState<StockDisplayCategory>('all')
+  const displayCategory = (line: ReturnType<typeof calculateStock>[number]): Exclude<StockDisplayCategory, 'all'> =>
+    line.product.category === 'finished' && line.product.unit !== 'kg' && Number(line.product.price || 0) > 0
+      ? 'sale'
+      : line.product.category
   const categoryLabel = (value: string) =>
-    value === 'raw' ? text.raw : value === 'packaging' ? text.packaging : text.finished
-  const presentCategories = (['raw', 'packaging', 'finished'] as const).filter((value) =>
-    stock.some((line) => line.product.category === value))
+    value === 'raw' ? text.raw
+      : value === 'packaging' ? text.packaging
+        : value === 'sale' ? 'Món trong menu bán'
+          : 'Thành phẩm tồn khi chế biến'
+  const presentCategories = (['sale', 'finished', 'raw', 'packaging'] as const).filter((value) =>
+    stock.some((line) => displayCategory(line) === value))
   const sorted = [...stock].sort((a, b) => stockPriority(a) - stockPriority(b) || a.product.name.localeCompare(b.product.name, 'vi'))
   const activeCategory = category !== 'all' && presentCategories.includes(category) ? category : 'all'
-  const filtered = activeCategory === 'all' ? sorted : sorted.filter((line) => line.product.category === activeCategory)
+  const filtered = activeCategory === 'all' ? sorted : sorted.filter((line) => displayCategory(line) === activeCategory)
   const summaries = presentCategories.map((value) => {
-    const rows = stock.filter((line) => line.product.category === value)
+    const rows = stock.filter((line) => displayCategory(line) === value)
     return {
       value,
       label: categoryLabel(value),
       skuCount: rows.length,
       total: rows.reduce((sum, line) => sum + Math.max(0, line.expected), 0),
-      low: rows.filter((line) => line.expected <= line.product.lowStock).length,
+      low: rows.filter(stockNeedsAttention).length,
     }
   })
   return (
@@ -755,7 +774,7 @@ function SmartStockList({
           <article key={summary.value} className={summary.low ? 'warning' : ''}>
             <span>{summary.label}</span>
             <strong>{formatNumber(summary.total)}</strong>
-            <small>{summary.skuCount} mặt hàng{summary.low ? ` · ${summary.low} sắp hết` : ' · đủ tồn'}</small>
+            <small>{summary.skuCount} mặt hàng{summary.low ? ` · ${summary.low} cần chú ý` : ' · đủ tồn'}</small>
           </article>
         ))}
       </div>
@@ -766,7 +785,7 @@ function SmartStockList({
             <option value="all">{text.allCategories} ({stock.length})</option>
             {presentCategories.map((value) => (
               <option key={value} value={value}>
-                {categoryLabel(value)} ({stock.filter((line) => line.product.category === value).length})
+                {categoryLabel(value)} ({stock.filter((line) => displayCategory(line) === value).length})
               </option>
             ))}
           </select>
@@ -774,15 +793,22 @@ function SmartStockList({
       )}
       <div className={compact ? 'smart-stock-list compact' : 'smart-stock-list'}>
         {filtered.map((line) => {
-          const status = line.expected <= line.product.lowStock ? 'low' : 'good'
+          const availability = stockAvailability(line)
+          const status = availability === 'good' ? 'good' : 'low'
           return (
             <article className={status} key={line.product.id}>
               <div>
                 <strong>{line.product.name}</strong>
-                <small>{line.product.sku} · {categoryLabel(line.product.category)}</small>
+                <small>{line.product.sku} · {categoryLabel(displayCategory(line))}</small>
               </div>
               <b>{formatStockQuantity(line.expected, line.product.unit)}</b>
-              <em>{status === 'low' ? text.lowStatus : text.goodStatus}</em>
+              <em>{availability === 'out'
+                ? 'Hết hàng'
+                : availability === 'packing-residue'
+                  ? 'Còn dư, chưa đủ đóng gói'
+                  : availability === 'low'
+                    ? text.lowStatus
+                    : text.goodStatus}</em>
             </article>
           )
         })}
@@ -835,7 +861,7 @@ function OutboundMovementHistory({
             <div className="document-products">
               {rows.map((item) => {
                 const product = PRODUCTS.find((candidate) => candidate.id === item.productId)
-                return <span key={item.id}><strong>{product?.name || item.productId}</strong><b>{formatNumber(item.quantity)} {product?.unit}</b><small>{item.note || 'Xuất bán'}</small></span>
+                return <span key={item.id}><strong>{product?.name || item.productId}</strong><b>{formatStockQuantity(item.quantity, product?.unit || '')}</b><small>{item.note || 'Xuất bán'}</small></span>
               })}
             </div>
           </details>
@@ -861,8 +887,11 @@ function OutboundVoucherEditor({
   const firstProductId = stock[0]?.product.id || ''
   const activeLines = lines.filter((line) => Number(line.quantity) > 0)
   const totalQty = activeLines.reduce((sum, line) => {
-    const product = stock.find((item) => item.product.id === (line.productId || firstProductId))?.product
-    return sum + (product ? quantityInProductUnit(product, line) : Number(line.quantity || 0))
+    const stockLine = stock.find((item) => item.product.id === (line.productId || firstProductId))
+    return sum + (stockLine ? quantityInProductUnit(stockLine.product, {
+      ...line,
+      entryWeightUnit: line.entryWeightUnit || preferredOutboundWeightUnit(stockLine.product, stockLine.expected),
+    }) : Number(line.quantity || 0))
   }, 0)
   return (
     <section className="entry-card voucher-card outbound-voucher-card">
@@ -884,16 +913,26 @@ function OutboundVoucherEditor({
             {lines.map((line, index) => {
               const selectedProductId = line.productId || firstProductId
               const stockLine = stock.find((item) => item.product.id === selectedProductId) || stock[0]
+              const entryWeightUnit = line.entryWeightUnit || preferredOutboundWeightUnit(stockLine.product, stockLine.expected)
               const requested = lines
                 .filter((item) => (item.productId || firstProductId) === stockLine.product.id)
-                .reduce((sum, item) => sum + quantityInProductUnit(stockLine.product, item), 0)
+                .reduce((sum, item) => sum + quantityInProductUnit(stockLine.product, {
+                  ...item,
+                  entryWeightUnit: item.entryWeightUnit || preferredOutboundWeightUnit(stockLine.product, stockLine.expected),
+                }), 0)
               return <article className="voucher-mobile-card" key={line.id}>
                 <div className="voucher-mobile-card-head">
                   <strong>Dòng xuất #{index + 1}</strong>
                   {lines.length > 1 && <button type="button" className="row-remove" onClick={() => onRemove(line.id)}>×</button>}
                 </div>
                 <label>Sản phẩm
-                  <select value={selectedProductId} onChange={(event) => onUpdate(line.id, { productId: event.target.value, entryWeightUnit: 'kg' })}>
+                  <select value={selectedProductId} onChange={(event) => {
+                    const selected = stock.find((item) => item.product.id === event.target.value)
+                    onUpdate(line.id, {
+                      productId: event.target.value,
+                      entryWeightUnit: preferredOutboundWeightUnit(selected?.product, selected?.expected),
+                    })
+                  }}>
                     {stock.map((item) => <option key={item.product.id} value={item.product.id}>{item.product.name}</option>)}
                   </select>
                 </label>
@@ -902,12 +941,12 @@ function OutboundVoucherEditor({
                     <input inputMode="decimal" value={line.quantity} onChange={(event) => onUpdate(line.id, { quantity: cleanNumber(event.target.value) })} placeholder="0" />
                   </label>
                   <div><span>Đơn vị nhập</span>{stockLine.product.unit === 'kg'
-                    ? <select value={line.entryWeightUnit || 'kg'} onChange={(event) => onUpdate(line.id, { entryWeightUnit: event.target.value as 'kg' | 'g' })}><option value="kg">kg</option><option value="g">gram (g)</option></select>
+                    ? <select value={entryWeightUnit} onChange={(event) => onUpdate(line.id, { entryWeightUnit: event.target.value as 'kg' | 'g' })}><option value="kg">kg</option><option value="g">gram (g)</option></select>
                     : <strong>{stockLine.product.unit}</strong>}</div>
                 </div>
                 <small className="stock-available">Khả dụng: {formatStockQuantity(stockLine.expected, stockLine.product.unit)}</small>
                 <small className={requested > stockLine.expected ? 'stock-available insufficient' : 'stock-available'}>
-                  Tổng đang xuất SKU này: {formatNumber(requested)} {stockLine.product.unit}
+                  Tổng đang xuất SKU này: {formatStockQuantity(requested, stockLine.product.unit)}
                 </small>
                 <label>Ghi chú dòng
                   <input value={line.note} onChange={(event) => onUpdate(line.id, { note: event.target.value })} placeholder="Tùy chọn" />
@@ -922,15 +961,25 @@ function OutboundVoucherEditor({
                 {lines.map((line, index) => {
                   const selectedProductId = line.productId || firstProductId
                   const stockLine = stock.find((item) => item.product.id === selectedProductId) || stock[0]
+                  const entryWeightUnit = line.entryWeightUnit || preferredOutboundWeightUnit(stockLine.product, stockLine.expected)
                   const requested = lines
                     .filter((item) => (item.productId || firstProductId) === stockLine.product.id)
-                    .reduce((sum, item) => sum + quantityInProductUnit(stockLine.product, item), 0)
+                    .reduce((sum, item) => sum + quantityInProductUnit(stockLine.product, {
+                      ...item,
+                      entryWeightUnit: item.entryWeightUnit || preferredOutboundWeightUnit(stockLine.product, stockLine.expected),
+                    }), 0)
                   return <tr key={line.id}>
                     <td>{index + 1}</td>
-                    <td><select value={selectedProductId} onChange={(event) => onUpdate(line.id, { productId: event.target.value, entryWeightUnit: 'kg' })}>{stock.map((item) => <option key={item.product.id} value={item.product.id}>{item.product.name}</option>)}</select></td>
-                    <td><span className={requested > stockLine.expected ? 'stock-available insufficient' : 'stock-available'}>{formatNumber(stockLine.expected)} {stockLine.product.unit}</span></td>
+                    <td><select value={selectedProductId} onChange={(event) => {
+                      const selected = stock.find((item) => item.product.id === event.target.value)
+                      onUpdate(line.id, {
+                        productId: event.target.value,
+                        entryWeightUnit: preferredOutboundWeightUnit(selected?.product, selected?.expected),
+                      })
+                    }}>{stock.map((item) => <option key={item.product.id} value={item.product.id}>{item.product.name}</option>)}</select></td>
+                    <td><span className={requested > stockLine.expected ? 'stock-available insufficient' : 'stock-available'}>{formatStockQuantity(stockLine.expected, stockLine.product.unit)}</span></td>
                     <td>{stockLine.product.unit === 'kg'
-                      ? <select value={line.entryWeightUnit || 'kg'} onChange={(event) => onUpdate(line.id, { entryWeightUnit: event.target.value as 'kg' | 'g' })}><option value="kg">kg</option><option value="g">g</option></select>
+                      ? <select value={entryWeightUnit} onChange={(event) => onUpdate(line.id, { entryWeightUnit: event.target.value as 'kg' | 'g' })}><option value="kg">kg</option><option value="g">g</option></select>
                       : <span className="unit-chip">{stockLine.product.unit}</span>}</td>
                     <td><input inputMode="decimal" value={line.quantity} onChange={(event) => onUpdate(line.id, { quantity: cleanNumber(event.target.value) })} placeholder="0" /></td>
                     <td><input value={line.note} onChange={(event) => onUpdate(line.id, { note: event.target.value })} placeholder="Tùy chọn" /></td>
@@ -1553,7 +1602,7 @@ function StockTable({
 }
 
 function stockPriority(line: ReturnType<typeof calculateStock>[number]) {
-  if (line.expected <= line.product.lowStock) return 0
+  if (stockNeedsAttention(line)) return 0
   if (line.product.category === 'finished') return 1
   if (line.product.category === 'raw') return 2
   return 3
@@ -1678,10 +1727,31 @@ function quantityInProductUnit(product: Product, line: Pick<VoucherLine, 'quanti
   if (product.unit === 'kg' && line.entryWeightUnit === 'g') return quantity / 1000
   return quantity
 }
+
+function preferredOutboundWeightUnit(product: Product | undefined, available: number | undefined): 'kg' | 'g' | undefined {
+  if (product?.unit !== 'kg') return undefined
+  return Number(available) > 0 && Number(available) < 1 ? 'g' : 'kg'
+}
+
+function stockAvailability(line: ReturnType<typeof calculateStock>[number]): 'out' | 'packing-residue' | 'low' | 'good' {
+  if (line.expected <= 0.0001) return 'out'
+  const packingOptions = PACKING_OPTIONS_BY_OUTPUT[line.product.id] || []
+  const minimumPackingQuantity = packingOptions.length
+    ? Math.min(...packingOptions.map((option) => option.sourceQuantity))
+    : undefined
+  if (minimumPackingQuantity !== undefined && line.expected + 0.0001 < minimumPackingQuantity) return 'packing-residue'
+  if (line.expected <= line.product.lowStock) return 'low'
+  return 'good'
+}
+
+function stockNeedsAttention(line: ReturnType<typeof calculateStock>[number]) {
+  return stockAvailability(line) !== 'good'
+}
+
 function formatStockQuantity(value: number, unit: string) {
   const normalized = normalizeDisplayQuantity(value)
   if (unit === 'kg') {
-    const grams = normalized * 1000
+    const grams = Math.round(normalized * 100000) / 100
     if (normalized !== 0 && Math.abs(normalized) < 1) return `${formatNumber(grams)} g`
     return `${formatNumber(normalized)} kg`
   }

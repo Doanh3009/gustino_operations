@@ -21,7 +21,7 @@ if (/url\.pathname === '\/api\/sales-receipts\/range'[\s\S]*?\.slice\(0, 1000\)/
   failures.push('LAN API vẫn cắt sổ POS theo khoảng ngày ở 1.000 hóa đơn.')
 }
 
-const saveCloudStart = reportPage.indexOf('async function saveCloud()')
+const saveCloudStart = reportPage.indexOf('async function saveCloud(')
 const saveCloudEnd = reportPage.indexOf('\n  async function ', saveCloudStart + 1)
 const saveCloud = saveCloudStart >= 0
   ? reportPage.slice(saveCloudStart, saveCloudEnd >= 0 ? saveCloudEnd : undefined)

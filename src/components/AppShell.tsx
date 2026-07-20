@@ -51,16 +51,24 @@ interface NavItem {
   canShow: (user: AppUser) => boolean
 }
 
+const ADMIN_NAV: NavItem[] = [
+  { id: 'management', section: 'overview', label: 'Tổng quan', icon: <IconDashboard />, canShow: () => true },
+  { id: 'management', section: 'revenue', label: 'Doanh thu', icon: <IconChart />, canShow: () => true },
+  { id: 'orders', label: 'Đơn hàng', icon: <IconClipboard />, canShow: () => true },
+  { id: 'management', section: 'inventory', label: 'Kho hàng', icon: <IconBox />, canShow: () => true },
+  { id: 'management', section: 'accounts', label: 'Nhân sự', icon: <IconUsers />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'management', section: 'attendance', label: 'Chấm công', icon: <IconClock />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'management', section: 'commission', label: 'KPI nhân viên', icon: <IconChart />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'management', section: 'payroll', label: 'Lương', icon: <IconPayroll />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'report-archive', label: 'Báo cáo', icon: <IconReport />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'control', label: 'Cài đặt', icon: <IconSettings />, canShow: (user) => canUseAdmin(user.role) },
+]
+
 const MANAGER_NAV: NavItem[] = [
   { id: 'dashboard', label: 'Doanh thu', icon: <IconDashboard />, canShow: () => true },
   { id: 'manager-business', label: 'Kinh doanh', icon: <IconChart />, canShow: () => true },
   { id: 'manager-inventory', label: 'Kho', icon: <IconBox />, canShow: () => true },
-  { id: 'manager-attendance', label: 'Bảng công', shortLabel: 'Công', icon: <IconClock />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'manager-payroll', label: 'Lương & KPI', shortLabel: 'Lương', icon: <IconPayroll />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'manager-requests', label: 'Đặt hàng', shortLabel: 'Đặt', icon: <IconClipboard />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'report-archive', label: 'Kho báo cáo', shortLabel: 'Báo cáo', icon: <IconHistory />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'admin-accounts', label: 'Nhân sự', shortLabel: 'Nhân sự', icon: <IconUsers />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'control', label: 'Admin hệ thống', shortLabel: 'Admin', icon: <IconSettings />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'report-archive', label: 'Báo cáo ngày', icon: <IconReport />, canShow: (user) => canUseManagement(user.role) },
 ]
 
 const NAV_ITEMS: NavItem[] = [
@@ -111,7 +119,7 @@ const NAV_ITEMS: NavItem[] = [
     id: 'attendance',
     label: 'Chấm công',
     icon: <IconUsers />,
-    canShow: (user) => user.role !== 'kitchen',
+    canShow: (user) => user.role !== 'kitchen' && user.role !== 'cashier',
   },
   {
     id: 'kitchen',
@@ -159,21 +167,18 @@ const EN_NAV_LABELS: Partial<Record<Page, { label: string; shortLabel?: string }
   kitchen: { label: 'Kitchen' },
 }
 
-function loadCollapsed(): boolean {
-  try { return localStorage.getItem('gustino_sidebar_collapsed') === '1' } catch { return false }
-}
-function saveCollapsed(val: boolean) {
-  try { localStorage.setItem('gustino_sidebar_collapsed', val ? '1' : '0') } catch { /* */ }
-}
-
 export function AppShell({ user, page, currentSection, onNavigate, onLogout, children }: Props) {
   const lang = useLang()
-  const [collapsed, setCollapsed] = useState(loadCollapsed)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sundayReminderDismissed, setSundayReminderDismissed] = useState(false)
   const [attendanceReminderDismissed, setAttendanceReminderDismissed] = useState(false)
   const [attendanceReminder, setAttendanceReminder] = useState<'check-in' | 'check-out' | null>(null)
-  const baseNav = canUseManagement(user.role) ? MANAGER_NAV : NAV_ITEMS
+  const baseNav = user.role === 'admin'
+    ? ADMIN_NAV
+    : user.role === 'manager'
+      ? MANAGER_NAV
+      : NAV_ITEMS
   const visibleNav = baseNav.filter((item) => item.canShow(user)).map((item) => ({
     ...item,
     ...(lang === 'en' ? EN_NAV_LABELS[item.id] : null),
@@ -182,7 +187,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   const initials = shownName.slice(0, 2).toUpperCase() || 'G'
   const isActive = (item: NavItem) => {
     if (item.id !== page) return false
-    if (item.id === 'management' && canUseManagement(user.role)) {
+    if (item.id === 'management' && user.role === 'admin') {
       return item.section ? currentSection === item.section : !currentSection
     }
     return item.section ? (currentSection || 'revenue') === item.section : true
@@ -199,12 +204,6 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
     && (user.role === 'staff' || user.role === 'shift_leader')
     && page !== 'attendance'
     && !attendanceReminderDismissed
-
-  function toggleCollapse() {
-    const next = !collapsed
-    setCollapsed(next)
-    saveCollapsed(next)
-  }
 
   useEffect(() => {
     let active = true
@@ -258,26 +257,25 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   useEffect(() => setAttendanceReminderDismissed(false), [attendanceReminder])
 
   return (
-    <div className={`app-shell${collapsed ? ' sidebar-collapsed' : ''}`} onClick={() => setMenuOpen(false)}>
+    <div className={`app-shell${sidebarOpen ? ' mobile-sidebar-open' : ''}${user.role === 'admin' && (page === 'management' || page === 'control') ? ' management-workspace' : ''}${user.role === 'manager' ? ' legacy-manager-workspace' : ''}${page === 'sales' ? ' pos-workspace' : ''}`} onClick={() => { setMenuOpen(false); setSidebarOpen(false) }}>
       {/* ===== DESKTOP LEFT SIDEBAR ===== */}
-      <aside className="app-sidebar">
+      <aside className="app-sidebar" onClick={(event) => event.stopPropagation()}>
         {/* Brand */}
-        <div className="sidebar-brand" onClick={() => onNavigate('launcher')} role="button" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && onNavigate('launcher')}>
+        <div className="sidebar-brand">
           <span className="sidebar-brand-mark"><img src="/gustino-logo.jpg" alt="GUSTINO" /></span>
-          {!collapsed && <strong className="sidebar-brand-name">GUSTINO</strong>}
+          <strong className="sidebar-brand-name">GUSTINO</strong>
         </div>
 
         {/* Navigation */}
         <nav className="sidebar-nav">
-          {visibleNav.map((item) => (
+          {visibleNav.filter((item) => item.id !== 'control').map((item) => (
             <button
               key={navKey(item)}
               className={`sidebar-nav-item${isActive(item) ? ' active' : ''}`}
-              onClick={() => onNavigate(item.id, item.section)}
-              title={collapsed ? item.label : undefined}
+              onClick={() => { setSidebarOpen(false); onNavigate(item.id, item.section) }}
             >
               <span className="sidebar-nav-icon">{item.icon}</span>
-              {!collapsed && <span className="sidebar-nav-label">{item.label}</span>}
+              <span className="sidebar-nav-label">{item.label}</span>
             </button>
           ))}
         </nav>
@@ -285,49 +283,38 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
         {/* Spacer */}
         <div className="sidebar-spacer" />
 
-        {/* User info */}
-        <div className="sidebar-user">
-          <span className="sidebar-avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : initials}</span>
-          {!collapsed && (
-            <div className="sidebar-user-info">
-              <strong>{shownName}</strong>
-              <small>{roleLabel(user.role, lang)}</small>
-            </div>
-          )}
-        </div>
+        <img className="sidebar-capy-decoration" src="/mascots/capy-loading-1.png" alt="" aria-hidden="true" />
 
-        {/* Language */}
-        <button className="sidebar-lang-toggle" onClick={toggleLang} title={lang === 'en' ? 'Tiếng Việt' : 'English'}>
-          {lang === 'en' ? 'VI' : 'EN'}
-        </button>
+        {visibleNav.filter((item) => item.id === 'control').map((item) => (
+          <button key={navKey(item)} className={`sidebar-nav-item sidebar-settings${isActive(item) ? ' active' : ''}`} onClick={() => { setSidebarOpen(false); onNavigate(item.id, item.section) }}>
+            <span className="sidebar-nav-icon">{item.icon}</span>
+            <span className="sidebar-nav-label">{item.label}</span>
+          </button>
+        ))}
 
         {/* Logout */}
-        {!collapsed && (
-          <button className="sidebar-logout" onClick={onLogout}>
-            <IconLogout />
-            Đăng xuất
-          </button>
-        )}
-        {collapsed && (
-          <button className="sidebar-logout sidebar-logout-icon" onClick={onLogout} title="Đăng xuất">
-            <IconLogout />
-          </button>
-        )}
-
-        {/* Collapse toggle */}
-        <button className="sidebar-toggle" onClick={toggleCollapse} title={collapsed ? 'Mở rộng' : 'Thu gọn'}>
-          <span className={`sidebar-toggle-icon${collapsed ? ' rotated' : ''}`}>
-            <IconChevron />
-          </span>
+        <button className="sidebar-logout" onClick={onLogout}>
+          <IconLogout />
+          Đăng xuất
         </button>
       </aside>
 
+      <header className="crm-desktop-header">
+        <div className="crm-header-title"><small>GUSTINO / Quản trị</small><strong>{activeLabel}</strong></div>
+        <div className="crm-header-actions">
+          <span className="crm-header-avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : initials}</span>
+          <span className="crm-header-account"><strong>{shownName}</strong><small>{roleLabel(user.role, lang)}</small></span>
+        </div>
+      </header>
+
       {/* ===== MOBILE HEADER ===== */}
       <header className="mobile-header">
-        <button className="mh-brand" onClick={() => onNavigate('launcher')} aria-label="Về trang chủ">
-          <span className="mh-logo"><img src="/gustino-logo.jpg" alt="GUSTINO" /></span>
-          <span className="mh-title">{activeLabel}</span>
+        <button className="mh-menu-toggle" type="button" onClick={(event) => { event.stopPropagation(); setSidebarOpen((open) => !open) }} aria-label="Mở menu" aria-expanded={sidebarOpen}>
+          <IconMenu />
         </button>
+        <div className="mh-brand">
+          <span className="mh-title">{activeLabel}</span>
+        </div>
         <div className="mh-right">
           <button
             className={`mh-avatar${menuOpen ? ' open' : ''}`}
@@ -354,6 +341,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
           )}
         </div>
       </header>
+      {sidebarOpen && <button type="button" className="sidebar-drawer-backdrop" aria-label="Đóng menu" onClick={() => setSidebarOpen(false)} />}
 
       {showOperationGuide && (
         <nav className="operation-guide" aria-label="Quy trình vận hành">
@@ -404,15 +392,6 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
         </aside>
       )}
 
-      {/* ===== MOBILE BOTTOM NAV ===== */}
-      <nav className="mobile-nav" aria-label="Chức năng chính">
-        {visibleNav.map((item) => (
-          <button key={navKey(item)} className={isActive(item) ? 'active' : ''} onClick={() => onNavigate(item.id, item.section)}>
-            <span className="mn-icon">{item.icon}</span>
-            <small>{item.shortLabel || item.label.split(' / ')[0]}</small>
-          </button>
-        ))}
-      </nav>
     </div>
   )
 }
@@ -429,6 +408,10 @@ function IconChart() {
       <line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" />
     </svg>
   )
+}
+
+function IconMenu() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
 }
 
 function IconDashboard() {
@@ -548,14 +531,6 @@ function IconLogout() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" />
-    </svg>
-  )
-}
-
-function IconChevron() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="15 18 9 12 15 6" />
     </svg>
   )
 }

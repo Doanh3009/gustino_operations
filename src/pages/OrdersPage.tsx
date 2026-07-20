@@ -4,6 +4,7 @@ import { branchName } from '../lib/branches'
 import { fetchConfiguredProducts } from '../lib/products'
 import { canvasToBlob, shareOrDownloadBlob } from '../lib/browser'
 import { localDateKey } from '../lib/dates'
+import { supabase, uniqueChannelName } from '../lib/supabase'
 import {
   createSupplyRequests,
   deleteSupplyRequest,
@@ -94,18 +95,45 @@ export function OrdersPage({ user }: Props) {
     }
   }, [user.id, user.authToken])
 
-  async function refresh() {
-    setLoading(true)
+  async function refresh(showLoading = true) {
+    if (showLoading) setLoading(true)
     try {
       setRequests(await fetchSupplyRequests(user, branchIds))
     } catch (reason) {
       setFeedback(reason instanceof Error ? reason.message : 'Không thể tải danh sách đặt hàng.')
     } finally {
-      setLoading(false)
+      if (showLoading) setLoading(false)
     }
   }
 
   useEffect(() => { void refresh() }, [user.id, user.branchId])
+
+  useEffect(() => {
+    const refreshSilently = () => {
+      if (document.visibilityState === 'hidden') return
+      void refresh(false)
+    }
+    window.addEventListener('focus', refreshSilently)
+    window.addEventListener('visibilitychange', refreshSilently)
+    const timer = window.setInterval(refreshSilently, 30000)
+    const client = supabase
+    const channel = client
+      ? client.channel(uniqueChannelName(`orders:${user.branchId}`))
+        .on('postgres_changes', {
+          event: '*',
+          schema: 'public',
+          table: 'supply_requests',
+          filter: `branch_id=eq.${user.branchId}`,
+        }, refreshSilently)
+        .subscribe()
+      : null
+    return () => {
+      window.removeEventListener('focus', refreshSilently)
+      window.removeEventListener('visibilitychange', refreshSilently)
+      window.clearInterval(timer)
+      if (client && channel) void client.removeChannel(channel)
+    }
+  }, [user.id, user.branchId, user.authToken])
 
   function updateLine(id: string, patch: Partial<OrderDraftLine>) {
     setLines((items) => items.map((line) => line.id === id ? { ...line, ...patch } : line))

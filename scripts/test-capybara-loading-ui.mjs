@@ -19,11 +19,12 @@ for (const asset of [...loadingAssets, '/mascots/capy-attendance-camera.png']) {
   assert.equal(png[25], 6, `${asset} phải có kênh alpha RGBA`)
 }
 
-assert.doesNotMatch(main, /<GlobalLoadingOverlay\s*\/>/, 'Không mount bộ chặn fetch toàn cục vì polling/realtime sau click có thể tạo loading giả')
+assert.match(main, /<GlobalLoadingOverlay\s*\/>/, 'Capy loading phải được mount một lần ở gốc ứng dụng')
 const html = await readFile(new URL('../index.html', import.meta.url), 'utf8')
 for (const asset of loadingAssets) {
   assert.match(html, new RegExp(`<link[^>]+rel="preload"[^>]+href="${asset.replaceAll('/', '\\/')}"[^>]+fetchpriority="high"`), `${asset} phải được preload ưu tiên cao trước khi React chạy`)
 }
+assert.doesNotMatch(html, /rel="preload"[^>]+capy-attendance-camera/, 'Capy camera chỉ được tải ở màn hình sử dụng để tránh preload-unused warning')
 assert.match(loader, /Math\.random\(\) \* LOADING_MASCOTS\.length/, 'Mỗi lần loading phải chọn mascot ngẫu nhiên')
 for (const asset of loadingAssets) assert.ok(loader.includes(`'${asset}'`), `Thiếu loading asset ${asset}`)
 assert.ok(!loader.includes("'/mascots/capy-loading-3.png'"), 'Không được dùng hình số 3 cho loading')

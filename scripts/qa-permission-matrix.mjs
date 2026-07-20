@@ -17,15 +17,15 @@ const managerSections = ['manager-revenue', 'manager-business', 'manager-invento
 function canAccess(role, page) {
   if (page === 'launcher') return true
   if (page === 'attendance') return role !== 'kitchen' && role !== 'manager'
-  if (page === 'dashboard') return canUseManagement(role)
+  if (page === 'dashboard') return role === 'manager'
   if (page === 'sales') return canUseSales(role)
   if (page === 'my-records') return role === 'staff' || role === 'shift_leader'
-  if (page === 'report-archive') return role === 'admin'
+  if (page === 'report-archive') return canUseManagement(role)
   if (page === 'inventory') return canUseOperations(role)
-  if (page === 'management') return canUseManagement(role)
+  if (page === 'management') return role === 'admin'
   // Đồng bộ App.tsx/AppShell: ba route vận hành nhân sự/đơn hàng này hiện chỉ admin.
   if (page === 'manager-attendance' || page === 'manager-payroll' || page === 'manager-requests') return canUseAdmin(role)
-  if (managerSections.includes(page)) return canUseManagement(role)
+  if (managerSections.includes(page)) return role === 'manager'
   if (page === 'admin-accounts') return canUseAdmin(role)
   if (page === 'control') return canUseAdmin(role)
   if (page === 'kitchen') return canUseKitchen(role)
@@ -35,7 +35,8 @@ function canAccess(role, page) {
 function defaultPage(role) {
   if (role === 'kitchen') return 'kitchen'
   if (role === 'staff') return 'sales'
-  if (canUseManagement(role)) return 'dashboard'
+  if (role === 'admin') return 'management'
+  if (role === 'manager') return 'dashboard'
   if (canUseOperations(role)) return 'today'
   return 'attendance'
 }

@@ -20,8 +20,8 @@ if (report.includes('Gửi lại ảnh Zalo</button>') || report.includes('Gửi
 if (report.includes('↻ Đồng bộ dữ liệu mới</button>')) {
   failures.push('Nút đồng bộ thủ công vẫn chiếm chỗ dù trang đã realtime.')
 }
-if (!report.includes('>Gửi Zalo</button>') || !report.includes('>Tải ảnh</button>')) {
-  failures.push('Thanh công cụ tinh gọn chưa giữ đúng hai hành động phụ cần thiết.')
+if (!/>\s*Lưu ảnh\s*<\/button>/.test(report) || !report.includes('report-backup-image-button')) {
+  failures.push('Thanh công cụ chưa giữ hành động lưu ảnh backup độc lập với n8n.')
 }
 if (!report.includes('friendlyReportMessage') || !report.includes('report-feedback')) {
   failures.push('Lỗi kỹ thuật n8n vẫn có thể lộ nguyên văn trên giao diện người dùng.')

@@ -1,5 +1,6 @@
-export type Role = 'admin' | 'manager' | 'shift_leader' | 'staff' | 'kitchen'
+export type Role = 'admin' | 'manager' | 'shift_leader' | 'staff' | 'cashier' | 'kitchen'
 export type EmploymentType = 'leader' | 'full_time' | 'part_time'
+export type EmploymentStatus = 'probation' | 'working' | 'ended'
 
 export interface AppUser {
   id: string
@@ -25,6 +26,11 @@ export interface EmployeeProfile {
   employmentType?: EmploymentType
   positionTitle?: string
   avatarUrl?: string
+  employmentStatus?: EmploymentStatus
+  employmentStartDate?: string
+  probationEndDate?: string
+  employmentEndDate?: string
+  employmentNote?: string
 }
 
 export interface WorkShift {

@@ -3,6 +3,7 @@ import { branchName, useConfiguredBranches } from '../lib/branches'
 import { permittedBranchIds } from '../lib/attendance'
 import { fetchReportSnapshots } from '../lib/store'
 import { localDateKey } from '../lib/dates'
+import { fetchSalesReceiptsRange, type SalesReceipt } from '../lib/salesReceipts'
 import type { AppUser, ReportSnapshot } from '../types'
 
 export function ReportArchivePage({ user }: { user: AppUser }) {
@@ -26,6 +27,7 @@ export function ReportArchiveContent({ user }: { user: AppUser }) {
   const [day, setDay] = useState('')
   const [branchId, setBranchId] = useState(user.role === 'admin' || user.role === 'manager' ? '' : user.branchId)
   const [snapshots, setSnapshots] = useState<ReportSnapshot[]>([])
+  const [receipts, setReceipts] = useState<SalesReceipt[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [loading, setLoading] = useState(true)
   const [feedback, setFeedback] = useState('')
@@ -46,8 +48,12 @@ export function ReportArchiveContent({ user }: { user: AppUser }) {
       const ids = branchId ? [branchId] : allowedBranchIds
       const from = `${month}-01`
       const to = lastDayOfMonth(month)
-      const items = await Promise.all(ids.map((id) => fetchReportSnapshots(id, user, { from, to }))).then((rows) => rows.flat())
+      const [items, receiptRows] = await Promise.all([
+        Promise.all(ids.map((id) => fetchReportSnapshots(id, user, { from, to }))).then((rows) => rows.flat()),
+        fetchSalesReceiptsRange(user, { branchIds: ids, from, to }).catch(() => [] as SalesReceipt[]),
+      ])
       setSnapshots(items)
+      setReceipts(receiptRows)
       setFeedback('')
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'Không thể tải bản lưu báo cáo.')
@@ -75,6 +81,10 @@ export function ReportArchiveContent({ user }: { user: AppUser }) {
   const selected = filtered.find((item) => item.id === selectedId) || filtered[0]
   const summary = selected?.payload.summary
   const dailyReport = selected?.payload.dailyReport as any
+  const archiveEmployeeRows = useMemo(
+    () => buildArchiveEmployeeRows(dailyReport?.employeeRows, receipts, selected),
+    [dailyReport?.employeeRows, receipts, selected?.id],
+  )
   const proofImages = Array.isArray(dailyReport?.proofImages)
     ? dailyReport.proofImages as Array<{ key?: string; label?: string; url?: string }>
     : [
@@ -160,13 +170,19 @@ export function ReportArchiveContent({ user }: { user: AppUser }) {
                   ))}
                 </div>
                 <div className="report-archive-lines">
-                  {(dailyReport?.employeeRows || []).slice(0, 6).map((row: any) => (
+                  {archiveEmployeeRows.map((row) => (
                     <div key={row.key || row.name}>
-                      <span><strong>{row.name}</strong><small>{formatNumber(row.sold || 0)} sản phẩm · KPI {formatNumber(row.kpi || 0)}%</small></span>
+                      <span>
+                        <strong>{row.name}</strong>
+                        <small>
+                          {formatNumber(row.sold || 0)} sản phẩm
+                          {Number.isFinite(row.kpi) ? ` · KPI ${formatNumber(row.kpi || 0)}%` : ' · POS đã đồng bộ'}
+                        </small>
+                      </span>
                       <b>{formatMoney(row.revenue || 0)}</b>
                     </div>
                   ))}
-                  {!dailyReport?.employeeRows?.length && <p className="empty-copy">Bản lưu cũ chưa có chi tiết nhân viên.</p>}
+                  {!archiveEmployeeRows.length && <p className="empty-copy">Bản lưu cũ chưa có chi tiết nhân viên.</p>}
                 </div>
               </>
             ) : <p className="empty-copy">Chọn một bản lưu để xem lại.</p>}
@@ -175,6 +191,64 @@ export function ReportArchiveContent({ user }: { user: AppUser }) {
       )}
     </div>
   )
+}
+
+interface ArchiveEmployeeRow {
+  key?: string
+  name: string
+  sold: number
+  revenue: number
+  kpi?: number
+}
+
+function buildArchiveEmployeeRows(
+  snapshotRows: unknown,
+  receipts: SalesReceipt[],
+  snapshot?: ReportSnapshot,
+): ArchiveEmployeeRow[] {
+  const rows = Array.isArray(snapshotRows)
+    ? snapshotRows.filter((row): row is ArchiveEmployeeRow =>
+        Boolean(row && typeof row === 'object' && typeof (row as ArchiveEmployeeRow).name === 'string'),
+      )
+    : []
+  if (!snapshot) return rows
+
+  const existingKeys = new Set<string>()
+  rows.forEach((row) => {
+    if (row.key) existingKeys.add(row.key)
+    const nameKey = normalizeArchiveEmployeeName(row.name)
+    existingKeys.add(nameKey)
+    existingKeys.add(`${snapshot.branchId}|${nameKey}`)
+  })
+
+  const recovered = new Map<string, ArchiveEmployeeRow>()
+  receipts
+    .filter((receipt) =>
+      receipt.branchId === snapshot.branchId
+      && receipt.businessDate === snapshot.reportDate
+      && receipt.sellerName.trim(),
+    )
+    .forEach((receipt) => {
+      const nameKey = normalizeArchiveEmployeeName(receipt.sellerName)
+      const key = `${receipt.branchId}|${receipt.sellerId || receipt.sellerKey || nameKey}`
+      if (existingKeys.has(key) || existingKeys.has(nameKey) || existingKeys.has(`${receipt.branchId}|${nameKey}`)) return
+      const current = recovered.get(key) || {
+        key,
+        name: receipt.sellerName,
+        sold: 0,
+        revenue: 0,
+      }
+      current.sold += receipt.totalQuantity
+      current.revenue += receipt.totalAmount
+      recovered.set(key, current)
+    })
+
+  return [...rows, ...recovered.values()]
+    .sort((a, b) => b.revenue - a.revenue || a.name.localeCompare(b.name, 'vi'))
+}
+
+function normalizeArchiveEmployeeName(value: string) {
+  return value.trim().toLocaleLowerCase('vi').normalize('NFD').replace(/\p{Diacritic}/gu, '')
 }
 
 function formatMoney(value: number) {

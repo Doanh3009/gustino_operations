@@ -43,7 +43,7 @@ Deno.serve(async (request) => {
       const positionTitle = String(payload.positionTitle || '').trim()
       if (!name || username.length < 3 || !email.includes('@')) return response(400, { error: 'Tên và tên đăng nhập không hợp lệ.' })
       if (password.length < 6) return response(400, { error: 'Mật khẩu cần ít nhất 6 ký tự.' })
-      if (!['manager', 'shift_leader', 'staff', 'kitchen'].includes(role)) return response(400, { error: 'Vai trò không hợp lệ.' })
+      if (!['manager', 'shift_leader', 'staff', 'cashier', 'kitchen'].includes(role)) return response(400, { error: 'Vai trò không hợp lệ.' })
       if (!['leader', 'full_time', 'part_time'].includes(employmentType)) return response(400, { error: 'Nhóm ca không hợp lệ.' })
       if (!branchlessRole && !(await canManageBranch(adminClient, user.id, adminProfile.role, adminProfile.branch_id, branchId))) {
         return response(403, { error: 'Không có quyền tạo tài khoản tại chi nhánh này.' })
@@ -199,7 +199,7 @@ Deno.serve(async (request) => {
       if (payload.role !== undefined) {
         if (employeeId === user.id) return response(400, { error: 'Không thể tự hạ quyền Admin của chính mình.' })
         const role = String(payload.role || '')
-        if (!['manager', 'shift_leader', 'staff', 'kitchen'].includes(role)) return response(400, { error: 'Vai trò không hợp lệ.' })
+        if (!['manager', 'shift_leader', 'staff', 'cashier', 'kitchen'].includes(role)) return response(400, { error: 'Vai trò không hợp lệ.' })
         patch.role = role
         if (role === 'manager' || role === 'kitchen') patch.branch_id = null
       }

@@ -143,11 +143,17 @@ export async function addMovements(
     document_id: item.documentId ?? null,
     measured_weight_kg: item.measuredWeightKg ?? null,
   }))
+  // The operator already confirmed this exceptional negative-stock write in the
+  // calling UI. Avoid an expected HTTP 400 before the approved direct write.
+  if (options?.allowInsufficientStock) {
+    await insertStockRowsDirect(rows)
+    return
+  }
   const { error } = await supabase!.rpc('create_stock_movements_checked', { p_items: rows })
   if (error) {
     // Các loại này vốn được phép ghi âm tồn (bán/hủy/kiểm kê/điều chỉnh).
     // `allowInsufficientStock` = user đã bấm "vẫn tiếp tục" (vd chưa nhập kho nhưng vẫn ghi mẻ) → cho ghi thẳng.
-    const canBypassStockCheck = options?.allowInsufficientStock || items.every((item) =>
+    const canBypassStockCheck = items.every((item) =>
       ['sale_out', 'waste', 'count', 'adjustment'].includes(item.type),
     )
     const isStockCheckConflict = String(error.message || '').includes('Không đủ tồn')

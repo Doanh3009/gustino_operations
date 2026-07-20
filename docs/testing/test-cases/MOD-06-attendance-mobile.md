@@ -2,6 +2,14 @@
 
 Status: in progress; direct iPhone verification pending.
 
+## 2026-07-20 — intermittent saved-write confirmation
+
+- `MOD06-TC-SAVED-UI-01` Passed (source/type/build): a successful check-in record is merged into the visible schedule immediately; a refresh failure cannot restore the stale Check-in action or overwrite final success feedback.
+- `MOD06-TC-SAVED-UI-02` Passed (source/type/build): LAN/cloud check-out returns a completed record and the visible schedule moves to completed before realtime reconciliation.
+- `MOD06-TC-GEOCODE-RETRY-01` Passed (real-handler mock + source): local reverse geocoding retries twice; the server races Nominatim and BigDataCloud rather than spending up to 10 seconds sequentially, and the 6.5-second client bound exceeds each provider's 5-second timeout. Coordinates are never accepted as a fake address.
+- Existing rules preserved: native camera file capture, stamped image, fresh high-accuracy GPS, maximum 150m accuracy, concrete address, own approved registration, bounded idempotent write retry and read-back.
+- Evidence: `ADMIN_CLEANUP_ATTENDANCE_RESILIENCE_OK`, `ATTENDANCE_REVERSE_GEOCODE_RACE_OK` and TypeScript pass in the correction batch; earlier idempotency/native-location/cloud/build evidence remains. Physical device check remains pending because Browser is unavailable.
+
 | ID | Flow | Expected result | Automation/status |
 |---|---|---|---|
 | MOD06-TC-SRC-01 | Decode iPhone attendance photo | EXIF orientation is honored and Safari fallback is available | `test-mobile-attendance-export.mjs` Passed |
@@ -11,6 +19,7 @@ Status: in progress; direct iPhone verification pending.
 | MOD06-TC-GPS-01 | Accurate branch geotag | Samples GPS, selects best fix and rejects accuracy worse than 150m | Static contract Passed; real GPS pending |
 | MOD06-TC-GPS-03 | Fresh precise fix at check-in/out | Cached coordinates are forbidden; a coarse first fix triggers one additional fresh sample and the better coordinate is reverse-geocoded | `ATTENDANCE_NATIVE_CAMERA_LOCATION_OK` + TypeScript Passed; HTTPS phone pending |
 | MOD06-TC-IDEMP-01 | Repeat/stale check-in | Existing attendance row is recovered and UI refreshes after error | Static contract Passed; integration pending |
+| MOD06-TC-REGISTER-01 | Employee opens Today without a same-day registration | Explain that no shift is registered and provide a direct action to the existing weekly registration board; do not fabricate a shift or attendance record | `DAILY_REPORT_EMPLOYEE_ATTENDANCE_FLOW_OK`; live Attendance asset marker verified |
 | MOD06-TC-SYNC-01 | Change the main shift after an attendance row exists for that employee/day | Update the attended registration in place, preserve its attendance evidence, remove only unattached duplicate main rows, block OFF after check-in and refuse ambiguous multi-attended days | `SCHEDULE_ATTENDANCE_REGISTRATION_SYNC_OK`; production RPC installed and Phạm Đình Phát repair verified |
 | MOD06-TC-IOS-01 | iPhone 11 camera/GPS/permission | Check in and out without browser restart | Blocked pending physical device test |
 | MOD06-TC-POPUP-01 | Today's attendance reminder | Capybara popup distinguishes check-in from check-out using current records | Static test Passed; UI pending |

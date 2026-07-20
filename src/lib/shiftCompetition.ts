@@ -14,6 +14,41 @@ export interface ShiftLeaderRevenueRow {
   progress: number
 }
 
+export interface ShiftLeaderReceiptSource {
+  sessionId: string
+  sessionSequence: number
+  leaderKey: string
+  leaderName: string
+  branchId: string
+  businessDate: string
+  receipt: SalesReceipt
+}
+
+type ShiftCompetitionFilters = {
+  branchIds: string[]
+  from: string
+  to: string
+}
+
+export function buildShiftLeaderReceiptSources(
+  sessions: BagShiftSession[],
+  receipts: SalesReceipt[],
+  filters: ShiftCompetitionFilters,
+): ShiftLeaderReceiptSource[] {
+  return scopedSessionReceipts(sessions, receipts, filters).flatMap(({ session, receipts: shiftReceipts }) => {
+    const leaderKey = session.leaderId || normalizeName(session.leaderName)
+    return shiftReceipts.map((receipt) => ({
+      sessionId: session.id,
+      sessionSequence: session.sequence,
+      leaderKey,
+      leaderName: session.leaderName,
+      branchId: session.branchId,
+      businessDate: session.businessDate,
+      receipt,
+    }))
+  })
+}
+
 export function buildShiftLeaderRevenueRows(
   sessions: BagShiftSession[],
   receipts: SalesReceipt[],
@@ -24,38 +59,8 @@ export function buildShiftLeaderRevenueRows(
     targetForSession?: (session: BagShiftSession) => number
   },
 ): ShiftLeaderRevenueRow[] {
-  const allowedBranches = new Set(filters.branchIds)
-  const scopedSessions = sessions
-    .filter((session) =>
-      allowedBranches.has(session.branchId)
-      && session.businessDate >= filters.from
-      && session.businessDate <= filters.to,
-    )
-    .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
-  const receiptsByDay = new Map<string, SalesReceipt[]>()
-  receipts.forEach((receipt) => {
-    if (!allowedBranches.has(receipt.branchId)) return
-    if (receipt.businessDate < filters.from || receipt.businessDate > filters.to) return
-    const key = `${receipt.branchId}|${receipt.businessDate}`
-    receiptsByDay.set(key, [...(receiptsByDay.get(key) || []), receipt])
-  })
-
   const rows = new Map<string, ShiftLeaderRevenueRow>()
-  scopedSessions.forEach((session, sessionIndex) => {
-    const nextSession = scopedSessions.slice(sessionIndex + 1).find((candidate) =>
-      candidate.branchId === session.branchId
-      && candidate.businessDate === session.businessDate
-      && candidate.startedAt > session.startedAt,
-    )
-    const startedAt = Date.parse(session.startedAt)
-    const endedAt = session.endedAt
-      ? Date.parse(session.endedAt) + 1
-      : nextSession ? Date.parse(nextSession.startedAt) : Number.POSITIVE_INFINITY
-    const shiftReceipts = (receiptsByDay.get(`${session.branchId}|${session.businessDate}`) || [])
-      .filter((receipt) => {
-        const createdAt = Date.parse(receipt.createdAt)
-        return Number.isFinite(createdAt) && createdAt >= startedAt && createdAt < endedAt
-      })
+  scopedSessionReceipts(sessions, receipts, filters).forEach(({ session, receipts: shiftReceipts }) => {
     const leaderKey = session.leaderId || normalizeName(session.leaderName)
     const key = `${session.branchId}|${leaderKey}`
     const target = Math.max(0, filters.targetForSession?.(session) || 0)
@@ -93,6 +98,46 @@ export function buildShiftLeaderRevenueRows(
       || b.soldQuantity - a.soldQuantity
       || a.leaderName.localeCompare(b.leaderName, 'vi'),
     )
+}
+
+function scopedSessionReceipts(
+  sessions: BagShiftSession[],
+  receipts: SalesReceipt[],
+  filters: ShiftCompetitionFilters,
+) {
+  const allowedBranches = new Set(filters.branchIds)
+  const scopedSessions = sessions
+    .filter((session) =>
+      allowedBranches.has(session.branchId)
+      && session.businessDate >= filters.from
+      && session.businessDate <= filters.to,
+    )
+    .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
+  const receiptsByDay = new Map<string, SalesReceipt[]>()
+  receipts.forEach((receipt) => {
+    if (!allowedBranches.has(receipt.branchId)) return
+    if (receipt.businessDate < filters.from || receipt.businessDate > filters.to) return
+    const key = `${receipt.branchId}|${receipt.businessDate}`
+    receiptsByDay.set(key, [...(receiptsByDay.get(key) || []), receipt])
+  })
+
+  return scopedSessions.map((session, sessionIndex) => {
+    const nextSession = scopedSessions.slice(sessionIndex + 1).find((candidate) =>
+      candidate.branchId === session.branchId
+      && candidate.businessDate === session.businessDate
+      && candidate.startedAt > session.startedAt,
+    )
+    const startedAt = Date.parse(session.startedAt)
+    const endedAt = session.endedAt
+      ? Date.parse(session.endedAt) + 1
+      : nextSession ? Date.parse(nextSession.startedAt) : Number.POSITIVE_INFINITY
+    const shiftReceipts = (receiptsByDay.get(`${session.branchId}|${session.businessDate}`) || [])
+      .filter((receipt) => {
+        const createdAt = Date.parse(receipt.createdAt)
+        return Number.isFinite(createdAt) && createdAt >= startedAt && createdAt < endedAt
+      })
+    return { session, receipts: shiftReceipts }
+  })
 }
 
 function normalizeName(value: string) {

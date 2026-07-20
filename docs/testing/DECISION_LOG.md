@@ -1,5 +1,50 @@
 # Decision Log
 
+## 2026-07-20 — test MOD-04 account mutation only in an isolated LAN store
+
+- Use the seeded loopback Admin and a fresh `GUSTINO_DATA_DIR` for create/login/reset/deactivate integration. Never exercise those mutations against production Auth merely to obtain test coverage.
+- Follow the durable Admin employee route and collapsed create-panel contract already enforced by current source/regressions. Update stale UI selectors without changing product presentation or account behavior.
+- LAN success is evidence for the local implementation only; it does not close the pending production Edge/Auth verification.
+
+## 2026-07-20 — keep MOD-08 integration data isolated and align the harness to current rules
+
+- Run the mutating handover browser flow only against a fresh `GUSTINO_DATA_DIR` created for QA; do not point it at the repository's normal LAN store or Supabase.
+- Treat self-registration, automatic shift opening after leader check-in, and direct close-to-report navigation as the current source-backed contracts. Update the stale harness rather than reintroducing removed controls or weakening attendance ownership.
+- Do not classify a harness expectation mismatch as a product bug. The corrected run must prove persisted end state as well as browser selectors before recording integration Passed.
+
+## 2026-07-20 — correct stock-unit presentation without changing the authorized issue rule
+
+- Superseding correction from the owner: manual warehouse sale-out is not hard-blocked when availability is insufficient. Keep the existing explicit confirmation and direct exception after confirmation. Fix the actual kg/g default and misleading `Đủ bán` presentation; do not round away physical residue or change movement arithmetic.
+- Decision: derive “not enough to pack” only from the existing `PACKING_OPTIONS_BY_OUTPUT` source quantities. This is a presentation warning, not a new movement/stock restriction.
+- Decision: classify active priced non-kg finished SKUs as “Món trong menu bán” only for presentation. Product category, unit, ID, price, movement signs and stock quantity remain unchanged.
+- Decision: Admin purchasing is observation/export only. Operational users and kitchen retain their existing creation/status workflows; Admin no longer mutates request state from its report workspace.
+- Decision: do not create/apply a database migration without direct owner approval. Source proves migration-order drift in `create_stock_movements_checked`, but repository safety rules explicitly reserve schema changes for an approved operation.
+
+## 2026-07-20 — attendance reliability and competition layout remain implementation-only fixes
+
+- Race the two already-approved reverse-geocode providers because the old sequential 10-second maximum exceeded the phone client's 4-second timeout. Keep fresh GPS, ≤150 m, concrete address and selfie requirements unchanged.
+- Treat the competition table issue as CSS clipping: allow overflow and use labelled cards at tablet width. Do not change ranking aggregation, KPI classification or rewards.
+
+- 2026-07-18 — Fix the reported phone overflow only at the presentation boundary. The on-screen Bàn giao actions and report poster may stack at narrow widths, while the 1080px export poster keeps its exact dimensions and is moved fully off-canvas with a viewport-independent coordinate. Do not hide actions, shrink business data, or change report/n8n/finalization behavior.
+
+- 2026-07-18 — Reuse the existing current-day `ReportPage` for the shift leader's post-handover review. Add only a visible handover action after a same-day shift is closed and keep its existing connected export labelled `Lưu ảnh`. Do not create another report/archive surface and do not retrigger or alter n8n automatic delivery when the operator merely views or saves the poster.
+
+- 2026-07-18 — Restore Manager read access to the existing daily report archive and decouple sales attribution from attendance registration. The owner's direct requirement that Manager retain the old design does not remove the archive permission already documented and enforced by RLS. A valid POS receipt remains authoritative evidence of its seller/revenue even when scheduling data is missing; attendance fields may remain absent, but the seller row must not be discarded. Keep the existing register-shift-before-check-in workflow and route an unscheduled employee to that flow instead of fabricating a shift or attendance record.
+
+- 2026-07-18 — Router changes modules/details; pagination changes records inside one module only. The owner supplied the complete Admin redesign contract and explicitly rejected fake tabs/section visibility as page navigation. Admin uses domain routes, while reusable pagination owns only page/page-size slicing. Remaining module extraction must preserve API/business logic and cannot be claimed complete while `AdminPage.tsx` still contains legacy section implementations.
+
+- 2026-07-18 — Add `cashier` as a branch-scoped POS-only role and consolidate Admin navigation into one Management workspace. The owner directly authorized a TP.HCM cash-register permission, full receipt/payment/printing support, database changes and removal of old Admin presentation. Cashiers default to Sales, cannot access operational/Admin modules, and server checkout forces their own seller identity and assigned branch. Existing staff/shift-leader workflows remain unchanged.
+
+- 2026-07-18 — Store employment lifecycle as administrative metadata without changing account activity, payroll formulas or permissions. The owner directly authorized the CRM database connection/status tracking. `probation`, `working` and `ended` plus their dates/notes are persisted through an Admin-guarded RPC; they do not toggle `profiles.active`, Auth access, attendance or compensation calculations. Saved hourly payroll rows show the hourly rate rather than inventing a “received” total without worked-hours/payment evidence.
+
+## 2026-07-18 — Admin Accounts uses CRM master-detail presentation
+
+- Direct owner requirement supersedes the prior card-based CRM preview: branches and employees are compact lists, and employee actions appear only after opening that employee's profile.
+- Existing handlers, permission guards and data calculations are retained; only presentation and action placement change.
+- The create-account form remains on the directory view because it is not an action belonging to an existing employee.
+- Branch detail is read-only and uses already-loaded branch, POS and employee data for the selected period.
+- No deploy, account mutation, schema or business-rule change is authorized by this batch.
+
 ## 2026-07-18 — Preserve the last valid shared product catalog across reloads
 
 - Decision: cache the last successful merged cloud product catalog and tombstones locally, using it only when the current cloud read fails.
@@ -81,3 +126,7 @@
 | 2026-07-16 | Replace separate daily/leader competition cards with one classified table. | The owner's direct requirement supersedes the prior static expectation for a fixed Top-3-today card. Classify one table as employee/day, employee/month or shift leader/month and allow an exact day inside the active range. Preserve aggregation functions, revenue-positive eligibility and KPI formulas. |
 | 2026-07-16 | Do not silently convert every POS receipt into a warehouse `sale_out`. | Production proves current receipts have no allocation link, while the warehouse voucher and shift-close allocation path define `sale_out`. Automatically equating goods sold with goods issued from warehouse would change stock timing/semantics and could double deduct when a manual issue voucher also exists. Keep diagnosis read-only and request the owner's choice between manual warehouse issue, allocation-based close, or an explicitly designed POS auto-deduction rule. |
 | 2026-07-16 | Use the existing handover balance for remaining end-of-shift goods; do not add a return flow. | Direct owner clarification: leftover goods are already counted during handover and inherited by the following shift/day. A completed-shift out/consumption reconciliation is opening + additions − closing handover − waste, compared with POS sales. This supersedes the suggestion to add a separate leftover-return function. |
+- 2026-07-18: Owner explicitly rejected AI-invented dashboard/launcher/card/mobile-settings layouts and directed an Odoo Enterprise 18-like desktop ERP experience with CukCuk/KiotViet data density. The UI contract therefore fixes the Admin shell at sidebar + header + current workspace, prohibits sidebar icon-only collapse and launcher navigation, standardizes list modules on toolbar/search/filter/table/pagination, and limits branding changes to the supplied green palette. Business calculations, permissions, writes, API contracts and database schema remain out of scope.
+| 2026-07-18 | Deploy the screenshot-corrected Admin release only after the attendance and prebuilt gates pass. | The owner explicitly requires immediate deployment and no check-in/check-out regression. Run the non-destructive attendance/idempotency/camera/GPS/schedule/cloud/realtime suite, keep the request-aware Capy overlay gated to fetches following user actions, deploy only the inspected prebuilt output, and perform read-only live checks. Do not run migrations, create synthetic attendance, invoke cron/webhooks or mutate production business data. |
+| 2026-07-18 | Scope the new ERP design to Admin and preserve the existing Manager product experience. | Direct owner clarification supersedes the shared Admin/Manager shell introduced by the recent UI refactor. Admin continues to use the new durable `#/admin/...` workspace; Manager returns to the existing dashboard and focused Revenue/Business/Inventory routes. This is a role-specific presentation/navigation correction only and must not broaden data permissions or change formulas, schema or writes. |
+| 2026-07-19 | Resolve displayed shift-leader identity from existing session-overlapping attendance before stored session text. | The owner reports Ca 2 duplicates Ca 1 at Lotte Vũng Tàu. Report generation already loads approved registrations and authoritative attendance. Use the checked-in leader nearest each session start independently, with the stored session leader as a safe fallback. This is a presentation correction only: do not rewrite historical sessions/attendance, alter shift ownership, or change report calculations/finalization. |

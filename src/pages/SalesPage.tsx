@@ -9,10 +9,12 @@ import {
   saveSalesReceipt,
   type SalesReceipt,
   type SalesReceiptLine,
+  type PaymentMethod,
 } from '../lib/salesReceipts'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { localDateKey } from '../lib/dates'
 import { fetchConfiguredProducts } from '../lib/products'
+import { branchName } from '../lib/branches'
 import type { Page } from '../components/AppShell'
 import type { AppUser, AttendanceRecord, EmployeeProfile, ShiftRegistration } from '../types'
 
@@ -34,6 +36,8 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   const [lastReceipt, setLastReceipt] = useState<SalesReceipt | null>(null)
   const [loading, setLoading] = useState(true)
   const [checkoutBusy, setCheckoutBusy] = useState(false)
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash')
+  const [customerPaid, setCustomerPaid] = useState('')
   const [feedback, setFeedback] = useState('')
   const [feedbackType, setFeedbackType] = useState<'ok' | 'err'>('ok')
   const canManageSales = user.role === 'shift_leader' || user.role === 'manager' || user.role === 'admin'
@@ -197,6 +201,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
 
   function clearCart() {
     setCart({})
+    setCustomerPaid('')
   }
 
   // NV xóa hóa đơn của mình trong ngày; ca trưởng/quản lý/admin xóa mọi hóa đơn.
@@ -229,6 +234,11 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
       showFeedback('Chỉ tạo hóa đơn cho ngày hôm nay. Ngày cũ dùng để xem lại dữ liệu đã lưu.', 'err')
       return
     }
+    const paid = paymentMethod === 'cash' ? Number(customerPaid || 0) : bill.amount
+    if (paymentMethod === 'cash' && paid < bill.amount) {
+      showFeedback('Số tiền khách đưa chưa đủ.', 'err')
+      return
+    }
     setCheckoutBusy(true)
     try {
       const receipt: SalesReceipt = {
@@ -239,7 +249,9 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
         sellerKey: selectedSeller.key,
         sellerId: selectedSeller.employeeId,
         sellerName: selectedSeller.employeeName,
-        paymentMethod: 'cash',
+        paymentMethod,
+        customerPaid: paid,
+        changeAmount: Math.max(paid - bill.amount, 0),
         totalQuantity: bill.quantity,
         totalAmount: bill.amount,
         lines: cartLines,
@@ -247,11 +259,12 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
         createdBy: user.id,
         createdByName: user.name,
       }
-      await saveSalesReceipt(user, receipt)
-      setReceipts((items) => dedupeReceipts([receipt, ...items]).slice(0, 200))
-      setLastReceipt(receipt)
+      const savedReceipt = await saveSalesReceipt(user, receipt)
+      setReceipts((items) => dedupeReceipts([savedReceipt, ...items]).slice(0, 200))
+      setLastReceipt(savedReceipt)
       setCart({})
-      showFeedback(`Đã tạo hóa đơn ${receipt.code} - ${formatMoney(receipt.totalAmount)}.`, 'ok')
+      setCustomerPaid('')
+      showFeedback(`Đã thanh toán ${savedReceipt.code} - ${formatMoney(savedReceipt.totalAmount)}.`, 'ok')
       await refresh()
     } catch (error) {
       showFeedback(error instanceof Error ? error.message : 'Không thể tạo hóa đơn.', 'err')
@@ -401,8 +414,25 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
             <small>{bill.quantity} sản phẩm - tạo mã đối soát</small>
           </div>
 
+          <div className="pos-payment-panel">
+            <label>Thanh toán
+              <select value={paymentMethod} onChange={(event) => {
+                setPaymentMethod(event.target.value as PaymentMethod)
+                setCustomerPaid('')
+              }}>
+                <option value="cash">Tiền mặt</option>
+                <option value="qr">Chuyển khoản QR</option>
+                <option value="card">Thẻ</option>
+              </select>
+            </label>
+            {paymentMethod === 'cash' && <label>Khách đưa
+              <input type="number" min={bill.amount} step="1000" value={customerPaid} onChange={(event) => setCustomerPaid(event.target.value)} placeholder={String(bill.amount)} />
+            </label>}
+            <div><span>Tiền thừa</span><strong>{formatMoney(Math.max(Number(customerPaid || 0) - bill.amount, 0))}</strong></div>
+          </div>
+
           <button className="checkout-button" disabled={!cartLines.length || checkoutBusy} onClick={() => void checkout()}>
-            {checkoutBusy ? 'Đang tạo hóa đơn...' : 'Tạo hóa đơn'}
+            {checkoutBusy ? 'Đang thanh toán...' : 'Thanh toán'}
           </button>
 
           <div className="receipt-history">
@@ -446,7 +476,10 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
               <dl>
                 <div><dt>Thời gian</dt><dd>{new Date(lastReceipt.createdAt).toLocaleString('vi-VN', { hour12: false })}</dd></div>
                 <div><dt>Nhân viên</dt><dd>{lastReceipt.sellerName}</dd></div>
-                <div><dt>Đối soát</dt><dd>Quầy Lotte</dd></div>
+                <div><dt>Chi nhánh</dt><dd>{branchName(lastReceipt.branchId)}</dd></div>
+                <div><dt>Thanh toán</dt><dd>{paymentMethodLabel(lastReceipt.paymentMethod)}</dd></div>
+                {lastReceipt.paymentMethod === 'cash' && <div><dt>Khách đưa</dt><dd>{formatMoney(lastReceipt.customerPaid || lastReceipt.totalAmount)}</dd></div>}
+                {lastReceipt.paymentMethod === 'cash' && <div><dt>Tiền thừa</dt><dd>{formatMoney(lastReceipt.changeAmount || 0)}</dd></div>}
               </dl>
               <section>
                 {lastReceipt.lines.map((line) => (
@@ -462,6 +495,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
               </footer>
               <p>Cảm ơn quý khách!</p>
             </div>
+            <button type="button" className="receipt-print-button" onClick={printPosReceipt}>In hóa đơn</button>
           </div>
         </div>
       )}
@@ -513,6 +547,18 @@ function formatMoney(value: number) {
 function formatDate(value: string) {
   const [year, month, day] = value.split('-')
   return day && month && year ? `${day}/${month}/${year}` : value
+}
+
+function paymentMethodLabel(value: PaymentMethod) {
+  return value === 'cash' ? 'Tiền mặt' : value === 'qr' ? 'Chuyển khoản QR' : 'Thẻ'
+}
+
+function printPosReceipt() {
+  document.body.classList.add('printing-pos-receipt')
+  const cleanup = () => document.body.classList.remove('printing-pos-receipt')
+  window.addEventListener('afterprint', cleanup, { once: true })
+  window.print()
+  window.setTimeout(cleanup, 1000)
 }
 
 function normalizeName(value: string) {

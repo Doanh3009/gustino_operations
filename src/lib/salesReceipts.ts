@@ -22,6 +22,8 @@ export interface SalesReceipt {
   sellerId?: string
   sellerName: string
   paymentMethod: PaymentMethod
+  customerPaid?: number
+  changeAmount?: number
   totalQuantity: number
   totalAmount: number
   lines: SalesReceiptLine[]
@@ -109,36 +111,39 @@ export async function fetchSalesReceiptsRange(
   return rows.map(mapReceipt)
 }
 
-export async function saveSalesReceipt(user: AppUser, receipt: SalesReceipt): Promise<void> {
+export async function saveSalesReceipt(user: AppUser, receipt: SalesReceipt): Promise<SalesReceipt> {
   if (shouldUseLanApi(user)) {
     await salesApi(user, '', { method: 'POST', body: JSON.stringify(receipt) })
-    return
+    return receipt
   }
-  const { error: receiptError } = await supabase!.from('sales_receipts').insert({
-    id: receipt.id,
-    code: receipt.code,
-    branch_id: receipt.branchId,
-    business_date: receipt.businessDate,
-    seller_id: receipt.sellerId || null,
-    seller_name: receipt.sellerName,
-    payment_method: receipt.paymentMethod,
-    total_quantity: receipt.totalQuantity,
-    total_amount: receipt.totalAmount,
-    created_by: user.id,
-    created_at: receipt.createdAt,
+  const { data, error } = await supabase!.rpc('create_cashier_pos_receipt', {
+    p_receipt: {
+      id: receipt.id,
+      branch_id: receipt.branchId,
+      business_date: receipt.businessDate,
+      seller_id: receipt.sellerId || null,
+      seller_name: receipt.sellerName,
+      payment_method: receipt.paymentMethod,
+      customer_paid: receipt.customerPaid,
+    },
+    p_lines: receipt.lines.map((line) => ({
+      allocation_id: line.allocationId || null,
+      product_id: line.productId,
+      product_name: line.productName,
+      quantity: line.quantity,
+      unit_price: line.unitPrice,
+      line_total: line.total,
+    })),
   })
-  if (receiptError) throw new Error(receiptError.message)
-  const { error: itemError } = await supabase!.from('sales_receipt_items').insert(receipt.lines.map((line) => ({
-    receipt_id: receipt.id,
-    allocation_id: line.allocationId || null,
-    product_id: line.productId,
-    product_name: line.productName,
-    quantity: line.quantity,
-    unit_price: line.unitPrice,
-    line_total: line.total,
-    created_at: receipt.createdAt,
-  })))
-  if (itemError) throw new Error(itemError.message)
+  if (error) throw new Error(error.message)
+  return {
+    ...receipt,
+    id: data.id,
+    code: data.code,
+    customerPaid: Number(data.customer_paid),
+    changeAmount: Number(data.change_amount),
+    createdAt: data.created_at,
+  }
 }
 
 export async function deleteSalesReceipt(user: AppUser, receipt: SalesReceipt): Promise<void> {
@@ -169,6 +174,8 @@ function mapReceipt(row: any): SalesReceipt {
     sellerId,
     sellerName: row.seller_name,
     paymentMethod: row.payment_method,
+    customerPaid: row.customer_paid === null || row.customer_paid === undefined ? undefined : Number(row.customer_paid),
+    changeAmount: Number(row.change_amount || 0),
     totalQuantity: Number(row.total_quantity),
     totalAmount: Number(row.total_amount),
     lines,

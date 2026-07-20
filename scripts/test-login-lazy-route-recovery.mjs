@@ -20,6 +20,11 @@ if (!boundary.includes('Không mở được màn hình này')) failures.push('E
 if (!boundary.includes('window.location.reload()')) failures.push('Màn hình lỗi chưa có nút tải lại thủ công.')
 if (!app.includes('<LazyRouteErrorBoundary key={page}>')) failures.push('App chưa bọc route lazy bằng error boundary reset theo trang.')
 if (app.includes('if (!canAccessPage(user, page)) return null')) failures.push('Chuyển route theo role vẫn có thể render trắng bằng return null.')
+if (!app.includes('<RouteLoadSettled />')) failures.push('Route lazy tải xong chưa xóa dấu watchdog phục hồi.')
+if (!app.includes("const ROUTE_LOAD_WATCHDOG_KEY = 'gustino:route-load-watchdog'")) failures.push('Thiếu watchdog cho import bị treo sau đăng nhập.')
+if (!/PageLoadFallback[\s\S]*window\.setTimeout[\s\S]*window\.location\.reload\(\)/.test(app)) {
+  failures.push('Fallback sau đăng nhập chưa tự phục hồi khi dynamic import bị treo.')
+}
 
 if (failures.length) {
   console.error(failures.map((failure) => `- ${failure}`).join('\n'))

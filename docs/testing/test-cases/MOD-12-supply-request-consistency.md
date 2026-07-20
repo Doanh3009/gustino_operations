@@ -2,6 +2,13 @@
 
 Status: in progress; data-completeness regression passed, live role/UI verification pending.
 
+## 2026-07-20 — Admin read-only list and Excel
+
+- Admin Management purchasing reads filtered requests but no longer renders acknowledge/cancel mutations.
+- Filtered rows export to `danh-sach-dat-hang-<from>-<to>.xlsx` with order/receive date, branch, requester, item, numeric quantity, unit, status and note.
+- Operational Orders/Kitchen creation and status-transition handlers are unchanged.
+- Evidence: `OWNER_UX_INVENTORY_ADMIN_20260720_OK`, `SUPPLY_REQUEST_DELIVERY_SCHEDULE_OK`, Admin ERP, UI-button, TypeScript and guarded build pass. Actual workbook-open verification remains pending.
+
 | ID | Flow | Expected result | Automation/status |
 |---|---|---|---|
 | MOD12-TC-DATA-01 | Authorized history exceeds 80 requests | Orders, Kitchen and management reporting receive every authorized request; date filtering cannot lose older rows because of a pre-filter cap | Pre-fix failed; `DATA_PAGINATION_CONSISTENCY_OK` and TypeScript/LAN syntax Passed after stable Supabase pagination and LAN cap removal |

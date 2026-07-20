@@ -271,20 +271,33 @@ async function reverseGeocodeAddress(latitude, longitude) {
   nominatimUrl.searchParams.set('zoom', '18')
   nominatimUrl.searchParams.set('addressdetails', '1')
   nominatimUrl.searchParams.set('accept-language', 'vi')
-  const nominatim = await fetchJsonWithTimeout(nominatimUrl, {
-    headers: { 'User-Agent': 'GUSTINO-Operations/1.0' },
-  }).catch(() => null)
-  if (String(nominatim?.display_name || '').trim()) return String(nominatim.display_name).trim()
-
   const bigDataUrl = new URL('https://api.bigdatacloud.net/data/reverse-geocode-client')
   bigDataUrl.searchParams.set('latitude', String(latitude))
   bigDataUrl.searchParams.set('longitude', String(longitude))
   bigDataUrl.searchParams.set('localityLanguage', 'vi')
-  const bigData = await fetchJsonWithTimeout(bigDataUrl).catch(() => null)
-  const parts = [bigData?.locality, bigData?.city, bigData?.principalSubdivision, bigData?.countryName]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean)
-  return [...new Set(parts)].join(', ')
+  return Promise.any([
+    concreteLanAddress(
+      fetchJsonWithTimeout(nominatimUrl, {
+        headers: { 'User-Agent': 'GUSTINO-Operations/1.0' },
+      }).then((payload) => String(payload?.display_name || '').trim()),
+    ),
+    concreteLanAddress(
+      fetchJsonWithTimeout(bigDataUrl).then((payload) => {
+        const parts = [payload?.locality, payload?.city, payload?.principalSubdivision, payload?.countryName]
+          .map((value) => String(value || '').trim())
+          .filter(Boolean)
+        return [...new Set(parts)].join(', ')
+      }),
+    ),
+  ]).catch(() => '')
+}
+
+async function concreteLanAddress(request) {
+  const address = await request
+  if (!address || /^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$/.test(address)) {
+    throw new Error('Nhà cung cấp chưa trả địa chỉ cụ thể.')
+  }
+  return address
 }
 
 function draftKey(branchId, date) {
@@ -1030,7 +1043,7 @@ async function handleApi(request, response, url) {
       const name = String(input.name || '').trim()
       if (!name || username.length < 3 || !email.includes('@')) return json(response, 400, { error: 'Tên và tên đăng nhập không hợp lệ.' })
       if (password.length < 6) return json(response, 400, { error: 'Mật khẩu tạm cần ít nhất 6 ký tự.' })
-      if (!['manager', 'shift_leader', 'staff', 'kitchen'].includes(input.role)) return json(response, 400, { error: 'Vai trò không hợp lệ.' })
+      if (!['manager', 'shift_leader', 'staff', 'cashier', 'kitchen'].includes(input.role)) return json(response, 400, { error: 'Vai trò không hợp lệ.' })
       const branchlessRole = ['manager', 'kitchen'].includes(input.role)
       const accountBranchId = branchlessRole ? '' : input.branchId
       if (!branchlessRole && !canAccessBranch(user, accountBranchId)) return json(response, 403, { error: 'Không có quyền tạo tài khoản tại chi nhánh này.' })
@@ -1060,11 +1073,17 @@ async function handleApi(request, response, url) {
     if (employeeMatch && request.method === 'PATCH') {
       if (!user.authenticated || user.role !== 'admin') return json(response, 403, { error: 'Chỉ Admin hệ thống được cập nhật nhân sự.' })
       const patch = await body(request)
-      if (patch.role && !['manager', 'shift_leader', 'staff', 'kitchen'].includes(patch.role)) {
+      if (patch.role && !['manager', 'shift_leader', 'staff', 'cashier', 'kitchen'].includes(patch.role)) {
         return json(response, 400, { error: 'Vai trò không hợp lệ.' })
       }
       if (patch.employmentType && !['leader', 'full_time', 'part_time'].includes(patch.employmentType)) {
         return json(response, 400, { error: 'Nhóm ca không hợp lệ.' })
+      }
+      if (patch.employmentStatus && !['probation', 'working', 'ended'].includes(patch.employmentStatus)) {
+        return json(response, 400, { error: 'Trạng thái việc làm không hợp lệ.' })
+      }
+      if (patch.employmentStatus === 'ended' && !patch.employmentEndDate) {
+        return json(response, 400, { error: 'Cần nhập ngày nghỉ việc.' })
       }
       if (employeeMatch[1] === user.id && patch.role && patch.role !== 'admin') {
         return json(response, 409, { error: 'Bạn không thể tự hạ quyền Quản lý của chính mình.' })
@@ -1085,6 +1104,11 @@ async function handleApi(request, response, url) {
       if (patch.employmentType !== undefined) profile.employmentType = patch.employmentType
       if (patch.positionTitle !== undefined) profile.positionTitle = String(patch.positionTitle || '').trim()
       if (patch.avatarUrl !== undefined) profile.avatarUrl = String(patch.avatarUrl || '').trim() || undefined
+      if (patch.employmentStatus !== undefined) profile.employmentStatus = patch.employmentStatus
+      if (patch.employmentStartDate !== undefined) profile.employmentStartDate = patch.employmentStartDate || undefined
+      if (patch.probationEndDate !== undefined) profile.probationEndDate = patch.probationEndDate || undefined
+      if (patch.employmentEndDate !== undefined) profile.employmentEndDate = patch.employmentStatus === 'ended' ? patch.employmentEndDate : undefined
+      if (patch.employmentNote !== undefined) profile.employmentNote = String(patch.employmentNote || '').slice(0, 2000)
       await persist()
       return json(response, 200, publicProfile(profile))
     }

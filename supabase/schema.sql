@@ -1,7 +1,7 @@
 -- GUSTINO Operations - PostgreSQL schema for Supabase
 create extension if not exists "pgcrypto";
 
-create type public.app_role as enum ('admin', 'manager', 'shift_leader', 'staff', 'kitchen');
+create type public.app_role as enum ('admin', 'manager', 'shift_leader', 'staff', 'cashier', 'kitchen');
 create type public.stock_movement_type as enum (
   'opening', 'inbound', 'processing_out', 'processing_in',
   'packing_out', 'packing_in', 'sale_out', 'waste', 'adjustment', 'count'
@@ -11,6 +11,8 @@ create type public.supply_request_status as enum ('pending', 'acknowledged', 'fu
 create table public.branches (
   id text primary key,
   name text not null,
+  address text not null default '',
+  manager_name text not null default '',
   active boolean not null default true,
   created_at timestamptz not null default now()
 );
@@ -20,6 +22,12 @@ create table public.profiles (
   full_name text not null,
   role public.app_role not null default 'shift_leader',
   branch_id text references public.branches(id),
+  employment_status text not null default 'working'
+    check (employment_status in ('probation', 'working', 'ended')),
+  employment_start_date date,
+  probation_end_date date,
+  employment_end_date date,
+  employment_note text not null default '',
   created_at timestamptz not null default now()
 );
 

@@ -58,6 +58,7 @@ export function ShiftHandoverPage({
   const openSession = sessions.find((item) => item.status === 'open' && item.businessDate === today)
   const staleOpenSessions = sessions.filter((item) => item.status === 'open' && item.businessDate < today)
   const todaySessions = sessions.filter((item) => item.businessDate === today)
+  const hasClosedShift = todaySessions.some((item) => item.status === 'closed')
   const dayClosed = operationDay?.status === 'closed'
   const dayLocked = dayClosed
   const maxShiftsReached = !openSession && todaySessions.length >= 2
@@ -309,11 +310,16 @@ export function ShiftHandoverPage({
           <h1>Nhận ca - xem bán hàng - chốt tồn</h1>
           <p>Ca trưởng ghi nhận tồn thành phẩm cuối ca. Nhân viên bán hàng bán trực tiếp theo menu POS.</p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <div className="handover-heading-actions">
           <span className={`handover-shift-chip ${openSession ? 'open' : ''}`}>
             {openSession ? `${shiftLabel(openSession.sequence)} đang mở` : 'Chưa nhận ca'}
           </span>
           <button className="handover-link-sales" onClick={() => onNavigate('sales')}>Xem sổ bán hàng</button>
+          {hasClosedShift && (
+            <button className="handover-link-report" onClick={() => onNavigate('report')}>
+              Xem báo cáo ngày
+            </button>
+          )}
         </div>
       </div>
 
