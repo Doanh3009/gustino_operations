@@ -5,8 +5,9 @@
 - Không sửa thêm dòng source nào trong lượt này. Chỉ chạy lại kiểm chứng để xác minh hai QA từng hỏng.
 - `qa-admin.mjs` → `MANAGEMENT_QA_OK` và `qa-mobile-shift-setup.mjs` → `MOBILE_SHIFT_AUDIT_OK` (9 ảnh audit). Kết luận: hai lỗi ghi ở BUG-106 là trạng thái dev server cũ/HMR hỏng, KHÔNG phải trang dashboard admin hỏng. Ghi chú cũ trong BUG_TRACKER đã được sửa lại.
 - Toàn bộ kiểm chứng trên cây làm việc hiện tại: `npx tsc -b` exit 0; `npm run build` pass → `PRODUCTION_SUPABASE_BUNDLE_OK (index-Ce1y8mkT.js; revenue-BIBA5MGD.js)`; QA `ROLE_ACCESS_QA_OK`, `APP_NAVIGATION_QA_OK`, `ATTENDANCE_QA_OK`, `HANDOVER_QA_OK`, `MANAGEMENT_QA_OK`, `MOBILE_SHIFT_AUDIT_OK` — 6/6 pass.
-- Không có deploy, commit, migration, query/ghi production hay gọi webhook nào trong lượt này.
-- Việc kế tiếp chính xác: chờ chủ quán quyết định phát hành (cây làm việc gộp bản vá chấm công BUG-106 với đợt sửa dashboard/report/handover/revenue chưa commit — deploy sẽ đẩy tất cả cùng lúc). Sau khi lên production: nhờ cô Cao Bảo Trân check-in lại, và xử lý bản ghi mở treo `775de9ab-e18c-424f-8820-0c191b46166e` bằng chức năng chỉnh công có ghi lý do của Admin, KHÔNG sửa thẳng DB.
+- Chủ quán cho phép phát hành cả lô. Commit `70377fa` (bản vá BUG-106 + BUG-102/103/104/105 + `operationalShiftAssignment.ts`; bỏ theo dõi `.npm-cache/`, thêm nó vào `.vercelignore`). Deployment `dpl_EesrhTX12smQRLsyy1JYSaYC6pnV` READY và đã trỏ alias `https://gustino-operations.vercel.app`.
+- Xác minh live: `index-Ce1y8mkT.js` / `index-BKrERcAQ.css` đang phục vụ, `/api/server-time` 200, bundle chứa đủ marker hạn chót chấm công + hướng dẫn quyền GPS riêng Android/iPhone. Không migration, không ghi dữ liệu production, không gọi n8n, không push GitHub.
+- Việc kế tiếp chính xác: nhờ cô Cao Bảo Trân check-in lại, và xử lý bản ghi mở treo `775de9ab-e18c-424f-8820-0c191b46166e` bằng chức năng chỉnh công có ghi lý do của Admin, KHÔNG sửa thẳng DB.
 
 ## 2026-07-21 — current incident fixes verified locally; device/live confirmation pending
 
