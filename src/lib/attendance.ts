@@ -459,16 +459,6 @@ export async function deleteEmployeeAccount(user: AppUser, employeeId: string): 
   await invokeManageEmployee({ action: 'hard_delete', employeeId })
 }
 
-export async function hardDeleteEmployeeAccount(user: AppUser, employeeId: string): Promise<void> {
-  if (user.role !== 'admin') throw new Error('Chỉ Admin hệ thống được xóa sạch dữ liệu test.')
-  if (employeeId === user.id) throw new Error('Bạn không thể xóa sạch tài khoản đang đăng nhập.')
-  if (shouldUseAttendanceApi(user)) {
-    await attendanceApi(user, `/employees/${employeeId}?hard=1`, { method: 'DELETE' })
-    return
-  }
-  await invokeManageEmployee({ action: 'hard_delete', employeeId })
-}
-
 async function invokeManageEmployee(body: Record<string, unknown>): Promise<any> {
   if (!supabase) throw new Error('Supabase chưa được cấu hình.')
   const client = supabase
@@ -963,6 +953,50 @@ export type AttendancePhase = 'locating' | 'saving'
 const ATTENDANCE_WRITE_MAX_ATTEMPTS = 2
 const ATTENDANCE_GEOCODE_MAX_ATTEMPTS = 2
 
+// Mỗi bước chấm công phải có hạn chót cứng. Trước đây canvas.toBlob(), giải mã
+// ảnh và các lệnh Supabase (storage/postgrest) đều KHÔNG có timeout: khi một
+// bước treo, promise không bao giờ settle nên nút Check-in quay vòng mãi mà
+// không hiện lỗi nào. Hết hạn phải BÁO LỖI, tuyệt đối không bỏ qua ảnh/GPS/địa chỉ.
+const ATTENDANCE_LOCATION_DEADLINE_MS = 25000
+const ATTENDANCE_PHOTO_DEADLINE_MS = 20000
+const ATTENDANCE_UPLOAD_DEADLINE_MS = 25000
+const ATTENDANCE_DB_DEADLINE_MS = 20000
+
+/** Hết hạn chót một bước chấm công. `status` 408 để lớp retry sẵn có thử lại một lần. */
+class AttendanceStepTimeoutError extends Error {
+  status?: number
+  constructor(message: string, status?: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+function withAttendanceDeadline<T>(
+  action: () => Promise<T>,
+  timeoutMs: number,
+  message: string,
+  retryableStatus?: number,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const timer = window.setTimeout(() => {
+      if (settled) return
+      settled = true
+      reject(new AttendanceStepTimeoutError(message, retryableStatus))
+    }, timeoutMs)
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timer)
+      callback()
+    }
+    action().then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    )
+  })
+}
+
 async function withAttendanceWriteRetry<T>(action: () => Promise<T>): Promise<T> {
   let lastError: unknown
   for (let attempt = 1; attempt <= ATTENDANCE_WRITE_MAX_ATTEMPTS; attempt += 1) {
@@ -1007,7 +1041,13 @@ export async function checkIn(user: AppUser, registration: ShiftRegistration, se
     longitude: location.longitude,
     accuracy: location.accuracy,
   })
-  const selfiePreviewUrl = await blobToDataUrl(stampedSelfie)
+  // Ảnh xem trước chỉ để hiển thị, KHÔNG phải bằng chứng chấm công: nếu máy đọc
+  // chậm/thiếu bộ nhớ thì bỏ qua preview chứ không được treo cả lượt check-in.
+  const selfiePreviewUrl = await withAttendanceDeadline(
+    () => blobToDataUrl(stampedSelfie),
+    ATTENDANCE_PHOTO_DEADLINE_MS,
+    'preview-timeout',
+  ).catch(() => '')
   const selfieUrl = await uploadSelfie(user, registration, stampedSelfie)
   const record: AttendanceRecord = {
     id: createId(),
@@ -1042,18 +1082,23 @@ export async function checkIn(user: AppUser, registration: ShiftRegistration, se
   }
   try {
     await withAttendanceWriteRetry(async () => {
-      const { error } = await supabase!.from('attendance_records').insert({
-        id: record.id,
-        user_id: record.userId,
-        branch_id: record.branchId,
-        shift_registration_id: record.shiftRegistrationId,
-        check_in_time: record.checkInTime,
-        selfie_url: record.selfieUrl,
-        check_in_latitude: record.checkInLatitude,
-        check_in_longitude: record.checkInLongitude,
-        check_in_accuracy: record.checkInAccuracy,
-        check_in_address: record.checkInAddress,
-      })
+      const { error } = await withAttendanceDeadline(
+        async () => await supabase!.from('attendance_records').insert({
+          id: record.id,
+          user_id: record.userId,
+          branch_id: record.branchId,
+          shift_registration_id: record.shiftRegistrationId,
+          check_in_time: record.checkInTime,
+          selfie_url: record.selfieUrl,
+          check_in_latitude: record.checkInLatitude,
+          check_in_longitude: record.checkInLongitude,
+          check_in_accuracy: record.checkInAccuracy,
+          check_in_address: record.checkInAddress,
+        }),
+        ATTENDANCE_DB_DEADLINE_MS,
+        'Máy chủ chưa phản hồi lệnh check-in. Hệ thống sẽ thử lại; nếu vẫn lỗi hãy kiểm tra mạng rồi bấm lại.',
+        408,
+      )
       if (error) throw error
     })
   } catch (error) {
@@ -1116,20 +1161,25 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
   }
   try {
     await withAttendanceWriteRetry(async () => {
-      const { data, error } = await supabase!.from('attendance_records').update({
-        check_out_time: checkOutTime,
-        check_out_selfie_url: checkOutSelfieUrl,
-        check_out_latitude: location.latitude,
-        check_out_longitude: location.longitude,
-        check_out_accuracy: location.accuracy,
-        check_out_address: location.address,
-        updated_at: checkOutTime,
-      })
-        .eq('id', record.id)
-        .eq('user_id', user.id)
-        .is('check_out_time', null)
-        .select('id, check_out_time')
-        .maybeSingle()
+      const { data, error } = await withAttendanceDeadline(
+        async () => await supabase!.from('attendance_records').update({
+          check_out_time: checkOutTime,
+          check_out_selfie_url: checkOutSelfieUrl,
+          check_out_latitude: location.latitude,
+          check_out_longitude: location.longitude,
+          check_out_accuracy: location.accuracy,
+          check_out_address: location.address,
+          updated_at: checkOutTime,
+        })
+          .eq('id', record.id)
+          .eq('user_id', user.id)
+          .is('check_out_time', null)
+          .select('id, check_out_time')
+          .maybeSingle(),
+        ATTENDANCE_DB_DEADLINE_MS,
+        'Máy chủ chưa phản hồi lệnh check-out. Hệ thống sẽ kiểm tra lại; nếu vẫn lỗi hãy kiểm tra mạng rồi bấm lại.',
+        408,
+      )
       if (error) throw error
       if (data?.check_out_time || await verifyCompletedCheckout(user.id, record.id)) return
       throw new Error('Supabase chưa xác nhận check-out. Hệ thống sẽ kiểm tra và thử lại một lần.')
@@ -1188,10 +1238,17 @@ async function uploadSelfie(user: AppUser, registration: ShiftRegistration, self
 
 async function uploadAttendanceSelfieWithRetry(path: string, selfie: Blob) {
   await withAttendanceWriteRetry(async () => {
-    const { error } = await supabase!.storage.from('attendance-selfies').upload(path, selfie, {
-      contentType: 'image/jpeg',
-      upsert: false,
-    })
+    // supabase-js không đặt timeout cho storage upload: mạng 4G chập chờn có thể
+    // treo request vĩnh viễn. Hạn chót cứng + status 408 để retry sẵn có xử lý.
+    const { error } = await withAttendanceDeadline(
+      () => supabase!.storage.from('attendance-selfies').upload(path, selfie, {
+        contentType: 'image/jpeg',
+        upsert: false,
+      }),
+      ATTENDANCE_UPLOAD_DEADLINE_MS,
+      'Mạng quá chậm nên chưa tải được ảnh chấm công lên. Hãy kiểm tra sóng/4G rồi bấm lại.',
+      408,
+    )
     if (!error || /duplicate|already exists/i.test(error.message || '')) return
     throw error
   })
@@ -1552,12 +1609,18 @@ async function getAttendanceLocation() {
   if (!navigator.geolocation) {
     throw new AttendanceLocationError('Thiết bị/trình duyệt không hỗ trợ định vị. Hãy mở bằng trình duyệt có GPS để chấm công.')
   }
-  const position = await getBestGeolocationPosition().catch((error: GeolocationPositionError | Error | null) => error)
+  // Trên Android Chrome, khi hộp thoại xin quyền vị trí còn treo thì `timeout`
+  // của getCurrentPosition không chạy, nên cần hạn chót riêng bọc ngoài.
+  const position = await withAttendanceDeadline(
+    () => getBestGeolocationPosition(),
+    ATTENDANCE_LOCATION_DEADLINE_MS,
+    'Quá 25 giây chưa lấy được vị trí. Hãy bật GPS/Vị trí của máy, cho phép trình duyệt truy cập vị trí (và bật "Vị trí chính xác"), ra gần cửa sổ rồi bấm lại.',
+  ).catch((error: GeolocationPositionError | Error | null) => error)
   if (!position || !('coords' in position)) {
     const denied = position && 'code' in position && position.code === position.PERMISSION_DENIED
     throw new AttendanceLocationError(
       denied
-        ? 'Safari đang chặn quyền định vị cho website này. Vào Cài đặt → Quyền riêng tư & Bảo mật → Dịch vụ định vị → Safari Websites → Khi dùng ứng dụng, đồng thời bật Vị trí chính xác.'
+        ? locationPermissionHelpText()
         : position instanceof Error && position.message
           ? position.message
           : 'Không lấy được GPS. Hãy kiểm tra quyền định vị và sóng GPS rồi thử lại.',
@@ -1570,6 +1633,18 @@ async function getAttendanceLocation() {
     await reverseGeocodeAttendanceWithRetry(latitude, longitude),
   )
   return { latitude, longitude, accuracy, address }
+}
+
+/** Hướng dẫn bật lại quyền vị trí theo đúng nền tảng của máy đang dùng. */
+function locationPermissionHelpText() {
+  const agent = typeof navigator === 'undefined' ? '' : navigator.userAgent || ''
+  if (/iPhone|iPad|iPod/i.test(agent)) {
+    return 'Safari đang chặn quyền định vị cho website này. Vào Cài đặt → Quyền riêng tư & Bảo mật → Dịch vụ định vị → Safari Websites → Khi dùng ứng dụng, đồng thời bật Vị trí chính xác.'
+  }
+  if (/Android/i.test(agent)) {
+    return 'Trình duyệt đang bị chặn quyền định vị. Bấm vào biểu tượng ổ khóa cạnh địa chỉ web → Quyền → bật Vị trí, đồng thời bật Vị trí (GPS) trong Cài đặt máy rồi tải lại trang.'
+  }
+  return 'Trình duyệt đang chặn quyền định vị cho website này. Hãy mở phần quyền của trang (biểu tượng ổ khóa cạnh địa chỉ web) và bật lại quyền Vị trí, sau đó tải lại trang.'
 }
 
 async function reverseGeocodeAttendanceWithRetry(latitude: number, longitude: number) {
@@ -1713,7 +1788,13 @@ async function stampAttendancePhoto(
     totalHoursLabel?: string
   },
 ) {
-  const decoded = await decodeImageForCanvas(selfie)
+  // createImageBitmap()/image.decode() không có timeout và có thể treo vô hạn
+  // với ảnh camera lớn trên máy Android yếu.
+  const decoded = await withAttendanceDeadline(
+    () => decodeImageForCanvas(selfie),
+    ATTENDANCE_PHOTO_DEADLINE_MS,
+    'Máy đọc ảnh chấm công quá lâu. Hãy chụp lại ảnh (hoặc giảm độ phân giải camera) rồi thử lại.',
+  )
   const maxWidth = 1280
   const scale = Math.min(1, maxWidth / decoded.width)
   const width = Math.round(decoded.width * scale)
@@ -1747,9 +1828,14 @@ async function stampAttendancePhoto(
     context.fillStyle = index === 0 ? '#d9f47d' : '#ffffff'
     context.fillText(fitCanvasText(context, line, width - padding * 2), padding, height - padding - (lines.length - 1 - index) * Math.max(24, Math.round(width * .027)))
   })
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Không thể lưu ảnh đã đóng dấu.')), 'image/jpeg', .9)
-  })
+  // canvas.toBlob có thể không bao giờ gọi callback khi máy thiếu bộ nhớ.
+  return withAttendanceDeadline(
+    () => new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('Không thể lưu ảnh đã đóng dấu.')), 'image/jpeg', .9)
+    }),
+    ATTENDANCE_PHOTO_DEADLINE_MS,
+    'Máy xử lý ảnh chấm công quá lâu (ảnh quá nặng hoặc máy thiếu bộ nhớ). Hãy đóng bớt ứng dụng, chụp lại ảnh rồi thử lại.',
+  )
 }
 
 function fitCanvasText(context: CanvasRenderingContext2D, text: string, maxWidth: number) {

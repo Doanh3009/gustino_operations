@@ -61,7 +61,10 @@ try {
   })
   if (!response.ok()) throw new Error(`Không thể tạo ca QA: ${await response.text()}`)
   await page.reload({ waitUntil: 'networkidle' })
-  await page.getByRole('button', { name: 'Chấm công', exact: true }).click()
+  // Sidebar có thể nằm ngoài viewport (drawer mobile) nên click trực tiếp không
+  // ổn định; điều hướng bằng hash route đúng như app tự làm.
+  await page.evaluate(() => { window.location.hash = '#attendance' })
+  await page.waitForSelector('.shift-card', { timeout: 15000 })
   const shiftCard = page.locator('.shift-card').filter({ hasText: marker })
   await shiftCard.getByText('Đã đăng ký').waitFor()
 
@@ -81,7 +84,13 @@ try {
   await checkedInCard.locator('.checkout-selfie-button input[type="file"]').setInputFiles(join('data/attendance-selfies', selfieName))
   await checkedInCard.getByRole('button', { name: 'Check-out' }).click()
   await page.getByText(/Check-out thành công/).waitFor()
-  await checkedInCard.getByText(/Ra:/).waitFor()
+  // Chấm xong thì ca rời khỏi danh sách .shift-card và hiển thị ở hàng đã hoàn tất
+  // (`renderCompletedRow`) với định dạng "Vào hh:mm · Ra hh:mm" (không có dấu hai chấm).
+  await page.locator('.completed-shift-row')
+    .filter({ hasText: `${registration.startTime} - ${registration.endTime}` })
+    .filter({ hasText: /Ra\s+\d{1,2}:\d{2}/ })
+    .first()
+    .waitFor()
 
   console.log('ATTENDANCE_QA_OK')
 } finally {

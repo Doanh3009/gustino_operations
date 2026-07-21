@@ -11,6 +11,10 @@ if (!attendance.includes('openShiftAfterLeaderCheckIn')) failures.push('Check-in
 if (!today.includes("title: 'Chụp hình quầy đầu ca'") || !today.includes("title: 'Chụp hình quầy cuối ca'")) failures.push('Trang Hôm nay chưa đặt ảnh đầu ca ở bước 1 và ảnh cuối ca ở bước cuối.')
 if (handover.includes('>Nhận ca</button>')) failures.push('Trang Bàn giao vẫn phụ thuộc nút Nhận ca thủ công.')
 if (!handover.includes('autoStartAttemptRef')) failures.push('Trang Bàn giao chưa tự phục hồi việc mở ca sau check-in.')
+if (!handover.includes('canOpenNextScheduledOperationalShift') || !handover.includes('canAutoStartScheduledShift')) failures.push('Ca trưởng Ca 2 chưa đối chiếu lịch Ca 2 trước khi tự nhận sau Ca 1.')
+if (!handover.includes('scheduled:${activeAttendance?.id}')) failures.push('Tự nhận ca chưa có khóa idempotent gắn với bản ghi check-in của đúng ca trưởng.')
+if (/fetchWorkShifts\(user\)\.catch\(\(\) => \[\]\)/.test(handover)) failures.push('Lỗi tải lịch ca vẫn bị đổi thành danh sách rỗng, làm Vũng Tàu im lặng không tự nhận ca.')
+if (!handover.includes('if (!activeAttendance)')) failures.push('Ca vận hành không còn yêu cầu ca trưởng check-in trước khi tự nhận ca.')
 if (!today.includes("table: 'sales_receipts'") || !today.includes("table: 'bag_shift_sessions'") || !today.includes('8000')) failures.push('Trang Hôm nay chưa realtime/poll liên tục dữ liệu bán và ca.')
 if (!shell.includes('new Date().getDay() === 0') || !shell.includes('sunday-shift-popup')) failures.push('Chưa có popup đăng ký ca chỉ vào Chủ nhật.')
 if (!shell.includes('/mascots/capy-attendance-camera.png') || !today.includes('attendance-capybara-image attendance-capybara')) {

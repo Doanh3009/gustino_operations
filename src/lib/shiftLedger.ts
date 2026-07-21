@@ -5,6 +5,31 @@ import type { AppUser, BagAllocation, BagShiftSession } from '../types'
 
 const authHeaders = userHeaders
 
+/**
+ * A shift is owned by the persisted leader id.  Old imported rows without an
+ * id can use the display-name fallback, but a matching name must never take
+ * precedence over a real id from another account.
+ */
+export function ownsBagShiftSession(session: BagShiftSession, user: Pick<AppUser, 'id' | 'name'>) {
+  const leaderId = String(session.leaderId || '').trim()
+  if (leaderId) return leaderId === user.id
+  return normalizeLeaderName(session.leaderName) === normalizeLeaderName(user.name)
+}
+
+export function latestOwnedBagShiftSession(
+  sessions: BagShiftSession[],
+  user: Pick<AppUser, 'id' | 'name'>,
+) {
+  return sessions
+    .filter((session) => ownsBagShiftSession(session, user))
+    .sort((a, b) => b.sequence - a.sequence || b.startedAt.localeCompare(a.startedAt))[0]
+}
+
+function normalizeLeaderName(value: string) {
+  return String(value || '').trim().toLocaleLowerCase('vi').normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+}
+
 async function ledgerApi<T>(user: AppUser, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/shift-ledger${path}`, {
     ...init,

@@ -7,6 +7,7 @@ Status: in progress; direct iPhone verification pending.
 - `MOD06-TC-SAVED-UI-01` Passed (source/type/build): a successful check-in record is merged into the visible schedule immediately; a refresh failure cannot restore the stale Check-in action or overwrite final success feedback.
 - `MOD06-TC-SAVED-UI-02` Passed (source/type/build): LAN/cloud check-out returns a completed record and the visible schedule moves to completed before realtime reconciliation.
 - `MOD06-TC-GEOCODE-RETRY-01` Passed (real-handler mock + source): local reverse geocoding retries twice; the server races Nominatim and BigDataCloud rather than spending up to 10 seconds sequentially, and the 6.5-second client bound exceeds each provider's 5-second timeout. Coordinates are never accepted as a fake address.
+- `MOD06-TC-GEOCODE-QUALITY-01` Passed (real-handler mock + LAN/source): both providers still start concurrently; when the fast fallback returns only city/province, the handler gives the street/ward source an 800 ms grace period, then falls back without restoring the old sequential delay.
 - Existing rules preserved: native camera file capture, stamped image, fresh high-accuracy GPS, maximum 150m accuracy, concrete address, own approved registration, bounded idempotent write retry and read-back.
 - Evidence: `ADMIN_CLEANUP_ATTENDANCE_RESILIENCE_OK`, `ATTENDANCE_REVERSE_GEOCODE_RACE_OK` and TypeScript pass in the correction batch; earlier idempotency/native-location/cloud/build evidence remains. Physical device check remains pending because Browser is unavailable.
 
@@ -24,6 +25,7 @@ Status: in progress; direct iPhone verification pending.
 | MOD06-TC-IOS-01 | iPhone 11 camera/GPS/permission | Check in and out without browser restart | Blocked pending physical device test |
 | MOD06-TC-POPUP-01 | Today's attendance reminder | Capybara popup distinguishes check-in from check-out using current records | Static test Passed; UI pending |
 | MOD06-TC-GPS-02 | Automatic location and concrete address | Check-in/out requests GPS without a separate permission panel; visible/stamped location is a reverse-geocoded address, never coordinate fallback | `test-attendance-native-camera-location.mjs` Passed; HTTPS iPhone pending |
+| MOD06-TC-GPS-04 | Fast administrative address and slightly slower street-level address both succeed | Prefer the street/ward address within a bounded 800 ms grace; if that source fails, use the already-running administrative fallback | `ATTENDANCE_REVERSE_GEOCODE_RACE_OK`, `ATTENDANCE_INTERMITTENT_RECOVERY_OK`, LAN syntax and build Passed; physical HTTPS GPS/address pending |
 | MOD06-TC-CAMERA-02 | Native phone capture | Attendance uses the phone-native capture input with no separate live camera/filter layer; iPhone decode fallback remains | `test-attendance-native-camera-location.mjs` Passed; physical iPhone pending |
 ## 2026-07-18 idempotent write/read-back
 

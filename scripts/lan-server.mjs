@@ -275,29 +275,41 @@ async function reverseGeocodeAddress(latitude, longitude) {
   bigDataUrl.searchParams.set('latitude', String(latitude))
   bigDataUrl.searchParams.set('longitude', String(longitude))
   bigDataUrl.searchParams.set('localityLanguage', 'vi')
-  return Promise.any([
-    concreteLanAddress(
+  const detailedAddress = concreteLanAddress(
+      'nominatim',
       fetchJsonWithTimeout(nominatimUrl, {
         headers: { 'User-Agent': 'GUSTINO-Operations/1.0' },
       }).then((payload) => String(payload?.display_name || '').trim()),
-    ),
-    concreteLanAddress(
+    )
+  const fallbackAddress = concreteLanAddress(
+      'bigdatacloud',
       fetchJsonWithTimeout(bigDataUrl).then((payload) => {
         const parts = [payload?.locality, payload?.city, payload?.principalSubdivision, payload?.countryName]
           .map((value) => String(value || '').trim())
           .filter(Boolean)
         return [...new Set(parts)].join(', ')
       }),
-    ),
-  ]).catch(() => '')
+    )
+  const result = await preferDetailedLanAddress(detailedAddress, fallbackAddress)
+  return result?.address || ''
 }
 
-async function concreteLanAddress(request) {
+async function preferDetailedLanAddress(detailedAddress, fallbackAddress) {
+  const first = await Promise.any([detailedAddress, fallbackAddress]).catch(() => null)
+  if (!first || first.source === 'nominatim') return first
+  const preferred = await Promise.race([
+    detailedAddress.catch(() => null),
+    new Promise((resolve) => setTimeout(() => resolve(null), 800)),
+  ])
+  return preferred || first
+}
+
+async function concreteLanAddress(source, request) {
   const address = await request
   if (!address || /^-?\d+(\.\d+)?,\s*-?\d+(\.\d+)?$/.test(address)) {
     throw new Error('Nhà cung cấp chưa trả địa chỉ cụ thể.')
   }
-  return address
+  return { address, source }
 }
 
 function draftKey(branchId, date) {

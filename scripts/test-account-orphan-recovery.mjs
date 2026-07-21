@@ -15,18 +15,17 @@ if (!/if \(deleteAuthUser\)[\s\S]*?auth\.admin\.deleteUser\(employeeId\)[\s\S]*?
 if (!edge.includes(".from('profiles')") || !edge.includes(".maybeSingle()")) {
   failures.push('Khôi phục tài khoản chưa xác nhận auth user thật sự không còn profile.')
 }
-const accountListSource = admin.slice(
-  admin.indexOf('const accountEmployees ='),
-  admin.indexOf('const unassignedEmployeeReceipts ='),
-)
-if (!accountListSource.includes('employees.filter') || accountListSource.includes('employee.active !== false')) {
-  failures.push('Danh sách quản trị tài khoản vẫn giấu hồ sơ inactive dù username còn tồn tại trong Auth.')
+if (!admin.includes('Xóa nhân viên') || !admin.includes('Xác nhận xóa')) {
+  failures.push('UI chưa hiển thị một thao tác xóa hẳn nhân viên có xác nhận hai bước.')
 }
-if (!admin.includes('Tên đăng nhập vẫn được giữ cho đến khi Admin bấm “Xóa sạch test”')) {
-  failures.push('UI chưa giải thích hồ sơ inactive vẫn giữ username trong Auth.')
+if (admin.includes('Vô hiệu hóa tài khoản') || admin.includes('Xóa sạch test')) {
+  failures.push('UI vẫn còn nhánh vô hiệu hóa hoặc xóa-test gây nhầm lẫn.')
 }
-if (!/title="Xóa vĩnh viễn tài khoản test[\s\S]*?disabled=\{accountBusyId === employee\.id \|\| employee\.id === user\.id\}/.test(admin)) {
-  failures.push('Nút Xóa sạch test vẫn chưa khả dụng cho hồ sơ inactive để giải phóng username cũ.')
+if (!/if \(crmEmployeeId === employee\.id\)[\s\S]*?setCrmEmployeeId\(''\)[\s\S]*?navigateAdminHash\('\/admin\/employees'\)/.test(admin)) {
+  failures.push('Xóa nhân viên chưa thoát route chi tiết về danh sách, có thể để lại màn hình trắng.')
+}
+if (!admin.includes('admin-crm-missing-employee') || /if \(!employee\) return null/.test(admin)) {
+  failures.push('Route hồ sơ nhân viên đã mất vẫn có thể render null thay vì trạng thái phục hồi.')
 }
 
 const edgeDiagnostics = ts.transpileModule(edge, {

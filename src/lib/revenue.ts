@@ -36,8 +36,30 @@ export function buildDailyRevenueRows(
     .map((row) => `${row.branchId}|${row.reportDate}`))
   const receiptRows = liveReceiptRows(options.receipts || [], options)
     .filter((row) => !snapshotKeys.has(`${row.branchId}|${row.reportDate}`))
+  // A report is a point-in-time statement. POS receipts written after that
+  // statement are authoritative live revenue until the day is re-finalized.
+  // Keeping the snapshot baseline and adding only the later receipts avoids
+  // double counting receipts that the saved report already includes.
+  const postSnapshotReceiptRows = liveReceiptRowsAfterSnapshots(
+    options.receipts || [],
+    snapshotRows.filter((row) => row.hasRevenueSummary),
+    options,
+  )
+  const postSnapshotReceiptsByKey = new Map(
+    postSnapshotReceiptRows.map((row) => [`${row.branchId}|${row.reportDate}`, row]),
+  )
+  const reconciledSnapshotRows = snapshotRows.map((row) => {
+    const liveDelta = postSnapshotReceiptsByKey.get(`${row.branchId}|${row.reportDate}`)
+    if (!liveDelta) return row
+    return {
+      ...row,
+      revenue: row.revenue + liveDelta.revenue,
+      totalSold: row.totalSold + liveDelta.totalSold,
+      createdAt: liveDelta.createdAt > row.createdAt ? liveDelta.createdAt : row.createdAt,
+    }
+  })
   const receiptRowKeys = new Set(receiptRows.map((row) => `${row.branchId}|${row.reportDate}`))
-  const displayedSnapshotRows = snapshotRows.filter((row) =>
+  const displayedSnapshotRows = reconciledSnapshotRows.filter((row) =>
     row.hasRevenueSummary || !receiptRowKeys.has(`${row.branchId}|${row.reportDate}`),
   )
   const receiptKeys = new Set([...snapshotKeys, ...receiptRows.map((row) => `${row.branchId}|${row.reportDate}`)])
@@ -102,6 +124,20 @@ function liveReceiptRows(
     rows.set(key, current)
   })
   return Array.from(rows.values())
+}
+
+function liveReceiptRowsAfterSnapshots(
+  receipts: SalesReceipt[],
+  snapshots: DailyRevenueRow[],
+  options: { branchId?: string; from?: string; to?: string },
+) {
+  const snapshotCreatedAt = new Map(
+    snapshots.map((row) => [`${row.branchId}|${row.reportDate}`, row.createdAt]),
+  )
+  return liveReceiptRows(receipts.filter((receipt) => {
+    const createdAt = snapshotCreatedAt.get(`${receipt.branchId}|${receipt.businessDate}`)
+    return Boolean(createdAt && receipt.createdAt > createdAt)
+  }), options)
 }
 
 function liveAllocationRows(

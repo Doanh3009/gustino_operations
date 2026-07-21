@@ -31,9 +31,10 @@ try {
   page.on('pageerror', (error) => errors.push(error.stack || error.message))
   page.on('requestfailed', (request) => failedRequests.push(`${request.url()} (${request.failure()?.errorText || 'failed'})`))
 
-  // Trang quản lý: thanh "Dữ liệu đang xem" đã gỡ (CODEMAP §25); #management
-  // render thẳng section doanh thu. Assert theo UI hiện tại.
-  await page.goto(`${baseUrl}/#management`, { waitUntil: 'networkidle' })
+  // `#management` nay CHỈ dành cho admin (`canAccessPage`), quản lý vào sẽ bị đẩy
+  // về `#dashboard` nên script cũ luôn timeout. Doanh thu của quản lý nằm ở
+  // `#manager-revenue` (cùng ManagementPage, section 'revenue').
+  await page.goto(`${baseUrl}/#manager-revenue`, { waitUntil: 'networkidle' })
   try {
     await page.getByText('BIỂU ĐỒ DOANH THU').first().waitFor()
     await page.getByText('DOANH THU THEO NGÀY').first().waitFor()

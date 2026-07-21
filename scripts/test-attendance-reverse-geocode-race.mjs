@@ -15,7 +15,13 @@ try {
     const url = String(input)
     if (url.includes('nominatim')) {
       await delay(40)
-      return { ok: false, json: async () => ({}) }
+      return {
+        ok: true,
+        json: async () => ({
+          display_name: '33 Đường 3 Tháng 2, Phường 8, Vũng Tàu',
+          address: { house_number: '33', road: 'Đường 3 Tháng 2', suburb: 'Phường 8', city: 'Vũng Tàu' },
+        }),
+      }
     }
     await delay(5)
     return {
@@ -27,9 +33,29 @@ try {
   const success = responseRecorder()
   await handler({ query: { lat: '10.346', lng: '107.084' } }, success)
   assert.equal(success.statusCode, 200)
-  assert.equal(success.payload.source, 'bigdatacloud')
-  assert.match(success.payload.address, /Vũng Tàu/)
+  assert.equal(success.payload.source, 'nominatim', 'Nguồn đường/phường phải thắng nguồn thành phố nhanh hơn trong khoảng chờ ngắn.')
+  assert.match(success.payload.address, /33 Đường 3 Tháng 2, Phường 8, Vũng Tàu/)
   assert.equal(fetchCount, 2, 'Hai nhà cung cấp phải được khởi chạy trong cùng lần lấy địa chỉ.')
+
+  fetchCount = 0
+  globalThis.fetch = async (input) => {
+    fetchCount += 1
+    const url = String(input)
+    if (url.includes('nominatim')) {
+      await delay(40)
+      return { ok: false, json: async () => ({}) }
+    }
+    await delay(5)
+    return {
+      ok: true,
+      json: async () => ({ locality: 'Vũng Tàu', principalSubdivision: 'Bà Rịa - Vũng Tàu', countryName: 'Việt Nam' }),
+    }
+  }
+  const fallback = responseRecorder()
+  await handler({ query: { lat: '10.346', lng: '107.084' } }, fallback)
+  assert.equal(fallback.statusCode, 200)
+  assert.equal(fallback.payload.source, 'bigdatacloud')
+  assert.equal(fetchCount, 2)
 
   const invalid = responseRecorder()
   await handler({ query: { lat: '999', lng: '107.084' } }, invalid)

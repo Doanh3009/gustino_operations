@@ -5,7 +5,7 @@ import { PRODUCTS, productById as catalogProductById } from '../lib/constants'
 import { branchName as configuredBranchName } from '../lib/branches'
 import { calculateStock, ensureOperationDay, fetchReportSnapshots, finalizeDailyReport, getOperationDay, saveShiftReportSnapshot } from '../lib/store'
 import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
-import { fetchBagAllocations, fetchBagShiftSessions } from '../lib/shiftLedger'
+import { fetchBagAllocations, fetchBagShiftSessions, latestOwnedBagShiftSession } from '../lib/shiftLedger'
 import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { localDateKey } from '../lib/dates'
@@ -199,6 +199,33 @@ interface ReportLedgerData {
   snapshots: ReportSnapshot[]
 }
 
+interface HandoverReportRequest {
+  shiftId: string
+  sequence: number
+  businessDate: string
+}
+
+function readHandoverReportRequest(): HandoverReportRequest | null {
+  try {
+    const raw = window.sessionStorage.getItem('gustino:handover-report')
+    if (!raw) return null
+    const value = JSON.parse(raw)
+    if (!value?.shiftId || !value?.businessDate || ![1, 2].includes(Number(value.sequence))) return null
+    return { shiftId: String(value.shiftId), sequence: Number(value.sequence), businessDate: String(value.businessDate) }
+  } catch {
+    return null
+  }
+}
+
+function clearHandoverReportRequest() {
+  try {
+    window.sessionStorage.removeItem('gustino:handover-report')
+  } catch {
+    // Storage can be unavailable in a private mobile browser. The manual
+    // finalize action remains available in that case.
+  }
+}
+
 export function ReportPage({ user, movements, onRefresh }: Props) {
   const infographicRef = useRef<HTMLDivElement>(null)
   const n8nDayPosterRef = useRef<HTMLDivElement>(null)
@@ -220,6 +247,8 @@ const [shiftRegistrations, setShiftRegistrations] = useState<ShiftRegistration[]
   const [employeeKpiTargets, setEmployeeKpiTargets] = useState<Record<string, number>>({})
   const [reportScope, setReportScope] = useState<ReportScope>('day')
   const [reportSnapshot, setReportSnapshot] = useState<ReportSnapshot | null>(null)
+  const [handoverReportRequest, setHandoverReportRequest] = useState<HandoverReportRequest | null>(() => readHandoverReportRequest())
+  const automaticFinalizeAttemptRef = useRef('')
   const businessDate = localDateKey()
 
   async function loadReportLedger(): Promise<ReportLedgerData> {
@@ -341,11 +370,7 @@ if (!client) {
     [user, movements, bagSessions, bagAllocations, shiftRegistrations, attendanceRecords, salesReceipts, businessDate, employeeKpiTargets],
   )
   const leaderShiftSession = useMemo(() => {
-    const own = bagSessions.filter((item) => item.leaderId === user.id || normalizeName(item.leaderName) === normalizeName(user.name))
-    return [...own].sort((a, b) => {
-      if (a.status !== b.status) return a.status === 'closed' ? -1 : 1
-      return b.sequence - a.sequence || b.startedAt.localeCompare(a.startedAt)
-    })[0]
+    return latestOwnedBagShiftSession(bagSessions, user)
   }, [bagSessions, user.id, user.name])
 
   useEffect(() => {
@@ -407,11 +432,11 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
             ? 'Ca 2 chỉ được chốt khi không còn ca nào đang mở, vì nút này đồng thời chốt Tổng ngày.'
             : ''
   const canFinalize = !finalizeBlockedReason
- const automaticPosterScopes: ReportScope[] = Array.from(new Set<ReportScope>([
+  const automaticPosterScopes: ReportScope[] = Array.from(new Set<ReportScope>([
     ...(leaderShiftSession?.sequence === 1 ? ['shift-1' as ReportScope]
       : leaderShiftSession?.sequence === 2 ? ['shift-2' as ReportScope]
       : []),
-'day',
+    ...(leaderShiftSession?.sequence === 2 ? ['day' as ReportScope] : []),
   ]))
   const visibleMessage = friendlyReportMessage(message)
   const messageTone = reportMessageTone(message)
@@ -419,7 +444,7 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
   async function queueCurrentReportImages(session: BagShiftSession, sendNow = false): Promise<N8nQueueResult> {
     const reportKinds: N8nReportKind[] = Array.from(new Set<N8nReportKind>([
       session.sequence === 1 ? 'shift-1' : 'shift-2',
-      'day',
+      ...(session.sequence === 2 ? ['day' as N8nReportKind] : []),
     ]))
     const reports = []
     for (const kind of reportKinds) {
@@ -474,19 +499,14 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
   async function saveCloud() {
     if (finalized) {
       setMessage('Ngày đã kết thúc. Chúc cả đội ngủ ngon.')
-      return
+      return false
     }
     setBusy(true)
     try {
       const freshLedger = await loadReportLedger()
       applyReportLedger(freshLedger)
       const freshSnapshot = freshLedger.snapshots.find((item) => item.reportDate === businessDate) || null
-      const freshLeaderShiftSession = [...freshLedger.sessions]
-        .filter((item) => item.leaderId === user.id || normalizeName(item.leaderName) === normalizeName(user.name))
-        .sort((a, b) => {
-          if (a.status !== b.status) return a.status === 'closed' ? -1 : 1
-          return b.sequence - a.sequence || b.startedAt.localeCompare(a.startedAt)
-})[0]
+      const freshLeaderShiftSession = latestOwnedBagShiftSession(freshLedger.sessions, user)
       if (!freshLeaderShiftSession) {
         throw new Error('Không tìm thấy ca do bạn phụ trách trong ngày hôm nay.')
       }
@@ -575,7 +595,7 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
       })
       let n8nResult: N8nQueueResult
       try {
-        n8nResult = await queueCurrentReportImages(freshLeaderShiftSession)
+        n8nResult = await queueCurrentReportImages(freshLeaderShiftSession, true)
       } catch (error) {
         n8nResult = {
           queued: false,
@@ -605,13 +625,40 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
       setMessage(freshIsSecondShiftFinalization
         ? `Đã chốt Ca 2 và Tổng ngày. ${deliveryMessage}`
         : `Đã chốt báo cáo Ca 1. ${deliveryMessage}`)
+      return true
     } catch (error) {
       const detail = error instanceof Error ? error.message : ''
       setMessage(detail ? `Không thể lưu báo cáo: ${detail}` : 'Không thể lưu báo cáo.')
+      return false
     } finally {
       setBusy(false)
     }
   }
+
+  useEffect(() => {
+    const request = handoverReportRequest
+    if (!request) return
+    // The request is restored before the asynchronous ledger read completes.
+    // Do not discard it during that first empty render, otherwise a valid
+    // handover never reaches automatic report finalization.
+    if (!leaderShiftSession) return
+    if (request.businessDate !== businessDate || request.sequence !== leaderShiftSession.sequence || request.shiftId !== leaderShiftSession.id) {
+      clearHandoverReportRequest()
+      setHandoverReportRequest(null)
+      return
+    }
+    if (leaderShiftSession.status !== 'closed' || finalized || busy) return
+    const scopes: ReportScope[] = leaderShiftSession.sequence === 2 ? ['shift-2', 'day'] : ['shift-1']
+    if (scopes.some((scope) => !n8nPosterRefs[scope].current)) return
+    const attemptKey = `${request.shiftId}:${request.businessDate}`
+    if (automaticFinalizeAttemptRef.current === attemptKey) return
+    automaticFinalizeAttemptRef.current = attemptKey
+    void saveCloud().then((saved) => {
+      if (!saved) return
+      clearHandoverReportRequest()
+      setHandoverReportRequest(null)
+    })
+  }, [handoverReportRequest, businessDate, leaderShiftSession?.id, leaderShiftSession?.sequence, leaderShiftSession?.status, finalized, busy])
 
   async function reopenDay() {
     if (!window.confirm('Mở lại ngày vận hành để bổ sung/sửa số liệu? Sau khi xong nhớ bấm Chốt báo cáo lại.')) return
@@ -698,7 +745,7 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
           </label>
 
           <div className="report-essential-actions">
-<button className="secondary-button" onClick={() => void exportInfographicImage()} disabled={busy}>Tải ảnh</button>
+            <button className="secondary-button report-backup-image-button" onClick={() => void exportInfographicImage()} disabled={busy}>Lưu ảnh</button>
             {shiftReportEntry && (
               <button className="secondary-button" onClick={() => void sendReportToZalo()} disabled={busy}>Gửi Zalo</button>
             )}
@@ -715,7 +762,7 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
                     disabled={busy}
                     title={canFinalize ? undefined : finalizeBlockedReason}
                   >
-                    {busy ? 'Đang chốt…' : 'Chốt báo cáo'}
+                    {busy ? 'Đang chốt…' : isSecondShiftFinalization ? 'Hoàn tất bàn giao Ca 2 & chốt ngày' : 'Chốt báo cáo Ca 1'}
                   </button>}
           </div>
 

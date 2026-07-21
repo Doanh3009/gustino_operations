@@ -1,5 +1,13 @@
 # Decision Log
 
+## 2026-07-21 — incident fixes stay inside existing business contracts
+
+- Keep the owner-confirmed permanent `Xóa nhân viên` behavior. Fix only the missing route/state recovery so a removed ID cannot blank the personnel workspace; do not reintroduce deactivation or a second test-delete action.
+- Keep both approved reverse-geocode providers concurrent. Give the street/ward source only an 800 ms bounded preference after the coarse administrative source resolves, then fall back; do not weaken fresh GPS, selfie, ≤150 m or concrete-address gates.
+- Treat revenue snapshots as point-in-time baselines and add only receipts created later. Add reconciliation timers/focus/visibility to recover from dropped realtime subscriptions; do not change revenue formulas, prices, receipt ownership or report history.
+- Fix Orders phone overflow only in CSS layout/word wrapping. Do not change request data, status transitions, permissions or export dimensions.
+- Do not invoke a synthetic production report/n8n workflow or delete an employee to prove this batch. Those actions mutate business/external state and require the real authorized operator; local/static/integration evidence is sufficient for the implementation gate.
+
 ## 2026-07-20 — test MOD-04 account mutation only in an isolated LAN store
 
 - Use the seeded loopback Admin and a fresh `GUSTINO_DATA_DIR` for create/login/reset/deactivate integration. Never exercise those mutations against production Auth merely to obtain test coverage.

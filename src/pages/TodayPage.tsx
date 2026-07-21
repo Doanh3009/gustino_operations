@@ -3,7 +3,7 @@ import type { InventoryTab, Page } from '../components/AppShell'
 import { PRODUCTS } from '../lib/constants'
 import { branchName } from '../lib/branches'
 import { calculateStock, fetchReportSnapshots, getOperationDay } from '../lib/store'
-import { fetchBagShiftSessions, uploadBagShiftPhoto } from '../lib/shiftLedger'
+import { fetchBagShiftSessions, ownsBagShiftSession, uploadBagShiftPhoto } from '../lib/shiftLedger'
 import { imageFileToDataUrl } from '../lib/browser'
 import { ShiftPhotoButton } from '../components/ShiftPhotoButton'
 import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
@@ -66,7 +66,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   const closedBagSessions = bagSessions.filter((item) => item.status === 'closed')
   const openBagSession = bagSessions.find((item) => item.status === 'open')
   const latestClosedOwnSession = [...closedBagSessions]
-    .filter((item) => item.leaderId === user.id || item.leaderName.trim().toLocaleLowerCase('vi') === user.name.trim().toLocaleLowerCase('vi'))
+    .filter((item) => ownsBagShiftSession(item, user))
     .sort((a, b) => (b.endedAt || b.startedAt).localeCompare(a.endedAt || a.startedAt))[0]
   const photoSession = openBagSession || latestClosedOwnSession
   const expectedDailyShifts = 2

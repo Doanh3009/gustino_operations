@@ -179,13 +179,27 @@ try {
     }
   })
 
+  // `canAccessPage`: 'dashboard' CHỈ manager, 'sales' chỉ shift_leader/staff/cashier.
+  // Dùng admin cho hai route này thì app đẩy về trang mặc định của admin nên
+  // selector không bao giờ xuất hiện — phải đi đúng vai.
+  const manager = {
+    id: 'demo-manager',
+    name: 'Quan ly Demo',
+    email: 'quanly@gustino.vn',
+    role: 'manager',
+    branchId: 'gold-coast',
+    branchIds: ['gold-coast', 'lotte-2310', 'lotte-vt'],
+    authToken: admin.authToken,
+    employmentType: 'leader',
+    positionTitle: 'Quan ly',
+  }
   const routes = [
-    ['dashboard', '.manager-dashboard-page', admin],
+    ['dashboard', '.manager-dashboard-page', manager],
     ['attendance', '.attendance-page', admin],
     ['today', '.today-page', shiftLeader],
     ['handover', '.handover-page', shiftLeader],
     ['inventory', '.inventory-page', shiftLeader],
-    ['sales', '.pos-page', admin],
+    ['sales', '.pos-page', shiftLeader],
   ]
 
   for (const [hash, selector, routeUser] of routes) {

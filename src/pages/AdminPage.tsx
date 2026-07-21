@@ -9,7 +9,6 @@ import {
   fetchEmployees,
   fetchShiftRegistrations,
   fetchWorkShifts,
-  hardDeleteEmployeeAccount,
   ensureDefaultWorkShifts,
   permittedBranchIds,
   resetEmployeePassword,
@@ -378,7 +377,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [savingRoleId, setSavingRoleId] = useState('')
   const [accountBusyId, setAccountBusyId] = useState('')
   const [pendingDeleteId, setPendingDeleteId] = useState('')
-  const [pendingHardDeleteId, setPendingHardDeleteId] = useState('')
   const [branchDeletingId, setBranchDeletingId] = useState('')
   const [employeeDrafts, setEmployeeDrafts] = useState<Record<string, {
     branchId: string
@@ -458,6 +456,14 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     window.addEventListener('hashchange', syncAdminRoute)
     return () => window.removeEventListener('hashchange', syncAdminRoute)
   }, [])
+
+  useEffect(() => {
+    if (loading || error || !crmEmployeeId) return
+    if (employees.some((employee) => employee.id === crmEmployeeId)) return
+    setCrmEmployeeId('')
+    setEmployeeProfileTab('overview')
+    navigateAdminHash('/admin/employees')
+  }, [loading, error, crmEmployeeId, employees])
 
   async function refresh(showLoading = true) {
     if (managementRefreshInFlightRef.current) {
@@ -1227,7 +1233,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   async function removeAccount(employee: EmployeeProfile) {
     if (pendingDeleteId !== employee.id) {
       setPendingDeleteId(employee.id)
-      setFeedback(`Bấm “Xác nhận xóa” lần nữa để xóa vĩnh viễn tài khoản, lịch làm, chấm công và lương của ${employee.name}.`)
+      setFeedback(`Bấm “Xác nhận xóa” lần nữa để xóa hẳn tài khoản ${employee.name}. Lịch, chấm công và lương liên quan sẽ bị xóa; hóa đơn vẫn được giữ để đối soát nhưng không còn gắn tài khoản này.`)
       return
     }
     setAccountBusyId(employee.id)
@@ -1235,33 +1241,15 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       await deleteEmployeeAccount(user, employee.id)
       setEmployees((items) => items.filter((item) => item.id !== employee.id))
       if (employeeId === employee.id) setEmployeeId('')
+      if (crmEmployeeId === employee.id) {
+        setCrmEmployeeId('')
+        navigateAdminHash('/admin/employees')
+      }
       setPendingDeleteId('')
-      setFeedback(`Đã xóa vĩnh viễn tài khoản ${employee.name}. Tên đăng nhập cũ có thể dùng lại.`)
-    } catch (reason) {
-      const message = reason instanceof Error ? reason.message : 'Không thể xóa tài khoản.'
-      setError(message)
-    } finally {
-      setAccountBusyId('')
-    }
-  }
-
-  async function hardRemoveAccount(employee: EmployeeProfile) {
-    if (pendingHardDeleteId !== employee.id) {
-      setPendingHardDeleteId(employee.id)
-      setPendingDeleteId('')
-      setFeedback(`Bấm “Xóa sạch test” lần nữa để xóa vĩnh viễn tài khoản, lịch làm, chấm công và lương của ${employee.name}.`)
-      return
-    }
-    setAccountBusyId(employee.id)
-    try {
-      await hardDeleteEmployeeAccount(user, employee.id)
-      setEmployees((items) => items.filter((item) => item.id !== employee.id))
-      if (employeeId === employee.id) setEmployeeId('')
-      setPendingHardDeleteId('')
-      setFeedback(`Đã xóa sạch dữ liệu test của ${employee.name}. Bảng công/lịch làm sẽ không kéo người này lên lại.`)
+      setFeedback(`Đã xóa hẳn tài khoản ${employee.name}.`)
       await refresh(false)
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : 'Không thể xóa sạch dữ liệu test.'
+      const message = reason instanceof Error ? reason.message : 'Không thể xóa tài khoản.'
       setError(message)
     } finally {
       setAccountBusyId('')
@@ -3243,7 +3231,13 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               })()}
               {crmEmployeeId && (() => {
                 const employee = accountEmployees.find((item) => item.id === crmEmployeeId)
-                if (!employee) return null
+                if (!employee) return (
+                  <div className="admin-crm-missing-employee section-card">
+                    <strong>{loading ? 'Đang đồng bộ danh sách nhân sự…' : 'Hồ sơ nhân viên này không còn tồn tại.'}</strong>
+                    <p>Quay lại danh sách để tiếp tục quản lý nhân sự.</p>
+                    <button type="button" className="secondary-button" onClick={() => navigateAdminHash('/admin/employees')}>Quay lại danh sách nhân sự</button>
+                  </div>
+                )
                 const employeeReceipts = salesReceipts.filter((receipt) =>
                   (receipt.sellerId === employee.id
                     || (!receipt.sellerId
@@ -3340,13 +3334,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                           </label>
                           <button type="button" disabled={accountBusyId === employee.id || employee.active === false} onClick={() => void resetPassword(employee)}>Đặt lại mật khẩu</button>
                           <button type="button" className={pendingDeleteId === employee.id ? 'danger-button compact confirming' : 'danger-button compact'} disabled={accountBusyId === employee.id || employee.id === user.id} onClick={() => void removeAccount(employee)}>
-                            {employee.id === user.id ? 'Tài khoản đang dùng' : pendingDeleteId === employee.id ? 'Xác nhận xóa' : 'Xóa tài khoản'}
-                          </button>
-                          <button type="button" className={pendingHardDeleteId === employee.id ? 'danger-button compact confirming' : 'danger-button compact'} title="Xóa vĩnh viễn tài khoản test và toàn bộ lịch làm/chấm công/lương liên quan" disabled={accountBusyId === employee.id || employee.id === user.id} onClick={() => void hardRemoveAccount(employee)}>
-                            {employee.id === user.id ? 'Tài khoản đang dùng' : pendingHardDeleteId === employee.id ? 'Xác nhận xóa sạch' : 'Xóa sạch test'}
+                            {employee.id === user.id ? 'Tài khoản đang dùng' : pendingDeleteId === employee.id ? 'Xác nhận xóa' : 'Xóa nhân viên'}
                           </button>
                         </div>
-                        {employee.active === false && <p className="inactive-account-warning">Tên đăng nhập vẫn được giữ cho đến khi Admin bấm “Xóa sạch test”.</p>}
                       </section>
                     </div>}
                     {employeeProfileTab === 'overview' && <div className="admin-crm-history-grid single">

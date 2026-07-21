@@ -16,6 +16,8 @@ assert.match(upload, /withAttendanceWriteRetry\([\s\S]*attendanceApi/, 'Upload s
 assert.match(checkout, /catch \(error\)[\s\S]*\/records\?userId=/, 'LAN checkout chưa đọc lại bản ghi sau khi mất response.')
 assert.match(checkout, /existing\?\.checkOutTime|existing && existing\.checkOutTime/, 'LAN checkout chưa xác nhận server đã lưu giờ ra trước khi báo thành công.')
 assert.match(lanGeocode, /Promise\.any\(\[/, 'LAN reverse geocode vẫn gọi hai nhà cung cấp tuần tự, dễ vượt timeout chấm công.')
+assert.match(lanGeocode, /preferDetailedLanAddress/, 'LAN reverse geocode chưa ưu tiên địa chỉ chi tiết trước nguồn hành chính dự phòng.')
+assert.match(lanGeocode, /first\.source === 'nominatim'/, 'LAN reverse geocode chưa nhận diện nguồn địa chỉ đường\/phường ưu tiên.')
 
 console.log('ATTENDANCE_INTERMITTENT_RECOVERY_OK')
 

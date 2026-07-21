@@ -117,11 +117,19 @@ export function ManagerDashboardPage({
   }, [user.id, user.branchId, branchKey, compareFrom, to, reloadTick])
 
   useEffect(() => {
+    const refreshWhenActive = () => setReloadTick((tick) => tick + 1)
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') refreshWhenActive()
+    }
     const client = user.authToken ? null : supabase
+    const timer = window.setInterval(refreshWhenActive, client ? 30000 : 5000)
+    window.addEventListener('focus', refreshWhenActive)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
     if (!client) {
-      const timer = window.setInterval(() => setReloadTick((tick) => tick + 1), 5000)
       return () => {
         window.clearInterval(timer)
+        window.removeEventListener('focus', refreshWhenActive)
+        document.removeEventListener('visibilitychange', refreshWhenVisible)
       }
     }
     const channel = client.channel(uniqueChannelName(`manager-revenue-live:${branchKey}`))
@@ -134,6 +142,9 @@ export function ManagerDashboardPage({
       .on('postgres_changes', { event: '*', schema: 'public', table: 'report_snapshots' }, () => setReloadTick((tick) => tick + 1))
       .subscribe()
     return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refreshWhenActive)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
       void client.removeChannel(channel)
     }
   }, [user.authToken, branchKey])

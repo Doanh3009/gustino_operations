@@ -3,21 +3,23 @@ import { ShiftPhotoButton } from '../components/ShiftPhotoButton'
 import { getFinishedBulkProducts, getSaleProducts, productById, type ConfiguredProduct } from '../lib/constants'
 import { createId, imageFileToDataUrl } from '../lib/browser'
 import { calculateStock, ensureOperationDay, getOperationDay } from '../lib/store'
-import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
+import { fetchAttendanceRecords, fetchShiftRegistrations, fetchWorkShifts, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { formatLocalDate, localDateKey } from '../lib/dates'
 import { fetchConfiguredProducts } from '../lib/products'
 import { branchName as configuredBranchName } from '../lib/branches'
 import { notifyN8nShiftPhoto } from '../lib/n8nShiftPhoto'
+import { canOpenNextScheduledOperationalShift } from '../lib/operationalShiftAssignment'
 import type { Page } from '../components/AppShell'
 import {
   closeBagShift,
   fetchBagShiftSessions,
+  ownsBagShiftSession,
   startBagShift,
   uploadBagShiftPhoto,
 } from '../lib/shiftLedger'
 import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
-import type { AppUser, AttendanceRecord, BagShiftSession, OperationDay, ShiftRegistration, StockMovement } from '../types'
+import type { AppUser, AttendanceRecord, BagShiftSession, OperationDay, ShiftRegistration, StockMovement, WorkShift } from '../types'
 
 function shiftLabel(sequence: number) {
   if (sequence === 1) return 'Ca sáng'
@@ -43,6 +45,7 @@ export function ShiftHandoverPage({
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [registrations, setRegistrations] = useState<ShiftRegistration[]>([])
+  const [workShifts, setWorkShifts] = useState<WorkShift[]>([])
   const [myAttendance, setMyAttendance] = useState<AttendanceRecord[]>([])
   const [closingBalances, setClosingBalances] = useState<Record<string, string>>({})
   const [discrepancyNote, setDiscrepancyNote] = useState('')
@@ -57,7 +60,9 @@ export function ShiftHandoverPage({
     const finishedProducts = getFinishedBulkProducts()
     return finishedProducts.length ? finishedProducts : saleProducts
   }, [productTick, saleProducts])
-  const openSession = sessions.find((item) => item.status === 'open' && item.businessDate === today)
+  const branchOpenSession = sessions.find((item) => item.status === 'open' && item.businessDate === today)
+  const openSession = branchOpenSession && ownsBagShiftSession(branchOpenSession, user) ? branchOpenSession : undefined
+  const anotherLeaderOpenSession = branchOpenSession && !openSession ? branchOpenSession : undefined
   const staleOpenSessions = sessions.filter((item) => item.status === 'open' && item.businessDate < today)
   const todaySessions = sessions.filter((item) => item.businessDate === today)
   const hasClosedShift = todaySessions.some((item) => item.status === 'closed')
@@ -65,6 +70,15 @@ export function ShiftHandoverPage({
   const dayLocked = dayClosed
   const maxShiftsReached = !openSession && todaySessions.length >= 2
   const activeAttendance = myAttendance.find((record) => !record.checkOutTime)
+  const myApprovedRegistrations = registrations.filter((item) =>
+    item.userId === user.id && item.workDate === today && item.status === 'approved',
+  )
+  const activeRegistration = activeAttendance
+    ? myApprovedRegistrations.find((registration) => registration.id === activeAttendance.shiftRegistrationId)
+    : undefined
+  const canAutoStartScheduledShift = Boolean(
+    activeRegistration && canOpenNextScheduledOperationalShift(activeRegistration, todaySessions, workShifts),
+  )
   const stock = useMemo(() => calculateStock(movements), [movements])
   const availableBalances = useMemo(
     () => Object.fromEntries(countProducts.map((product) => [
@@ -92,16 +106,18 @@ export function ShiftHandoverPage({
   async function refresh(showLoading = false) {
     if (showLoading) setLoading(true)
     try {
-      const [nextSessions, nextRegistrations, nextAttendance, nextReceipts] = await Promise.all([
+      const [nextSessions, nextRegistrations, nextAttendance, nextReceipts, nextWorkShifts] = await Promise.all([
         fetchBagShiftSessions(user, { branchId: user.branchId }),
         fetchShiftRegistrations(user, { branchId: user.branchId, from: today, to: today }),
         fetchAttendanceRecords(user, { branchId: user.branchId, userId: user.id, from: today, to: today }),
         fetchSalesReceipts(user, { branchId: user.branchId, date: today }),
+        fetchWorkShifts(user),
       ])
       setSessions(nextSessions)
       setRegistrations(nextRegistrations)
       setMyAttendance(nextAttendance)
       setReceipts(nextReceipts)
+      setWorkShifts(nextWorkShifts)
       void getOperationDay(user.branchId, today, user).then(setOperationDay).catch(() => {})
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'Không thể tải bàn giao ca.')
@@ -160,21 +176,27 @@ export function ShiftHandoverPage({
       setFeedback('Hôm nay đã đủ 2 ca. Không thể nhận thêm ca mới.')
       return
     }
-    const myRegistrations = registrations.filter((item) =>
-      item.userId === user.id && item.workDate === today && item.status === 'approved',
-    )
-    if (!myRegistrations.length) {
+    if (branchOpenSession) {
+      if (ownsBagShiftSession(branchOpenSession, user)) return
+      setFeedback(`${shiftLabel(branchOpenSession.sequence)} đang do ${branchOpenSession.leaderName} phụ trách. Chỉ ca trưởng đó mới có thể chốt & bàn giao trước khi Ca 2 nhận ca.`)
+      return
+    }
+    if (!myApprovedRegistrations.length) {
       setFeedback('Bạn không có ca làm hôm nay nên chưa thể nhận ca. Hãy đăng ký/được xếp ca trong Chấm công trước.')
       return
     }
-    const activeAttendance = myRegistrations
-      .map((registration) => findAttendanceRecordForRegistration(myAttendance, registration))
-      .find((record) => record && !record.checkOutTime)
     if (!activeAttendance) {
-      const hasCheckedOut = myRegistrations.some((registration) => findAttendanceRecordForRegistration(myAttendance, registration)?.checkOutTime)
+      const hasCheckedOut = myApprovedRegistrations.some((registration) => findAttendanceRecordForRegistration(myAttendance, registration)?.checkOutTime)
       setFeedback(hasCheckedOut
         ? 'Bạn đã check-out ca hôm nay. Không thể nhận/mở ca vận hành sau khi đã kết ca cá nhân.'
         : 'Bạn chưa chấm công hôm nay. Hãy check-in trong Chấm công rồi quay lại nhận ca.')
+      return
+    }
+    if (!canAutoStartScheduledShift) {
+      const nextSequence = todaySessions.length ? Math.max(...todaySessions.map((session) => session.sequence)) + 1 : 1
+      setFeedback(nextSequence === 2
+        ? 'Ca 2 chỉ tự nhận cho ca trưởng có lịch Ca 2 đã check-in. Ca trưởng Ca 1 không thể tự mở Ca 2.'
+        : 'Ca vận hành chỉ tự mở cho ca trưởng có lịch Ca 1 đã check-in.')
       return
     }
     setBusy(true)
@@ -199,12 +221,12 @@ export function ShiftHandoverPage({
   }
 
   useEffect(() => {
-    if (loading || dayLocked || openSession || maxShiftsReached || !activeAttendance) return
-    const key = `${today}:${activeAttendance.id}:${todaySessions.length}`
+    if (loading || dayLocked || branchOpenSession || maxShiftsReached || !canAutoStartScheduledShift) return
+    const key = `${today}:scheduled:${activeAttendance?.id}:${todaySessions.length}`
     if (autoStartAttemptRef.current === key) return
     autoStartAttemptRef.current = key
     void handleStartShift()
-  }, [loading, dayLocked, openSession?.id, maxShiftsReached, activeAttendance?.id, todaySessions.length])
+  }, [loading, dayLocked, branchOpenSession?.id, maxShiftsReached, activeAttendance?.id, canAutoStartScheduledShift, todaySessions.length, user.id])
 
   async function saveShiftPhoto(kind: 'opening' | 'closing', file: File | undefined, targetSession = openSession) {
     if (!file) return
@@ -369,15 +391,30 @@ export function ShiftHandoverPage({
         </div>
       )}
 
-      {!openSession && !maxShiftsReached && (
+      {anotherLeaderOpenSession && (
+        <section className="handover-start-card">
+          <span>…</span>
+          <div>
+            <small>{shiftLabel(anotherLeaderOpenSession.sequence).toUpperCase()}</small>
+            <h2>Đang chờ ca trưởng trước bàn giao</h2>
+            <p>{anotherLeaderOpenSession.leaderName} đang phụ trách ca này. Nút chốt tồn chỉ hiện cho đúng ca trưởng đã mở ca; Ca 2 sẽ tự mở sau khi ca trước bàn giao xong.</p>
+          </div>
+        </section>
+      )}
+
+      {!openSession && !anotherLeaderOpenSession && !maxShiftsReached && (
         <section className="handover-start-card">
           <span>1</span>
           <div>
             <small>{todaySessions.length === 0 ? 'CA SÁNG' : 'CA TỐI'}</small>
-            <h2>{activeAttendance ? 'Đang tự mở ca sau check-in' : 'Check-in để ca tự mở'}</h2>
-            <p>{activeAttendance
+            <h2>{canAutoStartScheduledShift && todaySessions.length === 1 ? 'Đang tự nhận Ca tối theo lịch' : canAutoStartScheduledShift ? 'Đang tự mở ca sau check-in' : activeAttendance ? 'Đang chờ đúng ca trưởng theo lịch' : 'Check-in để ca tự mở'}</h2>
+            <p>{canAutoStartScheduledShift && todaySessions.length === 1
+              ? 'Ca sáng đã bàn giao. Ca trưởng có lịch Ca 2 và đã check-in sẽ tự nhận Ca tối, không cần bấm nhận ca.'
+              : canAutoStartScheduledShift
               ? 'Hệ thống đang đồng bộ tồn thành phẩm hiện tại làm tồn đầu ca; bạn không cần bấm nút nhận ca.'
-              : 'Ca vận hành sẽ tự mở ngay khi ca trưởng check-in thành công. Phần Bàn giao vẫn giữ để kiểm tồn và chốt ca.'}</p>
+              : activeAttendance
+                ? 'Phiên tiếp theo chỉ tự mở cho ca trưởng được xếp đúng Ca 1 hoặc Ca 2. Hệ thống không dùng ca trưởng trước để gán ca mới.'
+                : 'Ca vận hành sẽ tự mở ngay khi ca trưởng check-in thành công. Phần Bàn giao vẫn giữ để kiểm tồn và chốt ca.'}</p>
           </div>
           {busy && <small className="attendance-busy-hint">Đang đồng bộ ca…</small>}
         </section>

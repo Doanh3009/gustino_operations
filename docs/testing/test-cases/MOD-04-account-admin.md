@@ -1,6 +1,6 @@
 # MOD-04 — Employee/account administration
 
-Status: in progress; isolated LAN account lifecycle/browser integration passed, production Edge deployment and exact affected-username verification pending.
+Status: in progress; isolated LAN account lifecycle/browser integration passed, employee-delete blank-state fix passes locally, production Edge and signed-in verification pending.
 
 | ID | Flow | Expected result | Automation/status |
 |---|---|---|---|
@@ -31,7 +31,8 @@ Status: in progress; isolated LAN account lifecycle/browser integration passed, 
 | MOD04-TC-SYNC-01 | Load account administration with an inactive profile that still has a login email | The account remains visible as `Đã xóa`, while operational employee reports continue to exclude it | `ACCOUNT_ORPHAN_RECOVERY_OK` + TypeScript Passed |
 | MOD04-TC-SYNC-02 | Permanent Auth deletion fails | The profile is not removed after the Auth failure, so the occupied username does not disappear from account administration | `ACCOUNT_ORPHAN_RECOVERY_OK` Passed; Edge deploy pending |
 | MOD04-TC-SYNC-03 | Create an exact-email username whose Auth user exists but profile is missing | Recover only after proving the profile is absent; otherwise report the existing account name/status | `ACCOUNT_ORPHAN_RECOVERY_OK` Passed; production audit currently has zero true orphans |
-| MOD04-TC-DELETE-02 | Hard-delete an inactive test account | Inactive account remains visible with username-retention warning; Admin can invoke hard-delete, Auth is removed before profile, and signed-in account remains protected | `ACCOUNT_ORPHAN_RECOVERY_OK`; production has four legacy inactive Auth/profile pairs, no automatic deletion performed |
+| MOD04-TC-DELETE-02 | Admin uses the owner-required normal `Xóa nhân viên` action | One two-step confirmed permanent-delete path is used; Auth is removed before profile, signed-in Admin remains protected, and no separate test-delete/deactivation action remains | `ACCOUNT_ORPHAN_RECOVERY_OK` + `ADMIN_CRM_DIRECTORY_OK`; no account was deleted during this batch |
+| MOD04-TC-DELETE-03 | Delete the employee whose detail route is currently open, or reload a stale deleted-employee URL | Successful deletion returns to `#/admin/employees`; a missing ID automatically recovers to the directory and renders an explicit recovery state instead of `null`/white content | Pre-fix source rendered `null`; `ACCOUNT_ORPHAN_RECOVERY_OK`, TypeScript and production build Passed; signed-in delete pending |
 | MOD04-TC-LAN-01 | Admin creates a local QA staff account, employee signs in, Admin resets the password, then deactivates the account | New password works, old password stops working, deactivated account cannot sign in, and the isolated profile retains `active=false` with its password hash cleared | `SHARED_SCHEDULE_ACCOUNTS_QA_OK` against a fresh isolated LAN store; final store has exactly one inactive QA account and no API error log |
 | MOD04-TC-LAN-02 | Open staff weekly registration and Admin employee directory in the same isolated runtime | Staff sees the current vertical weekly board; Admin opens `#/admin/employees`, expands `Tạo mới`, and sees the account form/safety note | `SHARED_SCHEDULE_ACCOUNTS_QA_OK`; browser integration Passed |
 

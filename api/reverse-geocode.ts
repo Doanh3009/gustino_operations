@@ -4,18 +4,30 @@ export default async function handler(request: any, response: any) {
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
     return response.status(400).json({ error: 'Tọa độ không hợp lệ.' })
   }
-  // Both providers previously ran sequentially (up to 10 seconds) while the
-  // attendance client stopped waiting after 4 seconds. Race the approved
-  // providers and return the first concrete address instead.
-  const result = await Promise.any([
-    concreteProviderResult('nominatim', reverseWithNominatim(latitude, longitude)),
-    concreteProviderResult('bigdatacloud', reverseWithBigDataCloud(latitude, longitude)),
-  ]).catch(() => null)
+  // Start both approved providers together. Prefer the street-level source
+  // for a short grace period, then use the faster administrative fallback so
+  // attendance never returns to the old sequential 10-second wait.
+  const detailedAddress = concreteProviderResult('nominatim', reverseWithNominatim(latitude, longitude))
+  const fallbackAddress = concreteProviderResult('bigdatacloud', reverseWithBigDataCloud(latitude, longitude))
+  const result = await preferDetailedProviderResult(detailedAddress, fallbackAddress)
   if (result) {
     response.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate=604800')
     return response.status(200).json(result)
   }
   return response.status(502).json({ error: 'Chưa lấy được địa chỉ cụ thể từ vị trí này.' })
+}
+
+async function preferDetailedProviderResult(
+  detailedAddress: Promise<{ address: string; source: 'nominatim' | 'bigdatacloud' }>,
+  fallbackAddress: Promise<{ address: string; source: 'nominatim' | 'bigdatacloud' }>,
+) {
+  const first = await Promise.any([detailedAddress, fallbackAddress]).catch(() => null)
+  if (!first || first.source === 'nominatim') return first
+  const preferred = await Promise.race([
+    detailedAddress.catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 800)),
+  ])
+  return preferred || first
 }
 
 async function concreteProviderResult(source: 'nominatim' | 'bigdatacloud', request: Promise<string>) {

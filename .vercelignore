@@ -1,0 +1,5 @@
+# Archived repository material is not part of the production application.
+supabase.zip
+
+# Local npm cache is not part of the production application.
+.npm-cache

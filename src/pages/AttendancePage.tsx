@@ -30,6 +30,7 @@ import { downloadBlob, shareOrDownloadBlob } from '../lib/browser'
 import { calculateStock, ensureOperationDay } from '../lib/store'
 import { getFinishedBulkProducts, getSaleProducts } from '../lib/constants'
 import { fetchBagShiftSessions, startBagShift } from '../lib/shiftLedger'
+import { canOpenNextScheduledOperationalShift } from '../lib/operationalShiftAssignment'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { employeePositionLabel, roleLabel as accessRoleLabel } from '../lib/access'
 import { useLang } from '../lib/i18n'
@@ -1669,6 +1670,13 @@ async function openShiftAfterLeaderCheckIn(
   const sessions = await fetchBagShiftSessions(user, { branchId: user.branchId, date: registration.workDate })
   if (sessions.some((item) => item.status === 'open')) return ' Ca vận hành đang mở.'
   if (sessions.length >= 2) return ' Hôm nay đã đủ 2 ca vận hành.'
+  const workShifts = await fetchWorkShifts(user)
+  if (!canOpenNextScheduledOperationalShift(registration, sessions, workShifts)) {
+    const nextSequence = sessions.length ? Math.max(...sessions.map((session) => session.sequence)) + 1 : 1
+    return nextSequence === 2
+      ? ' Đã check-in Ca 1, nhưng chỉ ca trưởng có lịch Ca 2 mới được tự nhận Ca 2.'
+      : ' Đã check-in, đang chờ ca trưởng được xếp Ca 1 tự mở ca vận hành.'
+  }
   await ensureOperationDay(user, registration.workDate)
   const finishedProducts = getFinishedBulkProducts()
   const products = finishedProducts.length ? finishedProducts : getSaleProducts()

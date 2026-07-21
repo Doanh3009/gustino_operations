@@ -1,5 +1,45 @@
 # Bug Tracker
 
+## 2026-07-21 — reported personnel/handover/attendance/dashboard/orders incident
+
+### BUG-102 — Employee deletion can leave the Admin personnel surface blank
+
+- Severity: High
+- Status: Fixed locally — signed-in delete verification pending; not deployed in this batch.
+- Evidence: the employee detail renderer returned `null` when the URL still referenced an ID removed from `accountEmployees`. The delete handler removed the row before guaranteeing a directory route, so a stale route/realtime deletion could leave the content area white until reload.
+- Fix: after a successful owner-required permanent delete, clear the selected IDs and navigate to `#/admin/employees`; after any successful employee refresh, a missing detail ID automatically recovers to the directory. The renderer now has a visible recovery state instead of `null`.
+- Verification: pre-fix source contract reproduced the null path; `ACCOUNT_ORPHAN_RECOVERY_OK`, `ADMIN_CRM_DIRECTORY_OK`, TypeScript and the 712-module production build pass. No employee/Auth/profile row was deleted during verification.
+
+### BUG-103 — Fast coarse reverse-geocode result can hide the correct street/ward address
+
+- Severity: High
+- Status: Fixed locally — physical HTTPS phone verification pending; not deployed in this batch.
+- Evidence: both approved providers ran concurrently, but `Promise.any` returned whichever concrete string arrived first. BigDataCloud commonly returns locality/city/province faster than Nominatim returns street/ward, so valid fresh GPS coordinates could be stamped with an overly broad location. This is an address-selection defect, not proof that the device coordinates themselves were wrong.
+- Fix: start both providers concurrently, prefer Nominatim if it arrives first or within an 800 ms grace after the administrative fallback, then use the fallback. Cloud and LAN share this bounded preference; 5-second provider limits and the 6.5-second client bound remain.
+- Verification: mocked real handler proves a 5 ms coarse result no longer beats a 40 ms street/ward result and still falls back when the detailed provider fails. `ATTENDANCE_REVERSE_GEOCODE_RACE_OK`, intermittent/idempotent/native-location/LAN integration regressions, syntax, TypeScript and build pass. GPS freshness, ≤150 m accuracy, selfie and concrete-address rules are unchanged.
+
+### BUG-104 — Manager revenue Dashboard can stay stale after realtime disconnect
+
+- Severity: High
+- Status: Fixed locally — signed-in/live-data verification pending; not deployed in this batch.
+- Evidence: the cloud Manager Dashboard subscribed to receipt/snapshot/ledger changes but, unlike Admin management, had no periodic/focus/visibility reconciliation. A dropped subscription could leave old totals indefinitely. Separately, a numeric report snapshot suppressed all later POS receipts; the exact 23/10 fixture was stuck at 554,000đ/10 instead of 1,798,000đ/35.
+- Fix: retain the snapshot as a point-in-time baseline, add only receipts created after it, and keep one branch/day row. Manager Dashboard retains all realtime subscriptions and now also reconciles every 30 seconds and on window focus/tab visibility; LAN retains its 5-second fallback.
+- Verification: `SHIFT_CLOSE_REPORT_REALTIME_OK` proves 554,000đ + 1,244,000đ = 1,798,000đ and 10 + 25 = 35 without double counting. Revenue fallback, sales consistency, dashboard recovery, management realtime, TypeScript and production bundle guard pass.
+
+### BUG-105 — Compact sent-order rows force Vietnamese text into vertical character columns on phones
+
+- Severity: Medium
+- Status: Fixed locally — physical-phone visual verification pending; not deployed in this batch.
+- Evidence: the general ≤720 px rule requested one column, but the higher-specificity `.supply-request-list.compact .supply-request-item` rule kept `26px / minmax(0,1fr) / auto`. Status/actions consumed the auto column; global `overflow-wrap:anywhere` then broke the squeezed product/note column at arbitrary characters.
+- Fix: the phone-specific compact selector now uses icon + content columns, moves the tail/status/actions to a full-width row, restores normal word breaking and stacks actions again below 380 px. Order data, status transitions and export layout are unchanged.
+- Verification: `DASHBOARD_ORDERS_MOBILE_RECOVERY_OK`, supply-delivery, mobile report, toolbar, TypeScript, diff check and the production build pass.
+
+### MOD-08/MOD-13 follow-up — Vũng Tàu handover and n8n chain
+
+- The existing BUG-096/099/100/101 fixes remain the applicable causes: exact persisted owner ID, configured Ca 1/Ca 2 assignment, bounded custom/all-day coverage, handover intent consumption, Ca 1 shift-only scope and Ca 2 shift+day scope with immediate n8n intent.
+- This batch additionally stops swallowing `fetchWorkShifts()` failures as `[]`, so a schedule-read outage is visible instead of silently stranding the next leader. Regression also caught and restored the connected `Lưu ảnh` label/class.
+- `AUTO_SECOND_SHIFT_START_OK`, `SHIFT_CLOSE_REPORT_REALTIME_OK`, shift realtime, finalization, n8n queue/runtime, Zalo workflow and report-access regressions pass. No n8n webhook, report finalization or production business row was invoked; one signed-in Vũng Tàu close/finalize receipt remains pending.
+
 ## 2026-07-20 — MOD-04 isolated integration found no new product bug
 
 - The account API lifecycle passed in a fresh local store. The only failed assertion targeted the retired `#admin-accounts` heading; current source and regression evidence use `#/admin/employees`, `Nhân sự & Chi nhánh` and the collapsed `Tạo mới` panel.
@@ -245,3 +285,133 @@ MOD02-TC-DB-01 is `Needs Business Confirmation`, not a confirmed bug: manager br
 | BUG-093 | High | MOD-06 intermittent check-in/check-out confirmation | Fixed locally — no deploy; physical-device verification pending | Two source-confirmed intermittent paths existed. First, a saved check-in/out could look failed when the following refresh overwrote feedback/stale UI. Second, the attendance client abandoned `/api/reverse-geocode` after 4 seconds while that API called two 5-second providers sequentially, so slow Nominatim prevented the fallback from reaching the phone in time. | Successful writes now drive optimistic UI before best-effort refresh. The address API races both existing providers and returns the first concrete address; the client timeout is 6.5 seconds, longer than either provider's 5-second bound. `ATTENDANCE_REVERSE_GEOCODE_RACE_OK` exercises the real handler with a slow/failing primary and successful fallback. Selfie, fresh GPS, ≤150m accuracy, concrete address, ownership and idempotent writes are unchanged. |
 | BUG-094 | Medium | MOD-07/MOD-20 competition ranking layout | Fixed locally — no deploy; visual verification pending | The ranking grid requires roughly 1,000 px with reward columns, but the Admin sidebar leaves less space at tablet/small-desktop widths. `.competition-classification-table { overflow: hidden; }` clipped the overflowing columns, matching the owner's report that the competition table was covered/hidden. | The table now exposes horizontal overflow instead of clipping. At 721–1180 px it switches to labelled two-column record cards, matching the existing ≤720 px mobile treatment. Ranking data, formulas, filters and rewards are unchanged. |
 | BUG-095 | High | MOD-06 intermittent attendance transport recovery | Fixed locally — no deploy; physical-device verification pending | Focused pre-fix regression confirmed four LAN gaps: non-2xx status was lost before retry classification; selfie upload was not retried; checkout lacked final read-back after two lost responses; and two five-second address providers ran sequentially behind a 6.5-second client timeout. This could reject or falsely report a check-in/out during transient network/provider failures. | Preserve HTTP status for bounded retry, retry LAN selfie upload, read back a completed checkout before reporting failure, and race the two existing LAN address providers. Isolated LAN API integration verifies server-trusted timestamps, check-in, checkout, idempotent repeated checkout and one persisted record. GPS ≤150m, fresh location, concrete address, required selfies, ownership and database rules remain unchanged. |
+# 2026-07-21 — BUG-101 Critical: approved custom/all-day shift with no `shift_id` could never receive an operational shift
+
+- **Production evidence:** Thanh Ngân is active `shift_leader`, has approved 2026-07-21 registration `67c47962-704f-4036-9c7a-2f955210a378` for 07:15–22:15 and an open attendance record from 07:13 local. The registration deliberately has `shift_id=null`; branch leader templates still define Ca 1 as 07:15–15:15 and Ca 2 as 14:15–22:15. There are no 2026-07-21 sessions, yet the UI rejects her before `startBagShift()`.
+- **Root cause:** BUG-100's recurrence guard treated missing `shift_id` as no operational assignment. That corrected the previous wrong-owner defect for explicit Ca 1/Ca 2 shifts, but accidentally rejected valid custom/all-day leadership registrations.
+- **Fix:** Explicit `shift_id` keeps authoritative Ca 1/Ca 2 matching. A custom registration without an ID is now valid only for each configured leader shift whose full time range it covers: 07:15–22:15 validly covers both Ca 1 and Ca 2; a time range that covers neither cannot open a session. Thus Ca 1-only still cannot create Ca 2, while an all-day leader can receive both scheduled operational sessions automatically.
+- **Verification:** `AUTO_SECOND_SHIFT_START_OK` now covers explicit Ca 1/Ca 2, all-day custom coverage for both sequences and unmatched custom rejection. `HANDOVER_QA_OK`, realtime, close/report, finalization and Zalo workflow regressions plus TypeScript pass. Guarded production build transforms 712 modules and passes `PRODUCTION_SUPABASE_BUNDLE_OK`.
+- **Production:** Clean deployment `dpl_2eh2EKsoszEHxyindTti9K2zCdcp` is Ready and aliased; new handover/attendance/assignment assets and server-time return 200. The one-time read-only diagnosis endpoint was removed from source/alias (404) and its temporary deployment was deleted.
+- **Status:** Fixed and production verified — signed-in Thanh Ngân retry pending.
+
+# 2026-07-20 — BUG-100 Critical: automatic Ca 2 assignment reused the Ca 1 leader instead of the scheduled Ca 2 leader
+
+- **Production evidence:** Read-only Vũng Tàu data for 2026-07-20 proves Dương Minh Tú is approved for 07:15–15:15 and Thanh Ngân is approved and checked in for 14:15–22:15. Despite that, the persisted Ca 2 session was created immediately after Ca 1 closed with Dương Minh Tú's `leader_id`/name. Thanh Ngân consequently has no owned session and no handover/finalization action.
+- **Root cause:** Both automatic entry points (`openShiftAfterLeaderCheckIn()` and `ShiftHandoverPage`) chose the next ledger sequence from an active attendance record alone. Neither resolved the record's `shift_id` through the branch's configured leader shifts, so a still-open Ca 1 attendance record could create Ca 2 before the actual Ca 2 leader reached the handover screen.
+- **Fix:** `operationalShiftAssignment.ts` maps an approved registration to Ca 1/Ca 2 through the configured leader work shift and permits only the next matching ledger sequence. Both automatic entry points use this same guard. A Ca 1 leader remains unable to create Ca 2 while still checked in; the checked-in Ca 2 leader receives Ca 2 automatically without a manual receive button.
+- **Verification:** `AUTO_SECOND_SHIFT_START_OK` covers Ca 1/Ca 2 selection, wrong-leader rejection and missing-`shift_id` rejection. Updated browser/LAN handover QA uses two different leaders, keeps Ca 1's attendance open, proves it cannot create Ca 2, then proves the scheduled Ca 2 leader owns, closes and finalizes Ca 2 (`HANDOVER_QA_OK`). Realtime, close/report, report-finalization and Zalo workflow regressions plus TypeScript pass.
+- **Production:** Deployment `dpl_Qy4TD2WKpD3vSW4TodUfoVvdJQTo` is Ready and aliased. Uncached production `ShiftHandoverPage-Cg2YFRwR.js`, `AttendancePage-DJLDbPko.js` and the new `operationalShiftAssignment-ANSXmhJI.js` all return HTTP 200; the live handover bundle includes the explicit Ca 1→Ca 2 rejection and `/api/server-time` is 200.
+- **Authorized historical correction:** the owner authorized the exact row repair. A one-time token-protected service endpoint verified the target profile is an active `shift_leader` and patched only session `be3c2aaf-097f-4caa-86c6-81d2e7a20c7a` under exact ID/branch/date/sequence/old-owner/closed-status guards. It returned `leader_id=ae914636-b1af-4e32-9044-5d693acce7c3`, `leader_name=Lưu Thị Thanh Ngân`, while `started_at=2026-07-20T08:18:32.36Z` and `ended_at=2026-07-20T14:44:18.845932Z` stayed unchanged. Revenue, inventory, allocations, snapshots and operation-day rows were not written.
+- **Cleanup/verification:** the one-time endpoint was removed from source, the clean production deployment `dpl_FYrs6wHGuuew9PviuJ4rpYC9NW6k` is Ready/aliased, and the temporary deployment containing the endpoint was deleted. Production guard assets and server-time return 200; the repair endpoint is 404.
+- **Status:** Fixed and production verified — Thanh Ngân can now reopen Report and complete the already-closed Ca 2/day finalization; real n8n receipt confirmation remains pending.
+
+# 2026-07-20 — BUG-099 Critical: late Ca 2 finalization queued n8n at a time that had already passed
+
+- **Evidence:** At 22:40 local the Vũng Tàu screen shows both Ca 1/Ca 2 closed and an actionable finalization button, but no report is delivered. Read-only production data confirms the day has only a Ca 1 snapshot and remains `open`. `saveCloud()` passed no `sendNow` flag to `queueCurrentReportImages()`, so Ca 2/day jobs created after 22:00/22:15 were stored with a past `send_at`; the existing n8n flow had no new immediate-send instruction.
+- **Fix:** Automatic finalization now queues n8n with `sendNow=true`, producing an immediate current UTC+7 send request for every finalization. The visible Ca 2 action now reads `Hoàn tất bàn giao Ca 2 & chốt ngày`, accurately describing the required last action after both shift handovers are closed.
+- **Verification:** `SHIFT_CLOSE_REPORT_REALTIME_OK`, `N8N_REPORT_IMAGE_QUEUE_OK`, `LOCAL_N8N_RUNTIME_CONFIG_OK`, `LOCAL_N8N_SUPABASE_RUNTIME_OK`, finalization and sales consistency regressions plus TypeScript pass. Production Vercel configuration lists all three n8n report variables as encrypted Production variables; no webhook was invoked during this diagnostic to avoid a duplicate report.
+- **Production:** Deployment `dpl_5pa2cKuBJMM3MvAAxueaeSfhad1R` is Ready and aliased. Uncached `ReportPage-DPlYdHy6.js` contains both the immediate-n8n confirmation and the Ca 2 completion label; production server-time is HTTP 200.
+- **Status:** Deployed — one real Ca 2 finalization/n8n receipt confirmation pending.
+
+# 2026-07-20 — BUG-096 Critical: Ca 2/report identity and finalize chain can select the wrong leader or never finalize
+
+- **Evidence:** Read-only production audit of `lotte-2310` and `lotte-vt` found that 23/10 has distinct valid Ca 1 and Ca 2 leaders on 2026-07-20, but its one report snapshot carries a different legacy leader in `summary.leader`, contains only the Ca 2 entry, and the operation day remains `open`. Vũng Tàu Ca 2 is closed at 21:44 local time with no Ca 2 snapshot/final day. Source confirms `ReportPage.tsx` identifies an owner's shift with `leaderId === user.id || normalized leaderName === normalized user.name`, then prioritizes a closed session rather than the latest numbered owned session. `ShiftHandoverPage.tsx` also exposes a branch-open session without checking its owner; the post-handover sessionStorage request is written but never consumed by `ReportPage`.
+- **Impact:** A Ca 2 leader can see a Ca 1 leader/report, lose the `Chốt & bàn giao` path, or be blocked as having no eligible shift. The intended Ca 2 daily finalization and automatic n8n handoff may not run.
+- **Fix:** Centralized shift ownership in `ownsBagShiftSession()`: a persisted `leaderId` is authoritative; normalized display-name comparison is retained only for legacy sessions that truly have no leader ID. `latestOwnedBagShiftSession()` now picks the highest/latest owned sequence, not an older closed session. Handover exposes close controls only to that owner and waits for a different leader's open shift. Report consumes the existing post-handover intent and finalizes exactly that closed session once; Ca 1 queues only its shift report, while Ca 2 queues its report and the total-day report for n8n.
+- **Verification:** `SHIFT_CLOSE_REPORT_REALTIME_OK`, a fresh isolated browser/API handover run `HANDOVER_QA_OK` (Ca 1 snapshot persisted while the day stayed open, then Ca 2 merged both shift entries and closed the day), plus TypeScript and the handover/finalization/n8n/realtime/mobile/sales regressions passed. No production business row or n8n workflow was invoked during verification.
+- **Follow-up production evidence:** Read-only audit after the owner screenshot confirms Vũng Tàu has both Ca 1/Ca 2 `closed` under the same leader, only the Ca 1 snapshot, and an `open` operation day. This is why Bàn giao no longer shows a new close button: the two handovers are already complete; the remaining actionable step is Ca 2/day finalization on Report.
+- **Further root-cause refinement:** Vũng Tàu's schedule/attendance data identifies Thanh Ngân as the approved/checked-in Ca 2 leader. BUG-100 proves the Ca 2 ledger session was wrongly created by the still-active Ca 1 attendance, not by missing handover UI alone.
+- **Status:** Deployed — label/immediate-n8n, BUG-100 scheduled-owner enforcement and the authorized owner correction are live. BUG-101 custom/all-day coverage is also deployed; remaining action is the signed-in report finalization/n8n receipt confirmation.
+
+# 2026-07-20 — BUG-097 Critical: completed report snapshot hides later POS revenue while the business day is still open
+
+- **Evidence:** Production 23/10 snapshot at `2026-07-20T08:14:47Z` has 554,000đ / 10 items, exactly matching 9 receipts at or before that timestamp. There are 25 later receipts worth 1,244,000đ (current total 1,798,000đ / 35 items). `src/lib/revenue.ts` treats any snapshot with a numeric summary revenue as authoritative and suppresses every POS row for its branch/date, irrespective of later receipt timestamps or an open operation day.
+- **Impact:** Revenue screens do not update in realtime for 23/10 after a premature/stale snapshot.
+- **Fix:** The saved snapshot remains the report baseline, but `buildDailyRevenueRows()` now adds only POS receipts created after that snapshot. Receipts already included at snapshot time are not counted twice, and the row stays one daily record.
+- **Verification:** The exact 23/10 fixture now produces 1,798,000đ / 35 items from the 554,000đ / 10-item baseline plus later receipts (`SHIFT_CLOSE_REPORT_REALTIME_OK`); `REVENUE_PARTIAL_SNAPSHOT_FALLBACK_OK`, sales/report consistency, TypeScript and realtime regressions pass.
+- **Production:** Deployed 2026-07-20. Uncached `revenue-LFwMiet_.js` contains the numeric snapshot guard and post-snapshot receipt-time filter; production server-time returns HTTP 200. No snapshot or receipt was rewritten.
+- **Status:** Deployed — signed-in branch confirmation pending.
+
+# 2026-07-20 — BUG-098 High: employee removal behavior conflicted with the owner's required permanent-delete rule
+
+- **Evidence:** `deleteEmployeeAccount()` invokes Edge action `hard_delete` even though the Edge function has a separate non-destructive `delete` action. The hard-delete routine deletes attendance, registrations, payroll and profile rows through many sequential database calls. LAN mode already deactivates the account instead, proving cloud/LAN behavior diverged. `AdminPage.tsx` immediately removes the active detail record from state, increasing the chance of a blank/stale detail route after the destructive request.
+- **Impact:** Removing an employee can delete historical business evidence and leave the Admin UI in a blank/stale route.
+- **Owner decision:** The owner explicitly requires normal employee removal to delete the account, not ban/deactivate it. This supersedes the prior conservative deactivation behavior.
+- **Fix:** The single normal `Xóa nhân viên` action now uses the existing permanent-delete workflow in LAN and cloud, removes the CRM row after success, safely exits its detail route and has a two-step confirmation spelling out the affected schedule/attendance/payroll records. The duplicate `Xóa sạch test` and all deactivation wording are removed, so an account cannot unexpectedly remain listed as inactive after a requested deletion.
+- **Verification:** `SHIFT_CLOSE_REPORT_REALTIME_OK`, `ACCOUNT_ORPHAN_RECOVERY_OK`, TypeScript and Admin/account regressions pass. No employee account or historical business record was changed during verification.
+- **Production:** Deployment `dpl_5pa2cKuBJMM3MvAAxueaeSfhad1R` is Ready and aliased. Uncached `AdminPage-DWVmqrPO.js` has `Xóa nhân viên` and no deactivation label.
+- **Status:** Deployed — one owner-authorized delete confirmation pending.
+
+## BUG-106 — Cao Bảo Trân không check-in/check-out được (đang điều tra, CHƯA có fix, CHƯA deploy)
+
+**Ngày điều tra:** 2026-07-21. **Trạng thái:** Open — đã loại trừ toàn bộ phía server/DB; chưa xác định được điểm hỏng phía client vì thiếu thông báo lỗi thực tế trên máy nhân viên. **Không deploy gì trong phiên này.**
+
+### Tài khoản
+- `profiles.id = 24efd4c4-53c3-4a74-a2fd-d9d21942ad23`, `full_name = Cao Bảo Trân`, `email = baotran@accounts.gustino.vn`, `role = staff`, `branch_id = gold-coast`, `active = true`, `employment_status = working`, `employment_type = part_time`.
+- `auth.users` khớp đúng id, `email_confirmed_at = 2026-07-04`, `banned_until = null`. Không phải tài khoản mồ côi.
+
+### Những gì ĐÃ loại trừ (đừng kiểm tra lại)
+1. **Auth/phiên đăng nhập OK.** `auth.sessions` còn phiên sống tạo 2026-07-16, `updated_at` cuối 2026-07-21T06:12Z; chuỗi `auth.refresh_tokens` refresh đều đặn ~1 giờ/lần liên tục từ 17/07 đến hôm nay. Nhân viên VẪN đang dùng app bình thường → không phải bị sign-out.
+2. **RLS cho phép ghi.** `attendance_records` INSERT policy `employee checks in` = `user_id = auth.uid() AND EXISTS(shift_registrations sr WHERE sr.id = shift_registration_id AND sr.user_id = auth.uid() AND sr.branch_id = ... AND sr.status <> 'rejected')` → thỏa. UPDATE policy `employee checks out` → thỏa. `shift_registrations` SELECT `branch_id = current_profile().branch_id` → thỏa (cùng gold-coast).
+3. **Storage OK.** Bucket `attendance-selfies` policy INSERT yêu cầu `foldername[1] = auth.uid()`; client ghi path `${user.id}/${branchId}/...` → khớp. Cô ấy đã upload thành công ngày 11/07.
+4. **Không có trigger/constraint chặn.** `attendance_records` không có trigger nào. Constraint chỉ gồm FK, PK, UNIQUE(shift_registration_id), check `check_out_time >= check_in_time` và check bắt buộc bằng chứng check-out.
+5. **API production khỏe.** `/api/reverse-geocode?lat=12.2481968&lng=109.1952713` (đúng tọa độ chi nhánh của cô ấy) trả `200` trong 0.13–1.56s với địa chỉ cụ thể `1 Trần Hưng Đạo, Phường Nha Trang, Nha Trang` (source nominatim). `/api/server-time` trả `200`.
+6. **Production ĐÃ có bản vá BUG-093/BUG-095.** Bundle `assets/index-jz17XQYv.js` đang phục vụ chứa marker `reverse-geocode`, timeout `6500`, `attendance-selfies`, `Chưa lấy được địa chỉ cụ thể`, `Supabase chưa xác nhận check-out`. Ghi chú "Fixed locally — no deploy" ở BUG-093/095 nay đã lỗi thời — code đó ĐÃ lên production.
+7. **Logic UI không chặn.** `AttendancePage.tsx:391` `canCheckIn = registration.workDate === today && !record`; không có rào giờ. Hai đăng ký ca hôm nay 21/07 (09:00–13:00 shift `0c58a647`, và 13:00–14:00 shift_id null) đều `approved` và chưa có record → nút Check-in PHẢI đang hiện.
+
+### Dữ liệu bất thường tìm được
+- **Bản ghi chấm công mở treo 10 ngày:** `attendance_records.id = 775de9ab-e18c-424f-8820-0c191b46166e`, check-in `2026-07-11 16:01:51` giờ VN, `check_out_time = NULL`, gắn registration `74c245e9`. GPS 12.2481968/109.1952713, accuracy 14.68m, địa chỉ đầy đủ, selfie có. **Chưa đụng vào** — theo tiền lệ BUG-071, tuyệt đối không tự đóng/ngụy tạo bằng chứng chấm công.
+- Đây là lần check-in THẬT cuối cùng của cô ấy. Từ 12/07 đến nay không có thêm bản ghi nào dù có đăng ký ca (12/07, và 2 ca hôm nay 21/07).
+- 5 bản ghi còn lại (04–09/07) đều là giờ tròn trịa (10:00–14:00, 16:00–21:00) → là công bù admin từ đợt backfill 10/07, không phải chấm công thật.
+- Đăng ký ca hôm nay được tạo lúc `06:19Z` = **13:19 giờ VN**, tức ca 09:00–13:00 đã KẾT THÚC trước khi được đăng ký. Ca 13:00–14:00 tạo thủ công liền kề. Kiểu thao tác này giống người đang cố lách một lỗi nào đó.
+
+### Giả thuyết còn lại (phía client/thiết bị, chưa kiểm chứng được)
+Thiết bị: Android, Chrome 150 (`Mozilla/5.0 (Linux; Android 10; K) ... Chrome/150.0.0.0 Mobile Safari/537.36`). Trước 10/07 từng dùng trình duyệt trong Zalo.
+Bốn điểm có thể ném lỗi trong `checkIn()`/`checkOut()` (`src/lib/attendance.ts`), mỗi điểm có message tiếng Việt riêng:
+1. `getAttendanceLocation()` — bị từ chối quyền GPS. **Lỗi thật đã xác nhận trong source:** `src/lib/attendance.ts:1550` khi `PERMISSION_DENIED` luôn hiện hướng dẫn dành riêng cho **Safari/iPhone** ("Vào Cài đặt → Quyền riêng tư & Bảo mật → ... → Safari Websites"). Nhân viên dùng **Android Chrome** sẽ đọc hướng dẫn hoàn toàn vô dụng và không biết cách bật lại quyền. Cần sửa thành hướng dẫn theo nền tảng.
+2. `requireConcreteAttendanceAddress()` (`attendance.ts:1641`) — "Chưa lấy được địa chỉ cụ thể. Hãy kiểm tra kết nối mạng rồi chấm công lại." Nếu mạng 4G của máy chặn/chậm `/api/reverse-geocode` thì check-in bị từ chối dù GPS tốt.
+3. `getBestGeolocationPosition()` (`attendance.ts:1651`) — yêu cầu accuracy ≤ 150m; GPS yếu trong nhà → trượt.
+4. `stampAttendancePhoto()` → `decodeImageForCanvas()` (`src/lib/browser.ts:74`) — "Thiết bị không đọc được định dạng ảnh này." / `uploadSelfie` ném "Ảnh selfie là bắt buộc." nếu blob rỗng.
+
+### Việc cần làm tiếp (bước 1 là bắt buộc)
+1. **Hỏi nhân viên chụp màn hình dòng chữ đỏ báo lỗi** khi bấm Check-in. Mỗi giả thuyết ở trên có một câu tiếng Việt khác nhau → câu đó chỉ thẳng ra điểm hỏng. Không có nó thì mọi bản sửa đều là đoán mò.
+2. Sửa message PERMISSION_DENIED cho Android/Chrome (lỗi chắc chắn, độc lập với root cause).
+3. Quyết định cách xử lý bản ghi mở treo 11/07 — cần admin dùng chức năng chỉnh công có ghi lý do, KHÔNG sửa thẳng DB.
+
+### Ghi chú môi trường (quan trọng cho phiên sau)
+Ổ **C: đã đầy (còn ~0.2 GB)** nên `npx supabase` cài thất bại với `ENOSPC`. Cách chạy được DB query:
+`npm_config_cache=/d/gustino/.npm-cache npx --yes supabase@2.109.1 db query --linked --file <file.sql>`
+Truyền SQL nhiều dòng qua `--file`, KHÔNG truyền inline (CLI báo `String must contain at least 1 character(s)`).
+Script audit đã lưu: `scripts/db_audit_cao_bao_tran_20260721.sql`, `scripts/db_audit_attendance_guards_20260721.sql`, `scripts/db_audit_cao_bao_tran_session_20260721.sql`.
+
+### BUG-106 — ĐÃ TÌM RA NGUYÊN NHÂN VÀ SỬA (2026-07-21, CHƯA DEPLOY)
+
+**Triệu chứng quyết định (chủ quán xác nhận):** "không hiển thị lỗi, chỉ thấy trạng thái load nhưng không có kết quả" — nút Check-in quay vòng mãi, KHÔNG có dòng báo lỗi nào. Đây chính là chìa khóa: nếu có lỗi thì `handleCheckIn` đã `onFeedback(...)`. Quay vòng vô hạn = **một promise không bao giờ settle**.
+
+**Root cause:** Toàn bộ luồng ghi chấm công có 5 bước KHÔNG có timeout, chỉ cần một bước treo là kẹt vĩnh viễn và không ném lỗi:
+1. `canvas.toBlob(callback, ...)` trong `stampAttendancePhoto()` — nếu máy thiếu bộ nhớ, callback KHÔNG BAO GIỜ được gọi. Promise treo mãi.
+2. `createImageBitmap()` / `image.decode()` trong `decodeImageForCanvas()` (`src/lib/browser.ts`) — không có timeout, treo với ảnh camera lớn trên máy Android yếu.
+3. `supabase.storage.from('attendance-selfies').upload()` — supabase-js KHÔNG đặt timeout; mạng 4G chập chờn treo request vô hạn.
+4. `supabase.from('attendance_records').insert()/.update()` — postgrest-js cũng không có timeout.
+5. `blobToDataUrl()` cho ảnh xem trước — nằm chắn ngang luồng dù chỉ là ảnh hiển thị.
+
+Lớp `withAttendanceWriteRetry` sẵn có CHỈ retry khi có exception được ném ra. Promise treo thì không bao giờ ném → retry không bao giờ chạy. Đó là lý do các bản vá BUG-093/BUG-095 (đã lên production) không cứu được ca này.
+
+**Fix (`src/lib/attendance.ts`):** Thêm `withAttendanceDeadline()` + `AttendanceStepTimeoutError`, đặt hạn chót cứng cho từng bước — vị trí 25s, ảnh 20s, upload 25s, ghi DB 20s. Hết hạn thì **BÁO LỖI tiếng Việt cụ thể, hành động được**, tuyệt đối không bỏ qua ảnh/GPS/địa chỉ (giữ nguyên mọi ràng buộc bằng chứng). Timeout ở upload/ghi DB mang `status = 408` để lớp retry sẵn có thử lại đúng một lần. Riêng `blobToDataUrl` (ảnh xem trước, KHÔNG phải bằng chứng) hết hạn thì bỏ preview chứ không chặn check-in.
+
+**Fix phụ (lỗi chắc chắn, độc lập):** `locationPermissionHelpText()` — trước đây mọi máy bị từ chối quyền GPS đều nhận hướng dẫn dành riêng cho **Safari/iPhone**. Cô Trân dùng **Android Chrome** nên đọc hướng dẫn hoàn toàn vô dụng. Nay hướng dẫn tách theo iPhone / Android / desktop.
+
+**Kiểm chứng:** `npx tsc -b` pass. `npm run build` pass (bundle `index-Ce1y8mkT.js` chứa đủ 5 marker thông báo mới). QA: `ATTENDANCE_QA_OK` (chạy trọn check-in + check-out thật qua đúng code đã sửa), `ROLE_ACCESS_QA_OK`, `APP_NAVIGATION_QA_OK`, `HANDOVER_QA_OK`, `SHARED_SCHEDULE_ACCOUNTS_QA_OK`.
+
+**Sửa 2 assertion QA đã lỗi thời trong `scripts/qa-attendance.mjs`** (script cũ so với đợt đại tu UI đang dở, không liên quan bug này): (1) click nút sidebar "Chấm công" luôn timeout vì sidebar nằm ngoài viewport ở khổ 390px → đổi sang điều hướng bằng hash `#attendance`; (2) sau check-out ca chuyển sang `renderCompletedRow` với class `.completed-shift-row` và chữ "Ra" KHÔNG có dấu hai chấm, nhưng script vẫn tìm `.shift-card` + `/Ra:/` → sửa theo UI hiện tại.
+
+**Hai QA từng hỏng — ĐÃ HẾT (kiểm lại 2026-07-21, phiên sau):**
+- `qa-admin.mjs` → `MANAGEMENT_QA_OK`.
+- `qa-mobile-shift-setup.mjs` → `MOBILE_SHIFT_AUDIT_OK` (9 ảnh audit sinh đủ trong `artifacts/mobile-audit-fix-shifts/`).
+Hai lỗi đó là **trạng thái dev server cũ/HMR hỏng**, không phải lỗi source: chạy lại trên cùng cây làm việc (không sửa thêm dòng code nào) thì cả hai xanh. Ghi chú "trang dashboard admin đang hỏng" ở dưới nay đã lỗi thời.
+
+Bằng chứng gốc không liên quan: mọi symbol đã thêm/sửa (`withAttendanceDeadline`, `AttendanceStepTimeoutError`, `locationPermissionHelpText`, `stampAttendancePhoto`, `uploadAttendanceSelfieWithRetry`, `getAttendanceLocation`) đều **private trong `src/lib/attendance.ts`, không nơi nào khác dùng**. `ManagerDashboardPage.tsx` chỉ import `fetchEmployees`/`permittedBranchIds`; `SalesPage.tsx` chỉ import `fetchAttendanceRecords`/`fetchEmployees`/`fetchShiftRegistrations`/`findAttendanceRecordForRegistration` — không hàm nào bị đụng tới. Hai lỗi này đến từ đợt sửa dashboard đang dở dang chưa commit (`ManagerDashboardPage.tsx`, `AdminPage.tsx`, `styles.css` đã ở trạng thái modified từ trước phiên này).
+
+**CHƯA DEPLOY — chờ chủ quán cho phép phát hành.** Lý do chặn kỹ thuật trước đây (dashboard admin hỏng) KHÔNG còn. Kiểm lại toàn bộ trên cây làm việc hiện tại: `npx tsc -b` exit 0; `npm run build` pass → `PRODUCTION_SUPABASE_BUNDLE_OK (index-Ce1y8mkT.js; revenue-BIBA5MGD.js)`; QA `ROLE_ACCESS_QA_OK`, `APP_NAVIGATION_QA_OK`, `ATTENDANCE_QA_OK`, `HANDOVER_QA_OK`, `MANAGEMENT_QA_OK`, `MOBILE_SHIFT_AUDIT_OK` — 6/6 xanh. Cây làm việc vẫn gộp chung bản vá chấm công với đợt sửa dashboard/report/handover/revenue chưa commit, nên `npx vercel deploy --prod` sẽ đẩy tất cả cùng lúc; điều đó nay chấp nhận được về mặt kiểm thử nhưng vẫn là quyết định phát hành của chủ quán.
+
+**Việc còn lại:** (1) chủ quán quyết định phát hành; (2) sau khi lên production, nhờ cô Trân check-in lại — nếu vẫn không được thì nay ĐÃ CÓ thông báo lỗi cụ thể chỉ đúng bước hỏng thay vì quay vòng câm lặng; (3) xử lý bản ghi mở treo `775de9ab-e18c-424f-8820-0c191b46166e` (check-in 11/07 16:01, chưa check-out) bằng chức năng chỉnh công có ghi lý do của Admin, KHÔNG sửa thẳng DB.
