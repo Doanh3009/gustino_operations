@@ -420,3 +420,39 @@ Bằng chứng gốc không liên quan: mọi symbol đã thêm/sửa (`withAtte
 - KHÔNG có migration, query/ghi dữ liệu production, gọi webhook n8n hay push GitHub trong lượt phát hành này.
 
 **Việc còn lại:** (1) —; (2) sau khi lên production, nhờ cô Trân check-in lại — nếu vẫn không được thì nay ĐÃ CÓ thông báo lỗi cụ thể chỉ đúng bước hỏng thay vì quay vòng câm lặng; (3) xử lý bản ghi mở treo `775de9ab-e18c-424f-8820-0c191b46166e` (check-in 11/07 16:01, chưa check-out) bằng chức năng chỉnh công có ghi lý do của Admin, KHÔNG sửa thẳng DB.
+
+## BUG-107 — Cao Bảo Trân không chấm công được trên máy Samsung, đổi máy khác thì được (2026-07-21)
+
+**Triệu chứng chủ quán báo:** cùng một tài khoản, mở trên điện thoại Samsung thì không chấm công được; đăng nhập bằng điện thoại khác thì chấm được ngay.
+
+### Nguyên nhân — tìm bằng bằng chứng, không đoán
+`auth.sessions.user_agent` của chính tài khoản này (`24efd4c4-…ad23`) cho thấy 3 loại thiết bị khác nhau:
+
+| Thời điểm | User agent | Ý nghĩa |
+|---|---|---|
+| 10/07 15:55–20:38 | `Android 14; **SM-A235F** Build/UP1A.231005.007;) … **Version/4.0** Chrome/… Mobile Safari` | **Samsung Galaxy A23, chạy trong Android WebView** (trình duyệt nhúng của app khác, điển hình là Zalo) |
+| 11/07, 21/07 | `Android 10; K … Chrome/150.0.0.0 Mobile` | Chrome thật (UA rút gọn) |
+| 21/07 14:56 | `iPhone … Safari` | Máy khác — lượt check-in thành công |
+
+Hai đặc điểm `Build/…` và `Version/4.0` chỉ có ở **Android WebView**; Chrome thật đã bỏ token `Build/` từ lâu. Đó là chiếc "điện thoại Samsung" trong lời kể.
+
+Trong Android WebView, quyền định vị KHÔNG do trình duyệt cấp mà do **app chủ**: app phải tự cài `WebChromeClient.onGeolocationPermissionsShowPrompt()` và bản thân app phải đang có quyền vị trí của hệ điều hành. Nếu app chủ không làm (rất phổ biến ở trình duyệt trong Zalo/Facebook), `navigator.geolocation.getCurrentPosition()` **không gọi callback thành công lẫn thất bại** — nên trước bản vá BUG-106 nút chấm công quay vô tận không báo lỗi, còn sau BUG-106 thì báo hết hạn 25 giây. Mở đúng cùng tài khoản bằng Chrome/Safari thì mọi thứ chạy bình thường. **Web không thể tự sửa việc này** — chỉ có thể phát hiện và hướng dẫn thoát ra trình duyệt thật.
+
+**Yếu tố cộng hưởng thứ hai (cùng máy đó):** Galaxy A23 có camera 50MP. `decodeImageForCanvas()` trước đây giải mã ảnh ở **độ phân giải gốc** (50MP ≈ 200MB RAM ở dạng RGBA) rồi mới thu nhỏ — đủ để máy 4GB RAM treo hoặc bị hệ điều hành giết ngay tại `createImageBitmap`/`canvas.toBlob`.
+
+### Bản vá
+1. **`src/lib/deviceReadiness.ts` (mới):** nhận diện WebView Android (`; wv)`, `Build/`, `Version/4.0`+`Chrome/`), WebView iOS (thiếu `Safari/`), tên app chủ (Zalo/Facebook/Messenger/Instagram/TikTok/WeChat/LINE/Shopee), dòng máy (`SM-A235F`), HTTPS, và trạng thái quyền vị trí qua Permissions API. Kèm `openInSystemBrowser()` (Android dùng `intent://…package=com.android.chrome`) và `copyAttendanceLink()` có nhánh dự phòng `execCommand` cho WebView cũ.
+2. **`src/components/AttendanceDeviceCheck.tsx` (mới):** thẻ tự kiểm tra ngay đầu màn chấm công. Máy vướng → cảnh báo lớn nêu đúng nguyên nhân + nút "Mở bằng trình duyệt điện thoại" / "Sao chép link app". Máy ổn → chỉ một dải trạng thái gọn, bấm mới xổ, có nút "Kiểm tra vị trí ngay" chạy đúng code của luồng chấm công thật (`probeAttendanceLocation()`).
+3. **`src/lib/attendance.ts`:** thông báo lỗi vị trí (cả khi bị từ chối lẫn khi hết hạn 25s) nay nhận biết WebView và nói thẳng "bạn đang mở trong <app>, hãy mở bằng Chrome/Safari" thay vì bảo đi bật GPS vốn đã bật. Ảnh chấm công giải mã ở cạnh dài tối đa 2560px (`ATTENDANCE_PHOTO_DECODE_MAX_EDGE`) — ảnh đóng dấu vẫn xuất 1280px như cũ, không đổi chất lượng.
+4. **`src/lib/browser.ts`:** đọc kích thước ảnh từ header (JPEG SOF / PNG IHDR) rồi yêu cầu `createImageBitmap` giải mã THẲNG về cỡ đích (`resizeWidth/Height`), không dựng khung hình gốc. Nhận diện HEIC/HEIF theo `ftyp` brand → báo đúng "tắt Ảnh hiệu suất cao trong Camera" thay vì "không đọc được định dạng ảnh".
+5. **CSS `.devchk-*`** cuối `src/styles.css`, mobile-first, `overflow-wrap: anywhere`, nút `flex: 1 1 200px` — không tràn ngang ở 390px.
+
+### Kiểm chứng
+- `npx tsc -b` exit 0; `npm run build` pass (`PRODUCTION_SUPABASE_BUNDLE_OK`).
+- **QA mới `scripts/qa-device-readiness.mjs`** — mô phỏng đúng UA Samsung SM-A235F trong WebView lấy từ DB: Chrome → không chặn; WebView → chặn + đủ nút; WebView có tên app → gọi đúng tên; quyền bị chặn → hướng dẫn bật lại. Cả 4 ca đều kiểm tra không tràn ngang. `DEVICE_READINESS_QA_OK`, ảnh ở `artifacts/device-readiness/`.
+- QA cũ chạy lại đủ 7 bộ, xanh hết: `ATTENDANCE_QA_OK`, `ROLE_ACCESS_QA_OK`, `APP_NAVIGATION_QA_OK`, `MANAGEMENT_QA_OK`, `HANDOVER_QA_OK`, `SHARED_SCHEDULE_ACCOUNTS_QA_OK`, `MOBILE_SHIFT_AUDIT_OK`.
+- Rà tràn ngang 390px trên `today`/`handover`/`inventory`/`orders`/`sales`/`attendance`/`report`: `NO_HORIZONTAL_OVERFLOW`.
+- KHÔNG ghi/sửa/xóa dữ liệu production trong lượt này (chỉ đọc `auth.sessions`, `attendance_records`, `shift_registrations`).
+
+### Phát hiện nghiệp vụ kèm theo (chủ quán chọn ĐỂ SAU, ghi backlog)
+Check-in **không kiểm tra khoảng cách tới chi nhánh**, chỉ yêu cầu sai số GPS ≤150m. Bằng chứng: bản ghi `f21c872d-…451f` ngày 21/07 14:56 của tài khoản này có địa chỉ "Đường 57A, Phường Tân Tạo, TP.HCM" trong khi chi nhánh là Gold Coast **Nha Trang** (chủ quán xác nhận đây là thao tác thử của chính mình trên iPhone). Muốn chặn gian lận vị trí thì cần thêm toạ độ chi nhánh + ngưỡng khoảng cách; `src/lib/constants.ts` hiện KHÔNG lưu toạ độ chi nhánh nào. Bản ghi 21/07 giữ nguyên, không đụng.

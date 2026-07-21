@@ -70,11 +70,90 @@ export interface DecodedCanvasImage {
   close: () => void
 }
 
-/** Decode ảnh camera theo EXIF orientation, có fallback cho Safari/iPhone và ảnh HEIC trình duyệt đọc được. */
-export async function decodeImageForCanvas(blob: Blob): Promise<DecodedCanvasImage> {
+/** Kích thước ảnh đọc từ header (JPEG SOF / PNG IHDR) — không cần giải mã toàn bộ khung hình. */
+async function readImageHeader(blob: Blob) {
+  try {
+    const head = new Uint8Array(await blob.slice(0, 262144).arrayBuffer())
+    return { size: readImageSizeFromHeader(head), heif: isHeifHeader(head) }
+  } catch {
+    return { size: undefined, heif: false }
+  }
+}
+
+function readImageSizeFromHeader(head: Uint8Array) {
+  if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+    const view = new DataView(head.buffer, head.byteOffset, head.byteLength)
+    if (head.byteLength >= 24) return { width: view.getUint32(16), height: view.getUint32(20) }
+    return undefined
+  }
+  if (head[0] !== 0xff || head[1] !== 0xd8) return undefined
+  let offset = 2
+  while (offset + 9 < head.byteLength) {
+    if (head[offset] !== 0xff) {
+      offset += 1
+      continue
+    }
+    const marker = head[offset + 1]
+    if (marker === 0xff) {
+      offset += 1
+      continue
+    }
+    // SOF0..SOF15 (bỏ DHT 0xC4, JPG 0xC8, DAC 0xCC) mang kích thước thật của ảnh.
+    const isStartOfFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc
+    if (isStartOfFrame) {
+      return {
+        height: (head[offset + 5] << 8) | head[offset + 6],
+        width: (head[offset + 7] << 8) | head[offset + 8],
+      }
+    }
+    if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+      offset += 2
+      continue
+    }
+    const length = (head[offset + 2] << 8) | head[offset + 3]
+    if (length < 2) return undefined
+    offset += 2 + length
+  }
+  return undefined
+}
+
+/** HEIC/HEIF (Samsung "Ảnh hiệu suất cao", iPhone) — Chrome Android không giải mã được. */
+function isHeifHeader(head: Uint8Array) {
+  if (head.byteLength < 12) return false
+  const box = String.fromCharCode(head[4], head[5], head[6], head[7])
+  if (box !== 'ftyp') return false
+  const brand = String.fromCharCode(head[8], head[9], head[10], head[11])
+  return ['heic', 'heix', 'heim', 'heis', 'hevc', 'hevm', 'hevs', 'mif1', 'msf1'].includes(brand)
+}
+
+/**
+ * Decode ảnh camera theo EXIF orientation, có fallback cho Safari/iPhone và ảnh HEIC trình duyệt đọc được.
+ *
+ * `maxSize` (BUG-107): máy Android phổ thông có camera 50MP+ (vd Galaxy A23 SM-A235F).
+ * Giải mã full-res tốn ~4 byte/điểm ảnh (50MP ≈ 200MB) nên máy 4GB RAM sẽ treo hoặc bị hệ
+ * điều hành giết ngay ở `createImageBitmap`/`canvas.toBlob`. Đọc kích thước từ header rồi
+ * yêu cầu trình duyệt giải mã THẲNG về kích thước đích, không bao giờ dựng khung hình gốc.
+ */
+export async function decodeImageForCanvas(
+  blob: Blob,
+  options: { maxSize?: number } = {},
+): Promise<DecodedCanvasImage> {
+  const header = await readImageHeader(blob)
+  const maxSize = options.maxSize && options.maxSize > 0 ? options.maxSize : 0
+  const longestEdge = header.size ? Math.max(header.size.width, header.size.height) : 0
+  const resizeScale = maxSize && longestEdge > maxSize ? maxSize / longestEdge : 0
   if (typeof createImageBitmap === 'function') {
     try {
-      const bitmap = await createImageBitmap(blob, { imageOrientation: 'from-image' })
+      const bitmap = await createImageBitmap(blob, {
+        imageOrientation: 'from-image',
+        ...(resizeScale && header.size
+          ? {
+              resizeWidth: Math.max(1, Math.round(header.size.width * resizeScale)),
+              resizeHeight: Math.max(1, Math.round(header.size.height * resizeScale)),
+              resizeQuality: 'medium' as const,
+            }
+          : {}),
+      })
       return { source: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() }
     } catch {
       // Safari cũ/HEIC có thể không đi qua createImageBitmap nhưng vẫn hiển thị được bằng HTMLImageElement.
@@ -86,7 +165,7 @@ export async function decodeImageForCanvas(blob: Blob): Promise<DecodedCanvasIma
   try {
     const loaded = new Promise<void>((resolve, reject) => {
       image.onload = () => resolve()
-      image.onerror = () => reject(new Error('Thiết bị không đọc được định dạng ảnh này.'))
+      image.onerror = () => reject(new Error(unreadableImageMessage(header.heif)))
     })
     image.src = url
     if (typeof image.decode === 'function') await image.decode()
@@ -100,15 +179,22 @@ export async function decodeImageForCanvas(blob: Blob): Promise<DecodedCanvasIma
     }
   } catch (error) {
     URL.revokeObjectURL(url)
+    if (header.heif) throw new Error(unreadableImageMessage(true))
     throw error instanceof Error ? error : new Error('Thiết bị không đọc được ảnh camera. Hãy đổi định dạng ảnh hoặc chụp lại.')
   }
+}
+
+function unreadableImageMessage(heif: boolean) {
+  return heif
+    ? 'Ảnh đang ở định dạng HEIC nên trình duyệt không đọc được. Vào Camera → Cài đặt → tắt "Ảnh hiệu suất cao" (HEIF), rồi chụp lại ảnh chấm công.'
+    : 'Thiết bị không đọc được định dạng ảnh này.'
 }
 
 // Nén ảnh selfie/quầy về JPEG ~1280px để lưu nhẹ (dùng chung cho ảnh đầu/cuối ca).
 export async function imageFileToDataUrl(file: File) {
   try {
-    const decoded = await decodeImageForCanvas(file)
     const maxSize = 1280
+    const decoded = await decodeImageForCanvas(file, { maxSize })
     const scale = Math.min(1, maxSize / Math.max(decoded.width, decoded.height))
     const canvas = document.createElement('canvas')
     canvas.width = Math.max(1, Math.round(decoded.width * scale))

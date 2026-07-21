@@ -1,4 +1,5 @@
 import { createId, decodeImageForCanvas } from './browser'
+import { detectDeviceEnvironment } from './deviceReadiness'
 import { branchIds, branchName } from './branches'
 import { localDateKey, localDayBoundsIso } from './dates'
 import { shouldUseLanApi, supabase } from './supabase'
@@ -958,6 +959,8 @@ const ATTENDANCE_GEOCODE_MAX_ATTEMPTS = 2
 // bước treo, promise không bao giờ settle nên nút Check-in quay vòng mãi mà
 // không hiện lỗi nào. Hết hạn phải BÁO LỖI, tuyệt đối không bỏ qua ảnh/GPS/địa chỉ.
 const ATTENDANCE_LOCATION_DEADLINE_MS = 25000
+/** Cạnh dài tối đa khi giải mã ảnh chấm công (ảnh đóng dấu vẫn xuất ở 1280px chiều ngang). */
+const ATTENDANCE_PHOTO_DECODE_MAX_EDGE = 2560
 const ATTENDANCE_PHOTO_DEADLINE_MS = 20000
 const ATTENDANCE_UPLOAD_DEADLINE_MS = 25000
 const ATTENDANCE_DB_DEADLINE_MS = 20000
@@ -1611,10 +1614,16 @@ async function getAttendanceLocation() {
   }
   // Trên Android Chrome, khi hộp thoại xin quyền vị trí còn treo thì `timeout`
   // của getCurrentPosition không chạy, nên cần hạn chót riêng bọc ngoài.
+  // Trong WebView của app khác, getCurrentPosition có thể KHÔNG gọi callback nào cả
+  // (app chủ không cài onGeolocationPermissionsShowPrompt) — hết hạn chót phải nói đúng
+  // nguyên nhân đó thay vì bảo nhân viên đi bật GPS vốn đã bật sẵn.
+  const inAppBrowser = detectDeviceEnvironment().isInAppBrowser
   const position = await withAttendanceDeadline(
     () => getBestGeolocationPosition(),
     ATTENDANCE_LOCATION_DEADLINE_MS,
-    'Quá 25 giây chưa lấy được vị trí. Hãy bật GPS/Vị trí của máy, cho phép trình duyệt truy cập vị trí (và bật "Vị trí chính xác"), ra gần cửa sổ rồi bấm lại.',
+    inAppBrowser
+      ? locationPermissionHelpText()
+      : 'Quá 25 giây chưa lấy được vị trí. Hãy bật GPS/Vị trí của máy, cho phép trình duyệt truy cập vị trí (và bật "Vị trí chính xác"), ra gần cửa sổ rồi bấm lại.',
   ).catch((error: GeolocationPositionError | Error | null) => error)
   if (!position || !('coords' in position)) {
     const denied = position && 'code' in position && position.code === position.PERMISSION_DENIED
@@ -1635,9 +1644,36 @@ async function getAttendanceLocation() {
   return { latitude, longitude, accuracy, address }
 }
 
+/**
+ * Kiểm tra nhanh khả năng lấy vị trí của máy — dùng cho thẻ "Kiểm tra thiết bị" ở màn chấm công.
+ * Chạy ĐÚNG code của luồng chấm công thật để kết quả có giá trị chẩn đoán.
+ */
+export async function probeAttendanceLocation(): Promise<
+  { ok: true; accuracy: number; address: string } | { ok: false; message: string }
+> {
+  try {
+    const location = await getAttendanceLocation()
+    return { ok: true, accuracy: location.accuracy, address: location.address }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error && error.message
+        ? error.message
+        : 'Không lấy được vị trí trên máy này.',
+    }
+  }
+}
+
 /** Hướng dẫn bật lại quyền vị trí theo đúng nền tảng của máy đang dùng. */
 function locationPermissionHelpText() {
   const agent = typeof navigator === 'undefined' ? '' : navigator.userAgent || ''
+  const environment = detectDeviceEnvironment()
+  // WebView trong app (Zalo/Facebook…) không có đường bật lại quyền: hướng dẫn ổ khoá/Cài đặt
+  // đều vô nghĩa ở đây, cách duy nhất là mở bằng trình duyệt thật.
+  if (environment.isInAppBrowser) {
+    const host = environment.hostAppName || 'ứng dụng đang mở'
+    return `Bạn đang mở app trong ${host} nên trình duyệt không được cấp quyền định vị. Hãy mở https://gustino-operations.vercel.app bằng Chrome (Android) hoặc Safari (iPhone), đăng nhập lại rồi chấm công.`
+  }
   if (/iPhone|iPad|iPod/i.test(agent)) {
     return 'Safari đang chặn quyền định vị cho website này. Vào Cài đặt → Quyền riêng tư & Bảo mật → Dịch vụ định vị → Safari Websites → Khi dùng ứng dụng, đồng thời bật Vị trí chính xác.'
   }
@@ -1789,9 +1825,11 @@ async function stampAttendancePhoto(
   },
 ) {
   // createImageBitmap()/image.decode() không có timeout và có thể treo vô hạn
-  // với ảnh camera lớn trên máy Android yếu.
+  // với ảnh camera lớn trên máy Android yếu. `maxSize` bắt trình duyệt giải mã thẳng
+  // về cỡ nhỏ: ảnh 50MP của máy Android phổ thông tốn ~200MB RAM nếu dựng full-res,
+  // đủ để máy 4GB treo hoặc bị hệ điều hành giết giữa chừng (BUG-107).
   const decoded = await withAttendanceDeadline(
-    () => decodeImageForCanvas(selfie),
+    () => decodeImageForCanvas(selfie, { maxSize: ATTENDANCE_PHOTO_DECODE_MAX_EDGE }),
     ATTENDANCE_PHOTO_DEADLINE_MS,
     'Máy đọc ảnh chấm công quá lâu. Hãy chụp lại ảnh (hoặc giảm độ phân giải camera) rồi thử lại.',
   )

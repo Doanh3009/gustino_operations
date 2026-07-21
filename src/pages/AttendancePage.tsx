@@ -36,6 +36,7 @@ import { employeePositionLabel, roleLabel as accessRoleLabel } from '../lib/acce
 import { useLang } from '../lib/i18n'
 import { createAttendanceAdjustment } from '../lib/attendanceAdjustments'
 import { AttendanceAdjustmentArchive } from '../components/AttendanceAdjustmentArchive'
+import { AttendanceDeviceCheck } from '../components/AttendanceDeviceCheck'
 import { formatDecimalHoursAsDuration, formatWorkDurationBetween } from '../lib/workDuration'
 import type {
   AppUser,
@@ -518,6 +519,7 @@ function SchedulePanel({
 
   return (
     <>
+      <AttendanceDeviceCheck />
       <section className="section-card attendance-schedule">
         <div className="section-title">
           <div><span className="eyebrow dark">CẦN CHẤM CÔNG</span><h2>Ca cần chấm</h2></div>

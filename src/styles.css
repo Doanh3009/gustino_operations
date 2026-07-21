@@ -16186,47 +16186,10 @@ body { background: #f7f8f5; font-size: 14px; }
   padding-top: 0;
   background: #f3f6fa;
 }
-.legacy-manager-workspace .app-sidebar {
-  background: linear-gradient(180deg, #142b4a 0%, #10233e 100%) !important;
-  border-right: 0 !important;
-  color: #c7d4e4;
-  box-shadow: 6px 0 24px rgba(18, 42, 73, .12) !important;
-}
-.legacy-manager-workspace .sidebar-brand {
-  border-bottom-color: rgba(255,255,255,.1);
-}
-.legacy-manager-workspace .sidebar-brand-name {
-  color: #fff;
-}
-.legacy-manager-workspace .sidebar-nav-item {
-  border-radius: 8px;
-  color: #c7d4e4;
-}
-.legacy-manager-workspace .sidebar-nav-item:hover {
-  background: rgba(255,255,255,.08);
-  color: #fff;
-}
-.legacy-manager-workspace .sidebar-nav-item.active {
-  background: #fff;
-  color: #0f5fce;
-  box-shadow: 0 5px 18px rgba(0,0,0,.14);
-}
-.legacy-manager-workspace .sidebar-nav-item.active::before {
-  display: none;
-}
-.legacy-manager-workspace .sidebar-spacer {
-  background: rgba(255,255,255,.1);
-}
-.legacy-manager-workspace .sidebar-capy-decoration {
-  display: none;
-}
-.legacy-manager-workspace .sidebar-logout {
-  color: #c7d4e4;
-}
-.legacy-manager-workspace .sidebar-logout:hover {
-  background: rgba(239,50,100,.16);
-  color: #ffdce5;
-}
+/* Sidebar của manager dùng CHUNG giao diện sáng với admin/ca trưởng/nhân viên.
+   Trước đây khối này ép riêng nền navy tối cho `.legacy-manager-workspace`, làm thanh
+   công cụ của quyền quản lý trông khác hẳn hệ thống (chữ mờ, mất mascot). Đã gỡ —
+   chỉ giữ phần nền vùng nội dung ở trên. ĐỪNG thêm lại theme riêng theo role. */
 
 @media (max-width: 640px) {
   .app-shell {
@@ -16442,4 +16405,206 @@ body { background: #f7f8f5; font-size: 14px; }
   }
   .section-actions > *, .orders-actions > * { max-width: 100%; }
   .admin-employee-daily-revenue-chart { height: 160px; }
+}
+
+/* ── Kiểm tra thiết bị trước khi chấm công (BUG-107) ─────────────────────────
+   Mobile-first, không cuộn ngang: mọi chuỗi dài (UA, địa chỉ GPS) đều xuống dòng. */
+.devchk {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin: 0 0 16px;
+  border-radius: 18px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.devchk-alert {
+  border: 1px solid #f0c2a1;
+  background: linear-gradient(180deg, #fff8f0, #fffdfa);
+  box-shadow: 0 10px 26px rgba(158, 74, 12, .08);
+  padding: 16px;
+}
+
+.devchk-alert-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.devchk-alert-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #d9541c;
+  color: #fff;
+  font-size: 17px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.devchk-alert-head > div { min-width: 0; }
+
+.devchk-alert-head strong {
+  display: block;
+  color: #8a3c0c;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.devchk-alert-head p {
+  margin: 6px 0 0;
+  color: #7c5237;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.devchk-issue-list {
+  margin: 12px 0 0;
+  padding: 0 0 0 18px;
+  color: #7c5237;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.devchk-issue-list li + li { margin-top: 6px; }
+
+.devchk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.devchk-primary,
+.devchk-secondary {
+  flex: 1 1 200px;
+  min-width: 0;
+  min-height: 46px;
+  padding: 0 16px;
+  border-radius: 13px;
+  font-size: 12.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.devchk-primary {
+  border: 0;
+  background: var(--navy);
+  color: #eaf6c8;
+}
+
+.devchk-secondary {
+  border: 1px solid #e0cbb6;
+  background: #fff;
+  color: #8a3c0c;
+}
+
+.devchk-primary:disabled,
+.devchk-secondary:disabled { opacity: .6; cursor: progress; }
+
+.devchk-note {
+  margin: 12px 0 0;
+  color: #6b7280;
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.devchk-note-good { color: #4c6b12; font-weight: 700; }
+.devchk-note-bad { color: #b0331e; font-weight: 700; }
+
+.devchk-facts {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  margin: 14px 0 0;
+  border: 1px solid rgba(15, 31, 51, .08);
+  border-radius: 12px;
+  background: rgba(15, 31, 51, .08);
+  overflow: hidden;
+}
+
+.devchk-facts > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 14px;
+  min-width: 0;
+  padding: 9px 12px;
+  background: #fff;
+}
+
+.devchk-facts dt {
+  color: #8b97a5;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.devchk-facts dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--navy);
+  font-size: 11.5px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.devchk-ok {
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.devchk-summary {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 14px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.devchk-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #8eb926;
+  box-shadow: 0 0 0 4px #eaf3cf;
+}
+
+.devchk-summary-text { flex: 1 1 auto; min-width: 0; }
+
+.devchk-summary-text strong {
+  display: block;
+  color: var(--navy);
+  font-size: 12.5px;
+}
+
+.devchk-summary-text small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+.devchk-caret { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+
+.devchk-body {
+  padding: 0 14px 14px;
+  border-top: 1px dashed var(--line);
+  padding-top: 12px;
+}
+
+@media (min-width: 720px) {
+  .devchk-alert { padding: 20px 22px; }
+  .devchk-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
