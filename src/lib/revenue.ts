@@ -17,6 +17,11 @@ export interface DailyRevenueRow {
   hasRevenueSummary?: boolean
 }
 
+// QUY TẮC ƯU TIÊN: sales_receipts (POS - nguồn chân lý) > report_snapshots
+// (chỉ cho ngày không có hóa đơn POS) > bag_allocations > stock_movements.
+// Báo cáo ca trưởng nộp giữa buổi/nộp thiếu sẽ không bao giờ đè lên số máy.
+// LƯU Ý: logic này được copy tay sang api/n8n/revenue.ts — sửa ở đây thì
+// NHỚ đồng bộ bên đó.
 export function buildDailyRevenueRows(
   snapshots: ReportSnapshot[],
   allocations: BagAllocation[],
@@ -29,25 +34,25 @@ export function buildDailyRevenueRows(
   } = {},
 ) {
   const snapshotRows = latestSnapshotRows(snapshots, options)
-  // A partial/legacy snapshot can exist before its summary is populated. It must
-  // not hide authoritative POS receipts for the same branch/day.
-  const snapshotKeys = new Set(snapshotRows
+  const receiptRows = liveReceiptRows(options.receipts || [], options)
+  const receiptKeys0 = new Set(receiptRows.map((row) => `${row.branchId}|${row.reportDate}`))
+
+  // POS receipts là nguồn chân lý. Snapshot chỉ hiển thị cho ngày không có hóa đơn.
+  const displayedSnapshotRows = snapshotRows.filter(
+    (row) => !receiptKeys0.has(`${row.branchId}|${row.reportDate}`),
+  )
+  const snapshotKeys = new Set(displayedSnapshotRows
     .filter((row) => row.hasRevenueSummary)
     .map((row) => `${row.branchId}|${row.reportDate}`))
-  const receiptRows = liveReceiptRows(options.receipts || [], options)
-    .filter((row) => !snapshotKeys.has(`${row.branchId}|${row.reportDate}`))
-  const receiptRowKeys = new Set(receiptRows.map((row) => `${row.branchId}|${row.reportDate}`))
-  const displayedSnapshotRows = snapshotRows.filter((row) =>
-    row.hasRevenueSummary || !receiptRowKeys.has(`${row.branchId}|${row.reportDate}`),
-  )
-  const receiptKeys = new Set([...snapshotKeys, ...receiptRows.map((row) => `${row.branchId}|${row.reportDate}`)])
+
+  const receiptKeys = new Set([...receiptKeys0, ...snapshotKeys])
   const liveRows = liveAllocationRows(allocations, options)
     .filter((row) => !receiptKeys.has(`${row.branchId}|${row.reportDate}`))
   const liveKeys = new Set([...receiptKeys, ...liveRows.map((row) => `${row.branchId}|${row.reportDate}`)])
   const movementRows = liveMovementRows(movements, options)
     .filter((row) => !liveKeys.has(`${row.branchId}|${row.reportDate}`))
 
-  return [...displayedSnapshotRows, ...receiptRows, ...liveRows, ...movementRows]
+  return [...receiptRows, ...displayedSnapshotRows, ...liveRows, ...movementRows]
     .sort((a, b) => b.reportDate.localeCompare(a.reportDate) || b.createdAt.localeCompare(a.createdAt))
 }
 
