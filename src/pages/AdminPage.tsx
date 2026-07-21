@@ -91,8 +91,33 @@ function navigateAdminHash(path: string) {
   if (window.location.hash !== nextHash) window.location.hash = nextHash
 }
 
-const INVENTORY_EXCEL_QUANTITY_FORMAT = '0.####'
+/**
+ * Cột số lượng kho trong Excel.
+ *
+ * KHÔNG dùng lại `'0.####'`: trong mã định dạng của Excel, dấu chấm thập phân được in
+ * NGUYÊN VĂN, còn `#` sau nó không in gì khi số không có phần lẻ — nên 148 hiện ra
+ * "148." và 0 hiện ra "0." (lỗi bảng "TỔNG HỢP KHO" tháng 7/2026). `General` hiện số
+ * nguyên là "148", số lẻ là "240.1879"; giá trị được làm tròn 4 số lẻ khi ghi để
+ * không lòi đuôi dấu phẩy động (0.30000000000000004) hay ký hiệu khoa học.
+ */
+const INVENTORY_EXCEL_QUANTITY_FORMAT = 'General'
 const INVENTORY_EXCEL_INTEGER_FORMAT = '0'
+const INVENTORY_EXCEL_QUANTITY_DECIMALS = 4
+
+/** Đặt định dạng + làm tròn cho các cột số lượng của một sheet. */
+function applyInventoryQuantityFormat(sheet: import('exceljs').Worksheet, keys: string[]) {
+  for (const key of keys) {
+    const column = sheet.getColumn(key)
+    column.numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
+    // `eachCell` là optional trong type của exceljs (cột rỗng chưa có ô nào).
+    column.eachCell?.({ includeEmpty: false }, (cell, rowNumber) => {
+      if (rowNumber === 1) return
+      if (typeof cell.value === 'number' && Number.isFinite(cell.value)) {
+        cell.value = Number(cell.value.toFixed(INVENTORY_EXCEL_QUANTITY_DECIMALS))
+      }
+    })
+  }
+}
 
 const ADMIN_SECTIONS: Array<{ id: AdminSection; icon: string }> = [
   { id: 'revenue', icon: '₫' },
@@ -1662,9 +1687,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       waste: row.waste,
       closing: row.closing,
     }))
-    for (const key of ['opening', 'inbound', 'outbound', 'waste', 'closing']) {
-      summarySheet.getColumn(key).numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
-    }
+    applyInventoryQuantityFormat(summarySheet, ['opening', 'inbound', 'outbound', 'waste', 'closing'])
     styleSheet(summarySheet, `TỔNG HỢP KHO ${formatDate(from)} - ${formatDate(to)}`)
 
     const shiftReconciliationSheet = workbook.addWorksheet('Đối chiếu ca')
@@ -1716,9 +1739,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           : 'SKU nguồn chưa nằm trong tồn bàn giao của ca',
       }))
     })
-    for (const key of ['opening', 'additions', 'posEquivalent', 'waste', 'closing', 'officialOut', 'difference']) {
-      shiftReconciliationSheet.getColumn(key).numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
-    }
+    applyInventoryQuantityFormat(shiftReconciliationSheet, ['opening', 'additions', 'posEquivalent', 'waste', 'closing', 'officialOut', 'difference'])
     shiftReconciliationSheet.getColumn('revenue').numFmt = INVENTORY_EXCEL_INTEGER_FORMAT
     styleSheet(shiftReconciliationSheet, `ĐỐI CHIẾU XUẤT BÁN THEO CA ${formatDate(from)} - ${formatDate(to)}`)
 
@@ -1751,7 +1772,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         note: movement.note || '-',
       })
     })
-    dailyOutboundSheet.getColumn('quantity').numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
+    applyInventoryQuantityFormat(dailyOutboundSheet, ['quantity'])
     styleSheet(dailyOutboundSheet, `XUẤT KHO ĐỂ BÁN ${formatDate(from)} - ${formatDate(to)}`)
 
     const ledgerSheet = workbook.addWorksheet('Nhật ký kho')
@@ -1792,9 +1813,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         note: movement.note || '-',
       })
     })
-    for (const key of ['quantity', 'sourceQuantity', 'measuredWeightKg']) {
-      ledgerSheet.getColumn(key).numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
-    }
+    applyInventoryQuantityFormat(ledgerSheet, ['quantity', 'sourceQuantity', 'measuredWeightKg'])
     styleSheet(ledgerSheet, `NHẬT KÝ KHO ${formatDate(from)} - ${formatDate(to)}`)
 
     const currentStockSheet = workbook.addWorksheet('Tồn hiện tại')
@@ -1819,7 +1838,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         unit: line.product.unit,
         status: line.expected <= 0.0001 ? 'Hết hàng' : line.expected <= line.product.lowStock ? 'Sắp hết' : 'Ổn định',
       }))
-    currentStockSheet.getColumn('quantity').numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
+    applyInventoryQuantityFormat(currentStockSheet, ['quantity'])
     styleSheet(currentStockSheet, 'TỒN KHO HIỆN TẠI THEO CHI NHÁNH')
 
     const countSheet = workbook.addWorksheet('Phiếu kiểm kê')
@@ -1860,9 +1879,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         })
       })
     })
-    for (const key of ['freezer', 'stockRoom', 'orderNeeded']) {
-      countSheet.getColumn(key).numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
-    }
+    applyInventoryQuantityFormat(countSheet, ['freezer', 'stockRoom', 'orderNeeded'])
     styleSheet(countSheet, `PHIẾU KIỂM KÊ ${formatDate(from)} - ${formatDate(to)}`)
 
     await saveWorkbook(workbook, `bao-cao-kho-${from}-${to}.xlsx`)
@@ -1896,7 +1913,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       status: supplyStatusLabel(req.status),
       note: req.note || '',
     }))
-    sheet.getColumn('quantity').numFmt = INVENTORY_EXCEL_QUANTITY_FORMAT
+    applyInventoryQuantityFormat(sheet, ['quantity'])
     styleSheet(sheet, `DANH SÁCH ĐẶT HÀNG ${formatDate(from)} - ${formatDate(to)}`)
     await saveWorkbook(workbook, `danh-sach-dat-hang-${from}-${to}.xlsx`)
   }

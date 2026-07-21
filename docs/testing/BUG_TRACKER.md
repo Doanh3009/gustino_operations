@@ -456,3 +456,15 @@ Trong Android WebView, quyền định vị KHÔNG do trình duyệt cấp mà d
 
 ### Phát hiện nghiệp vụ kèm theo (chủ quán chọn ĐỂ SAU, ghi backlog)
 Check-in **không kiểm tra khoảng cách tới chi nhánh**, chỉ yêu cầu sai số GPS ≤150m. Bằng chứng: bản ghi `f21c872d-…451f` ngày 21/07 14:56 của tài khoản này có địa chỉ "Đường 57A, Phường Tân Tạo, TP.HCM" trong khi chi nhánh là Gold Coast **Nha Trang** (chủ quán xác nhận đây là thao tác thử của chính mình trên iPhone). Muốn chặn gian lận vị trí thì cần thêm toạ độ chi nhánh + ngưỡng khoảng cách; `src/lib/constants.ts` hiện KHÔNG lưu toạ độ chi nhánh nào. Bản ghi 21/07 giữ nguyên, không đụng.
+
+## BUG-108 — Excel báo cáo kho hiện số nguyên kèm dấu chấm thừa ("0.", "148.", "270.") (2026-07-21)
+
+**Triệu chứng:** bảng "TỔNG HỢP KHO 1/7/2026 - 31/7/2026" xuất ra có mọi số nguyên kèm dấu chấm ở cuối: cột Tồn đầu kỳ toàn `0.`, Xuất/giảm `148.`, Bánh hạt dẻ `270.`; số có phần lẻ (`9.91`, `240.1879`) thì hiển thị đúng.
+
+**Nguyên nhân:** `INVENTORY_EXCEL_QUANTITY_FORMAT = '0.####'` (`src/pages/AdminPage.tsx`). Trong mã định dạng số của Excel, **dấu chấm thập phân được in nguyên văn**, còn `#` đứng sau nó không in gì khi số không có phần lẻ — nên 148 hiện thành "148." và 0 hiện thành "0.". Đây là lỗi trình bày thuần tuý, **số liệu trong file hoàn toàn đúng**. Excel không có cách viết "ẩn dấu chấm nếu là số nguyên" trong một mã định dạng.
+
+**Bản vá:** đổi sang `'General'` (số nguyên ra "148", số lẻ ra "240.1879") và **làm tròn 4 số lẻ khi ghi ô** để không lòi đuôi dấu phẩy động (`0.30000000000000004`) hay ký hiệu khoa học. Gom vào helper `applyInventoryQuantityFormat(sheet, keys)` dùng chung cho cả 7 chỗ: Tổng hợp kho, Đối chiếu ca, Xuất kho để bán, Nhật ký kho, Tồn kho hiện tại, Phiếu kiểm kê, Danh sách đặt hàng. Cột tiền (`Doanh thu POS`) giữ `'0'` — số nguyên, vốn không có dấu chấm.
+
+**Kiểm chứng — `scripts/qa-inventory-export.mjs` (MỚI, marker `INVENTORY_EXPORT_QA_OK`):** bấm đúng nút "Xuất Excel" của màn Báo cáo kho, tải file .xlsx thật rồi mở lại bằng exceljs, khẳng định mọi cột số lượng là `General`, không mã định dạng nào kết thúc bằng `.#*` (mẫu in dấu chấm thừa), và mọi ô số đã làm tròn 4 số lẻ → `FORMAT_OK 12 cột số lượng · 476 ô số`. **Đã kiểm tra ngược:** đặt lại `'0.####'` thì script FAIL đúng chỗ (`Tổng hợp kho · Tồn đầu kỳ: mã định dạng "0.####" in dấu chấm thừa`) — test không rỗng.
+
+`npx tsc -b` exit 0; `npm run build` pass. QA cùng lượt: `MANAGEMENT_QA_OK`, `ROLE_ACCESS_QA_OK`, `APP_NAVIGATION_QA_OK`, `ATTENDANCE_QA_OK`, `HANDOVER_QA_OK`, `DEVICE_READINESS_QA_OK`.
