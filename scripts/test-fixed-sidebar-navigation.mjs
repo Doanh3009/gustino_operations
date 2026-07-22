@@ -36,7 +36,8 @@ assert.match(styles, /@media \(min-width: 641px\) and \(max-width: 1024px\)[\s\S
 assert.match(styles, /@media \(max-width: 640px\)[\s\S]*\.mobile-sidebar-open \.app-sidebar \{ transform: translateX\(0\); \}/)
 assert.match(app, /currentSection=\{mgmtSection\}/)
 assert.match(app, /ManagerDashboardPage/)
-assert.match(styles, /\.legacy-manager-workspace \.app-sidebar/)
+assert.doesNotMatch(styles, /\.legacy-manager-workspace \.app-sidebar\s*\{/, 'Manager phải dùng cùng sidebar sáng, không có khối màu riêng theo role.')
+assert.match(styles, /\.app-sidebar\s*\{[^}]*background:\s*#fff;/, 'Sidebar dùng chung phải giữ nền trắng.')
 assert.match(sidebar, /\.app-main \{[\s\S]*min-height: 100vh/)
 
 console.log('FIXED_SIDEBAR_NAVIGATION_OK')

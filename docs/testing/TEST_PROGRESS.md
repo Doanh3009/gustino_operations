@@ -1,5 +1,15 @@
 # Test Progress
 
+## 2026-07-22 — Manager light sidebar and horizontal-text audit
+
+- Owner screenshot reproduced the release mismatch: production still shows the Manager-only navy sidebar even though commit `b595fca` already removed that role-specific color block. The documented live release is the earlier `70377fa`, so the light shared sidebar had never reached production.
+- Confirmed the vertical KPI/revenue title cause in source: the mobile `.section-title` grid used `1fr auto`; two long export actions took max-content width and `overflow-wrap:anywhere` let the title fall to one character per line.
+- Local correction: responsive section titles use wrapping flex layout, a 180px title basis, bounded wrapping actions and explicit horizontal/normal word wrapping for heading and eyebrow text. Updated two stale sidebar regressions that still required the retired navy Manager theme.
+- Passed: `SECTION_TITLE_MOBILE_WRAP_OK`, `SITEWIDE_HORIZONTAL_TEXT_AUDIT_OK (72 source files)`, `ROLE_SPECIFIC_ADMIN_MANAGER_UI_OK`, `FIXED_SIDEBAR_NAVIGATION_OK`, Admin ERP/owner UX/KPI/reward/competition/Orders/report overflow checks and `UI_BUTTON_CONTRACT_OK` (225 total/219 reachable). One pre-update stale test failure was evidence of the obsolete navy expectation, not a product failure; it now matches the owner's shared-light rule.
+- Isolated release verification passed: TypeScript, 714-module build and mandatory guard (`index-CZbVOwX_.js`; `revenue-BzDOS57_.js`). Vercel prebuilt inspection found 129 files, seven expected API functions, the unchanged midnight cron and zero ZIP/SQL/env/migration/seed/purge/repair artifact. The first hidden-directory build attempt was blocked by sandbox write permissions and the first Vercel attempt by npm network/cache permissions; both were environmental and succeeded in the isolated non-hidden directory with the approved retry.
+- Production deployment `dpl_9rCoxcfRbna4Pu3r4hkxJrZp3mAS` is READY/aliased. Live index serves `index-CZbVOwX_.js` + `index-C3TRry9Y.css`; CSS/API return 200 and prove shared-light cascade order, no `.legacy-manager-workspace .app-sidebar` override, 180px title wrapping and horizontal KPI/Revenue text markers.
+- Browser setup/troubleshooting completed but discovery returned `[]`; no signed-in visual claim. No formula, permission, schema, business data, webhook or production write changed. Exact next action is one Manager hard refresh and screenshot confirmation.
+
 ## 2026-07-21 — personnel/handover/attendance/dashboard/orders incident batch
 
 - Reproduced five source-backed defects: deleted employee detail could render `null`; schedule-load failure could silently become `[]`; coarse reverse-geocode could win solely by response time; Manager Dashboard had no cloud reconciliation fallback and a snapshot hid later receipts; compact mobile order rows retained a higher-specificity three-column grid that squeezed text vertically.

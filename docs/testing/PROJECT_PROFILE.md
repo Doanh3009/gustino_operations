@@ -4,6 +4,8 @@ Last updated: 2026-07-16
 
 ## Confirmed discovery
 
+- 2026-07-22 BUG-109 production release: the Manager light-sidebar correction existed in `b595fca` but was absent from older live `70377fa`, explaining the owner's navy screenshot. Mobile KPI/revenue section titles now wrap actions below a 180px horizontal title region. Static audit of 72 source files, role/sidebar/Admin/KPI/Orders/report regressions, TypeScript, guarded 714-module build and inspected prebuild pass. Deployment `dpl_9rCoxcfRbna4Pu3r4hkxJrZp3mAS` is READY/aliased; live CSS/main/API markers pass. Signed-in screenshot confirmation remains pending because Browser discovery returned `[]`.
+
 - 2026-07-21 incident follow-up is verified locally: deleted-employee detail routes recover to the directory instead of rendering `null`; configured-shift read errors no longer become false empty state; reverse geocoding concurrently prefers street/ward detail with an 800 ms bound; Manager revenue adds post-snapshot receipts and 30-second/focus/visibility reconciliation; compact mobile order rows move status/actions to a full-width row. Twenty-seven focused regressions, TypeScript, LAN syntax, diff check and the 712-module guarded build pass. No deploy or production/external mutation occurred; Browser discovery remains `[]`.
 
 - 2026-07-20 MOD-04 isolated LAN account lifecycle/browser integration passes create, login, password reset, old/new password enforcement and deactivation, plus current Admin employee-form and staff weekly-board rendering. This does not substitute for the pending production Edge/Auth verification.

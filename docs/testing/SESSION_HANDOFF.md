@@ -1,5 +1,16 @@
 # Session Handoff
 
+## 2026-07-22 — BUG-109 deployed; signed-in hard-refresh confirmation next
+
+- Active modules: MOD-07 KPI/revenue presentation and MOD-20 responsive shell/text layout.
+- Owner evidence: signed-in production Manager sidebar is still navy. Root cause is release drift: shared light-sidebar commit `b595fca` is newer than documented live release `70377fa`. No role/permission change is required.
+- Vertical-text root cause/fix: mobile `.section-title` no longer uses squeeze-prone `1fr auto`; it wraps actions below a 180px horizontal title/eyebrow region. Source audit covers 72 `.css/.ts/.tsx` files and rejects vertical writing modes and `break-all`.
+- Last tests: focused text/sidebar checks plus Admin ERP, owner UX, KPI/reward/competition, Orders/report overflow and button contract pass. `test-fixed-sidebar-navigation.mjs` and `test-role-specific-admin-manager-ui.mjs` were stale and were corrected to enforce the owner's current shared-light rule. Isolated TypeScript/714-module build passes `PRODUCTION_SUPABASE_BUNDLE_OK`.
+- Browser: mandatory connection/troubleshooting was attempted once; `agent.browsers.list()` returned `[]`. Do not substitute another browser backend; signed-in visual verification remains pending.
+- Released from isolated `HEAD + BUG-109` only; unrelated modified `ReportPage.tsx`, `ShiftHandoverPage.tsx`, documents and handover helpers were excluded. Prebuilt inspection: 129 files, seven functions, unchanged cron, zero forbidden archive/database/env artifact.
+- Production: `dpl_9rCoxcfRbna4Pu3r4hkxJrZp3mAS` READY/aliased. Live index/CSS/server-time are 200; assets are `index-CZbVOwX_.js`, `index-C3TRry9Y.css`, and the live CSS contains the intended shared-light and horizontal-text markers with no Manager-dark override.
+- Exact next action: Manager hard-refreshes `https://gustino-operations.vercel.app` once and confirms the sidebar is white plus KPI/Revenue headings wrap horizontally. If contrary evidence remains, attach that fresh screenshot/viewport; do not redeploy the old `70377fa` artifact.
+
 ## 2026-07-21 (tiếp) — gỡ blocker deploy của BUG-106: 6/6 QA xanh trên cây làm việc hiện tại
 
 - Không sửa thêm dòng source nào trong lượt này. Chỉ chạy lại kiểm chứng để xác minh hai QA từng hỏng.

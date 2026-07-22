@@ -368,19 +368,45 @@
     box-shadow: 0 8px 24px rgba(15,31,51,.06) !important;
   }
 
+  /*
+   * Grid "1fr auto" bóp nát tiêu đề khi cụm nút bên phải rộng: cột auto lấy
+   * trọn max-content (vd 2 nút "Xuất Excel bằng chứng" / "Xuất ảnh thi đua"),
+   * cột 1fr tụt về min-content = 1 ký tự → chữ chạy DỌC (KPI doanh thu).
+   * Dùng flex-wrap: nút nào không đủ chỗ thì rơi xuống hàng dưới, tiêu đề luôn
+   * giữ tối thiểu 180px.
+   */
   .section-title {
-    display: grid !important;
-    grid-template-columns: 1fr auto;
+    display: flex !important;
+    flex-wrap: wrap !important;
     align-items: start !important;
     gap: 10px !important;
     min-width: 0 !important;
+  }
+
+  .section-title > div:first-child {
+    flex: 1 1 180px;
+    min-width: 0;
+  }
+
+  .section-title > .section-actions {
+    flex: 0 1 auto;
+    max-width: 100%;
+    justify-content: flex-start;
   }
 
   .section-title h2 {
     font-size: 17px !important;
     line-height: 1.25 !important;
     letter-spacing: 0 !important;
-    overflow-wrap: anywhere;
+    overflow-wrap: normal !important;
+    word-break: normal;
+    writing-mode: horizontal-tb;
+  }
+
+  .section-title .eyebrow {
+    overflow-wrap: normal !important;
+    word-break: normal;
+    writing-mode: horizontal-tb;
   }
 
   .eyebrow {

@@ -1,5 +1,18 @@
 # Bug Tracker
 
+## 2026-07-22 — Manager sidebar color and vertical KPI/revenue text
+
+### BUG-109 — Production Manager sidebar stays navy and narrow KPI headings collapse into vertical text
+
+- Severity: Medium.
+- Status: Deployed — live CSS/API verified; signed-in visual confirmation pending.
+- Evidence: the owner's signed-in screenshot shows the Manager sidebar still using the navy legacy theme. Repository history proves the shared light-sidebar correction is commit `b595fca`, while the documented live deployment still serves the earlier `70377fa` asset. Separately, the mobile `.section-title` override used `grid-template-columns: 1fr auto`; the KPI header's two export buttons consumed the `auto` column and global `overflow-wrap:anywhere` allowed the title column's min-content width to fall to one character.
+- Fix: retain one shared light sidebar for every role and remove stale regressions that required a Manager-only navy block. On screens up to 760px, section headers now use wrapping flex layout, keep a 180px title basis, cap the action group to the viewport, and force KPI/Revenue headings and eyebrow labels to horizontal normal word wrapping.
+- Verification: `SECTION_TITLE_MOBILE_WRAP_OK`, `SITEWIDE_HORIZONTAL_TEXT_AUDIT_OK (72 source files)`, `ROLE_SPECIFIC_ADMIN_MANAGER_UI_OK`, `FIXED_SIDEBAR_NAVIGATION_OK`, Admin/owner/KPI/competition/Orders/report responsive regressions and the 225-button contract pass. Isolated TypeScript and the 714-module production build pass with `PRODUCTION_SUPABASE_BUNDLE_OK (index-CZbVOwX_.js; revenue-BzDOS57_.js)`. The source audit finds no vertical writing mode or `word-break:break-all`.
+- Production: inspected prebuilt output has 129 files, seven expected API functions, the existing `0 17 * * *` cron and zero ZIP/SQL/env/migration/seed/purge/repair artifact. Deployment `dpl_9rCoxcfRbna4Pu3r4hkxJrZp3mAS` is READY and aliased to `https://gustino-operations.vercel.app`. Live index serves `index-CZbVOwX_.js` and `index-C3TRry9Y.css`; CSS returns 200, places the shared light sidebar after the base rule, contains no Manager-dark override and contains all 180px/horizontal-title markers. `/api/server-time` returns 200.
+- Visual limitation: in-app Browser discovery returned `[]`, so a signed-in hard-refresh screenshot remains pending and is not inferred from static/live asset checks.
+- Business/data safety: no KPI, revenue, role permission, navigation, formula, API, schema or production business row changed.
+
 ## 2026-07-21 — reported personnel/handover/attendance/dashboard/orders incident
 
 ### BUG-102 — Employee deletion can leave the Admin personnel surface blank
