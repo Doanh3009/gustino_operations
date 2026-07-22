@@ -1607,6 +1607,12 @@ button:disabled {
 }
 .attendance-sync-status i { width: 7px; height: 7px; border-radius: 50%; background: #8eb926; box-shadow: 0 0 0 3px #eaf3cf; }
 .attendance-role { padding: 9px 13px; border-radius: 999px; background: #edf5d2; color: #58750d; font-size: 10px; font-weight: 900; }
+/* Nút tải lại của màn chấm công: luôn thấy được khi một lệnh đọc hết hạn (BUG-110). */
+.attendance-reload-button {
+  padding: 9px 13px; border: 1px solid #dfe7c9; border-radius: 999px; background: white;
+  color: #58750d; font-size: 10px; font-weight: 900; cursor: pointer; white-space: nowrap;
+}
+.attendance-reload-button:disabled { opacity: .55; cursor: default; }
 .attendance-tabs {
   display: flex; gap: 7px; margin-bottom: 22px; padding: 7px; overflow-x: auto;
   border: 1px solid var(--line); border-radius: 16px; background: white;

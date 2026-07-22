@@ -1246,10 +1246,6 @@ function buildEmployeeRows(
   const rows = new Map<string, EmployeeReportRow & { productMap: Map<string, EmployeeProductRow> }>()
   const registrationByEmployee = new Map(registrations.map((item) => [item.userId, item]))
   const registrationByName = new Map(registrations.map((item) => [normalizeName(item.userName), item]))
-  const registeredRowKeys = new Set(registrations.flatMap((item) => [
-    `${item.branchId}|${item.userId}`,
-    `${item.branchId}|${normalizeName(item.userName)}`,
-  ]))
   const ensureRow = (
     branchId: string,
     employeeKey: string,
@@ -1402,11 +1398,10 @@ const productRow = current.productMap.get(allocation.productId) || {
     })
   })
 
+  // Người bán POS/nhận túi luôn được giữ, KHÔNG phụ thuộc đăng ký ca (BUG-082/BUG-110):
+  // nhân viên bán hàng nhưng quên đăng ký ca vẫn phải có tên trong báo cáo.
+  // Bộ lọc duy nhất là có phát sinh bán hàng thật (`hasSalesActivity`).
   return Array.from(rows.values())
-    .filter((row) => {
-      const branchId = row.key.split('|')[0]
-return registeredRowKeys.has(row.key) || registeredRowKeys.has(`${branchId}|${normalizeName(row.name)}`)
-    })
     .map(({ productMap, ...row }) => ({
       ...row,
       kpi: Math.min(200, Math.round(row.revenue / Math.max(1, row.targetRevenue) * 100)),

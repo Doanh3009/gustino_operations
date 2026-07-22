@@ -974,6 +974,24 @@ class AttendanceStepTimeoutError extends Error {
   }
 }
 
+/**
+ * Hạn chót cho các lệnh ĐỌC của màn chấm công. Lệnh ghi đã có hạn chót từ
+ * BUG-106, nhưng đường đọc (`fetchShiftRegistrations`/`fetchAttendanceRecords`…)
+ * thì chưa: supabase-js không đặt timeout, nên trên 4G chập chờn một request
+ * treo là `loading` không bao giờ tắt và màn chấm công quay vòng vô tận, không
+ * có ca nào để bấm. Hết hạn phải BÁO LỖI để người dùng bấm tải lại.
+ */
+export const ATTENDANCE_READ_DEADLINE_MS = 20000
+
+export function withAttendanceReadDeadline<T>(action: () => Promise<T>, label: string) {
+  return withAttendanceDeadline(
+    action,
+    ATTENDANCE_READ_DEADLINE_MS,
+    `Máy chủ chưa trả dữ liệu ${label} sau 20 giây. Hãy kiểm tra mạng rồi bấm "Tải lại" để thử lại.`,
+    408,
+  )
+}
+
 function withAttendanceDeadline<T>(
   action: () => Promise<T>,
   timeoutMs: number,

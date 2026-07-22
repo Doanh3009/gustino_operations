@@ -23,6 +23,7 @@ import {
   permittedBranchIds,
   setScheduleEntry,
   setScheduleRegistration,
+  withAttendanceReadDeadline,
 } from '../lib/attendance'
 import { useRef } from 'react'
 import { branchName as configuredBranchName, useConfiguredBranches } from '../lib/branches'
@@ -102,12 +103,14 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
         const refreshContext = attendanceRefreshContextRef.current
         const needs = attendanceDataNeeds(refreshContext.tab, canAdjustSchedule)
         const attendanceFilters = isManager && refreshContext.tab === 'report' ? refreshContext.reportRange : {}
+        // Mỗi lệnh đọc phải có hạn chót cứng: một request treo không được phép
+        // giữ màn chấm công ở trạng thái quay vòng vĩnh viễn (xem BUG-110).
         const results = await Promise.allSettled([
-          needs.has('shifts') ? fetchWorkShifts(user) : Promise.resolve(undefined),
-          needs.has('registrations') ? fetchShiftRegistrations(user, attendanceFilters) : Promise.resolve(undefined),
-          needs.has('records') ? fetchAttendanceRecords(user, attendanceFilters) : Promise.resolve(undefined),
-          needs.has('employees') ? fetchEmployees(user) : Promise.resolve(undefined),
-          needs.has('schedulePeople') ? fetchSchedulePeople(user) : Promise.resolve(undefined),
+          needs.has('shifts') ? withAttendanceReadDeadline(() => fetchWorkShifts(user), 'khung ca') : Promise.resolve(undefined),
+          needs.has('registrations') ? withAttendanceReadDeadline(() => fetchShiftRegistrations(user, attendanceFilters), 'ca đã đăng ký') : Promise.resolve(undefined),
+          needs.has('records') ? withAttendanceReadDeadline(() => fetchAttendanceRecords(user, attendanceFilters), 'chấm công') : Promise.resolve(undefined),
+          needs.has('employees') ? withAttendanceReadDeadline(() => fetchEmployees(user), 'nhân sự') : Promise.resolve(undefined),
+          needs.has('schedulePeople') ? withAttendanceReadDeadline(() => fetchSchedulePeople(user), 'danh sách lịch') : Promise.resolve(undefined),
         ])
         const [nextShifts, nextRegistrations, nextRecords, nextEmployees, nextSchedulePeople] = results
         if (nextShifts.status === 'fulfilled' && nextShifts.value) setShifts(nextShifts.value)
@@ -206,6 +209,11 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
             {supabase ? 'Đồng bộ realtime' : 'Tự đồng bộ 15 giây'}
           </span>
           <span className="attendance-role">{roleLabel(user.role)}</span>
+          {/* Khi một lệnh đọc hết hạn (BUG-110), người dùng phải có đường tải lại
+              ngay tại chỗ thay vì phải thoát ra vào lại app. */}
+          <button type="button" className="attendance-reload-button" disabled={loading} onClick={() => void refresh(true)}>
+            {loading ? 'Đang tải…' : '↻ Tải lại'}
+          </button>
         </div>
       </div>
 
