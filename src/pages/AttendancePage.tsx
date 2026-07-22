@@ -104,7 +104,7 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
         const needs = attendanceDataNeeds(refreshContext.tab, canAdjustSchedule)
         const attendanceFilters = isManager && refreshContext.tab === 'report' ? refreshContext.reportRange : {}
         // Mỗi lệnh đọc phải có hạn chót cứng: một request treo không được phép
-        // giữ màn chấm công ở trạng thái quay vòng vĩnh viễn (xem BUG-110).
+        // giữ màn chấm công ở trạng thái quay vòng vĩnh viễn (xem BUG-111).
         const results = await Promise.allSettled([
           needs.has('shifts') ? withAttendanceReadDeadline(() => fetchWorkShifts(user), 'khung ca') : Promise.resolve(undefined),
           needs.has('registrations') ? withAttendanceReadDeadline(() => fetchShiftRegistrations(user, attendanceFilters), 'ca đã đăng ký') : Promise.resolve(undefined),
@@ -209,7 +209,7 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
             {supabase ? 'Đồng bộ realtime' : 'Tự đồng bộ 15 giây'}
           </span>
           <span className="attendance-role">{roleLabel(user.role)}</span>
-          {/* Khi một lệnh đọc hết hạn (BUG-110), người dùng phải có đường tải lại
+          {/* Khi một lệnh đọc hết hạn (BUG-111), người dùng phải có đường tải lại
               ngay tại chỗ thay vì phải thoát ra vào lại app. */}
           <button type="button" className="attendance-reload-button" disabled={loading} onClick={() => void refresh(true)}>
             {loading ? 'Đang tải…' : '↻ Tải lại'}
