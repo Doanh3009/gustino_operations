@@ -17449,3 +17449,232 @@ body { background: #f7f8f5; font-size: 14px; }
   .inventory-crm-actions button small { display: none; }
   .inventory-crm-branch dl { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+
+/* ── Khả năng bán trung bình của nhân viên (06/08/2026) ──
+   Nằm trong section Thi đua nhân viên, ngay dưới bảng xếp hạng: danh sách năng
+   suất + biểu đồ so sánh với mốc trung bình đội. Namespace `.capacity-*`. */
+.capacity-board {
+  display: grid;
+  gap: 14px;
+  margin: 0 0 18px;
+  padding: 16px 18px 18px;
+  border: 1px solid #d8e2e7;
+  border-radius: 16px;
+  background: #fff;
+}
+.capacity-board-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.capacity-board-head > div:first-child { min-width: 0; flex: 1 1 320px; }
+.capacity-board-head h3 { margin: 4px 0 4px; font-size: 19px; color: var(--navy); }
+.capacity-board-head p { max-width: 720px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.capacity-metric-switch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.capacity-metric-switch button {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid #cbd7df;
+  border-radius: 999px;
+  background: #fff;
+  color: #43566a;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.capacity-metric-switch button.is-active {
+  border-color: var(--navy);
+  background: var(--navy);
+  color: #fff;
+}
+.capacity-metric-switch button:disabled { opacity: .45; cursor: not-allowed; }
+.capacity-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+.capacity-summary-grid article {
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid #e1e8ee;
+  border-radius: 14px;
+  background: #fbfcfd;
+}
+.capacity-summary-grid article.total { background: #f2f7ec; border-color: #d8e6c2; }
+.capacity-summary-grid span {
+  color: #718297;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.capacity-summary-grid strong { color: var(--navy); font-size: 19px; }
+.capacity-summary-grid small { color: var(--muted); font-size: 11px; font-weight: 700; }
+.capacity-chart {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid #e1e8ee;
+  border-radius: 14px;
+  background: #fbfcfd;
+}
+.capacity-chart > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.capacity-chart h4 { margin: 4px 0 0; color: var(--navy); font-size: 16px; }
+.capacity-average-legend {
+  color: #52667b;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.capacity-average-legend b { margin-left: 5px; color: var(--navy); font-size: 13px; }
+.capacity-chart-rows { display: grid; gap: 10px; }
+.capacity-chart-rows article {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.capacity-chart-rows article > div { min-width: 0; }
+.capacity-chart-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 5px;
+}
+.capacity-chart-line strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--navy);
+  font-size: 12.5px;
+}
+.capacity-chart-line b { color: var(--navy); font-size: 12.5px; white-space: nowrap; }
+.capacity-track {
+  position: relative;
+  display: block;
+  height: 14px;
+  border-radius: 999px;
+  background: #e8eef3;
+  overflow: hidden;
+}
+.capacity-track em {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: #9aa9b8;
+}
+.capacity-chart-rows article.above .capacity-track em { background: linear-gradient(90deg, #7fae1f, var(--green)); }
+.capacity-average-mark {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 0;
+  border-left: 2px dashed var(--navy);
+  transform: translateX(-1px);
+}
+.capacity-chart-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.capacity-list {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid #d8e2e7;
+  border-radius: 14px;
+  background: #fff;
+}
+.capacity-list-head,
+.capacity-list-row {
+  display: grid;
+  grid-template-columns: 54px minmax(160px, 1.2fr) minmax(120px, .8fr) minmax(130px, .9fr) minmax(120px, .8fr) minmax(130px, .9fr) minmax(115px, .75fr);
+  gap: 12px;
+  align-items: center;
+}
+.capacity-list-head {
+  padding: 10px 16px;
+  background: #10263c;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.capacity-list-row {
+  min-height: 62px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e5ecef;
+  color: #43566a;
+  font-size: 13px;
+}
+.capacity-list-row:last-of-type { border-bottom: 0; }
+.capacity-list-row.is-unmeasured { background: #f8fafb; color: #7d8b99; }
+.capacity-list-row > span { display: grid; gap: 2px; min-width: 0; }
+.capacity-list-row b { color: var(--navy); font-size: 14px; }
+.capacity-list-row.is-unmeasured b { color: #7d8b99; }
+.capacity-list-row small { color: var(--muted); font-size: 10.5px; font-weight: 700; }
+.capacity-list-row > span.capacity-person {
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+.capacity-person strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--navy);
+  font-size: 13px;
+}
+.capacity-value b { font-size: 15px; }
+.capacity-gap.up b { color: #4b7a10; }
+.capacity-gap.down b { color: #a8621a; }
+@media (max-width: 900px) {
+  .capacity-board { padding: 14px; }
+  .capacity-list-head { display: none; }
+  .capacity-list-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 14px;
+    padding: 14px;
+  }
+  .capacity-list-row > span {
+    grid-template-columns: minmax(84px, auto) minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+  }
+  .capacity-list-row > span::before {
+    content: attr(data-label);
+    color: #718297;
+    font-size: 9px;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+  .capacity-list-row > span > small { grid-column: 2; }
+  .capacity-list-row > span.capacity-person {
+    grid-column: 1 / -1;
+    grid-template-columns: 84px 34px minmax(0, 1fr);
+  }
+  .capacity-list-row > span.capacity-person::before { grid-column: 1; }
+  .capacity-person .employee-top-avatar { grid-column: 2; }
+  .capacity-person strong { grid-column: 3; }
+}
+@media (max-width: 560px) {
+  .capacity-metric-switch { width: 100%; }
+  .capacity-metric-switch button { flex: 1 1 140px; }
+  .capacity-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .capacity-chart { padding: 12px; }
+  .capacity-average-legend { white-space: normal; }
+  .capacity-list-row { grid-template-columns: minmax(0, 1fr); }
+  .capacity-list-row > span { grid-template-columns: minmax(76px, auto) minmax(0, 1fr); }
+  .capacity-list-row > span.capacity-person { grid-template-columns: 76px 34px minmax(0, 1fr); }
+}

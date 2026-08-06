@@ -735,3 +735,18 @@ Chuỗi BUG-112 đã lo được ca *của chính mình* (bộ dò ca, nút "Nh�
   - **3 script stale đã cập nhật cho khớp hợp đồng hiện tại:** `qa-permission-matrix.mjs` (mirror sai từ trước: thiếu `cashier` trong canUseSales, thiếu luật `orders`, và **hash trang Quản trị khi bị điều hướng là `/admin/dashboard` chứ không phải `management`**), `test-attendance-single-open-session.mjs` (đòi `recordsLoaded` — lớp bảo vệ đã chuyển sang máy chủ ở BUG-131), `test-attendance-duration-search.mjs` (đòi chuỗi công thức lương).
   - **`test-attendance-realtime-next-day.mjs` VẪN ĐỎ và đã đỏ từ trước phiên này** (ở HEAD nó crash vì `addLocalDateKeyDays` không tồn tại). Test khoá hợp đồng outbox-chặn-check-in CŨ, mâu thuẫn với quyết định BUG-131 — cần viết lại, không phải lỗi app.
 - **Deploy:** `dpl_6CXZiVcVzfLiLxvTXC7WSaGhC4Yv` READY, alias https://gustino-operations.vercel.app HTTP 200, live bundle `index-BaDx8ix_.js` (khớp build local, có `my-timesheet`, 0 tham chiếu `my-payroll`). Không migration, không ghi/sửa dòng dữ liệu prod nào.
+
+## 49. Khả năng bán trung bình của nhân viên (2026-08-06) — CHƯA DEPLOY
+> Yêu cầu: thêm chức năng tính khả năng trung bình bán được của một nhân viên, hiện thành danh sách + biểu đồ so sánh, gộp chung vào màn **Thi đua nhân viên**.
+
+- **Lý do nghiệp vụ:** bảng thi đua xếp theo TỔNG doanh thu nên ai làm nhiều ca luôn đứng trên, dù mỗi ca bán ít hơn. Khối mới trả lời câu khác: *một ca (hoặc một giờ công) của người này bán được bao nhiêu*.
+- **`src/lib/employeeSalesCapacity.ts` (mới, hàm thuần):** `buildEmployeeSalesCapacity(inputs, metric)` với 3 chỉ số `revenuePerShift | quantityPerShift | revenuePerHour`. Quy tắc:
+  - Mẫu số là **số ca có check-in** (`buildCompetitionAttendanceMetrics`) hoặc **giờ công thực tế**; thiếu mẫu số ⇒ `measured=false`, chỉ số để trống (KHÔNG lấy tổng doanh thu làm "trung bình") và xếp cuối danh sách.
+  - **Trung bình đội = tổng/tổng (bình quân gia quyền)**, không phải trung bình của các số trung bình — một người chỉ làm 1 ca may mắn không kéo lệch mốc so sánh.
+  - `diffFromTeam`/`teamRatio` = chênh lệch tuyệt đối và % so với mốc đội.
+- **`AdminPage.tsx` — section `commission` (Thi đua nhân viên):** `<EmployeeSalesCapacityBoard>` đặt ngay dưới `CompetitionClassificationTable`, ăn **đúng `competitionFilteredRows`** (cùng phân loại ngày/tháng/ca trưởng, vai trò, loại ngày, khoảng số ca) nên hai bảng không bao giờ đá nhau. Gồm: nút đổi chỉ số, 4 thẻ tổng hợp, **biểu đồ thanh ngang top 8 có vạch đứt mốc trung bình đội** (xanh lá = trên mức, xám = dưới mức), danh sách đầy đủ kèm cột "So với TB đội".
+  - Bảng **Ca trưởng theo tháng không có giờ công** (`totalHours=0`) ⇒ `capacityHasHours=false`, chỉ số "Doanh thu / giờ công" bị khóa và tự quay về "Doanh thu / ca" (`effectiveCapacityMetric`).
+  - Chỉ có nhân sự **có doanh thu** trong kỳ (kế thừa `buildCompetitionRows` vốn `filter(revenue > 0)`).
+- **CSS namespace `.capacity-*`** cuối `styles.css` (kèm breakpoint 900px/560px: bảng đổi thành thẻ có nhãn `data-label`, không cuộn ngang).
+- **QA:** `tsc -b` + `npm run build` pass (`PRODUCTION_SUPABASE_BUNDLE_OK`, `AdminPage-BWZBiyRp.js`). Test mới `scripts/test-employee-sales-capacity.mjs` (`EMPLOYEE_SALES_CAPACITY_OK`). Pass lại: COMPETITION_FAIRNESS_FILTERS_OK, ADMIN_COMPETITION_WORKBOOK_CLARITY_OK, BUSINESS_COMPETITION_KPI_OK, KPI_RANKING_REWARD_CLARITY_OK, MANAGEMENT_DAILY_COMPETITION_REALTIME_OK.
+  - **2 script ĐỎ SẴN từ trước phiên này (không liên quan):** `test-competition-drilldown.mjs` crash vì nạp `shiftCompetition.ts` bằng `data:` URL trong khi file này import `./shiftReportScope` (data URL không resolve được đường dẫn tương đối); `test-kpi-reward-reverse-audit.mjs` còn đòi `buildPayrollRows`/"thực nhận" đã bị gỡ ở §48.

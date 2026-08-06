@@ -38,6 +38,14 @@ import {
   filterCompetitionAttendanceRecords,
   type CompetitionDayType,
 } from '../lib/competitionFairness'
+import {
+  SALES_CAPACITY_METRICS,
+  buildEmployeeSalesCapacity,
+  salesCapacityMetricLabel,
+  type SalesCapacityMetric,
+  type SalesCapacityRow,
+  type SalesCapacitySummary,
+} from '../lib/employeeSalesCapacity'
 import { buildKpiEvidenceWorkbook, type KpiEvidenceSourceRow } from '../lib/kpiEvidenceWorkbook'
 import { buildDailyKpiWorkbook } from '../lib/kpiDailyWorkbook'
 import { DEFAULT_COMMISSION_RATE, DEFAULT_REVENUE_TARGET, dailyKpiBonus, employeeKpiKey, employeePeriodRevenueTarget, kpiRank, loadEmployeeRevenueTargets, fetchCommissionRules, fetchEmployeeKpiTargets, productSaleValues, saveCommissionRule, saveEmployeeRevenueTarget, soldBagQuantity, summarizeEmployeeBagSales, weeklyKpiBonus } from '../lib/commission'
@@ -385,6 +393,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [competitionDayType, setCompetitionDayType] = useState<CompetitionDayType>('all')
   const [competitionMinShifts, setCompetitionMinShifts] = useState('')
   const [competitionMaxShifts, setCompetitionMaxShifts] = useState('')
+  const [capacityMetric, setCapacityMetric] = useState<SalesCapacityMetric>('revenuePerShift')
   const [savingRoleId, setSavingRoleId] = useState('')
   const [accountBusyId, setAccountBusyId] = useState('')
   const [pendingDeleteId, setPendingDeleteId] = useState('')
@@ -1092,6 +1101,14 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     && row.shiftCount <= maximumCompetitionShifts,
   )
   const competitionRankingRows = competitionFilteredRows.slice(0, 10)
+  // Năng suất bán trung bình dùng ĐÚNG tập nhân sự của bảng xếp hạng đang xem
+  // (cùng phân loại, vai trò, loại ngày, khoảng số ca) để hai bảng không đá nhau.
+  // Bảng ca trưởng không có giờ công nên chỉ số theo giờ tự quay về theo ca.
+  const capacityHasHours = competitionFilteredRows.some((row) => row.totalHours > 0)
+  const effectiveCapacityMetric: SalesCapacityMetric = capacityMetric === 'revenuePerHour' && !capacityHasHours
+    ? 'revenuePerShift'
+    : capacityMetric
+  const salesCapacity = buildEmployeeSalesCapacity(competitionFilteredRows, effectiveCapacityMetric)
   const competitionExportRows = (competitionRankingMode === 'leaders' ? leaderCompetitionRows : monthlyCompetitionRows)
     .filter((row) =>
       (effectiveCompetitionRole === 'all' || row.role === effectiveCompetitionRole)
@@ -2810,6 +2827,13 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 sessions={competitionEvidenceSessions}
                 receipts={competitionEvidenceReceipts}
               />
+              <EmployeeSalesCapacityBoard
+                summary={salesCapacity}
+                metric={effectiveCapacityMetric}
+                onMetricChange={setCapacityMetric}
+                hasHours={capacityHasHours}
+                scopeLabel={competitionRankingTitle}
+              />
               <div className="adm-list">
                 {commissionRows.map((row) => (
                   <article className="adm-row" key={`${row.branchId}-${row.employeeKey}`}>
@@ -3968,6 +3992,186 @@ function receiptLineSummary(lines: SalesReceipt['lines']) {
   return lines.length
     ? lines.map((line) => `${formatNumber(line.quantity)} × ${line.productName}`).join(', ')
     : 'Hóa đơn không có dòng sản phẩm'
+}
+
+function formatCapacityValue(metric: SalesCapacityMetric, value: number) {
+  return metric === 'quantityPerShift' ? `${formatNumber(value)} sản phẩm` : formatMoney(value)
+}
+
+/** Dòng phụ luôn cho thấy chỉ số còn lại để quản lý không phải đổi tab mới so được. */
+function capacitySecondaryLabel(metric: SalesCapacityMetric, row: SalesCapacityRow) {
+  return metric === 'revenuePerShift'
+    ? `${formatNumber(row.quantityPerShift)} sản phẩm / ca`
+    : `${formatMoney(row.revenuePerShift)} / ca`
+}
+
+/**
+ * Bảng thi đua xếp theo TỔNG doanh thu nên người làm nhiều ca luôn đứng trên.
+ * Khối này trả lời câu hỏi khác: "một ca (hoặc một giờ công) của người này bán
+ * được bao nhiêu" — danh sách + biểu đồ so sánh với mốc trung bình của cả đội.
+ */
+function EmployeeSalesCapacityBoard({
+  summary,
+  metric,
+  onMetricChange,
+  hasHours,
+  scopeLabel,
+}: {
+  summary: SalesCapacitySummary
+  metric: SalesCapacityMetric
+  onMetricChange: (metric: SalesCapacityMetric) => void
+  hasHours: boolean
+  scopeLabel: string
+}) {
+  const chartRows = summary.measuredRows.slice(0, 8)
+  const chartMax = Math.max(summary.bestValue, summary.teamAverage, 1)
+  const averageMarker = Math.min(100, summary.teamAverage / chartMax * 100)
+  const aboveAverage = summary.measuredRows.filter((row) => row.value >= summary.teamAverage).length
+
+  return <section className="capacity-board" aria-label="Khả năng bán trung bình của nhân viên">
+    <div className="capacity-board-head">
+      <div>
+        <span className="eyebrow dark">NĂNG SUẤT BÁN HÀNG</span>
+        <h3>Khả năng bán trung bình của một nhân viên</h3>
+        <p>
+          {scopeLabel} · lấy doanh thu chia cho số ca có check-in (hoặc giờ công thực tế) nên người làm ít ca vẫn
+          so sánh được với người làm nhiều ca. Chỉ tính nhân sự có doanh thu trong kỳ đang lọc.
+        </p>
+      </div>
+      <div className="capacity-metric-switch" role="group" aria-label="Chỉ số năng suất">
+        {SALES_CAPACITY_METRICS.map((item) => {
+          const disabled = item.needsHours && !hasHours
+          return <button
+            key={item.id}
+            type="button"
+            className={metric === item.id ? 'is-active' : ''}
+            aria-pressed={metric === item.id}
+            disabled={disabled}
+            title={disabled ? 'Bảng ca trưởng chưa có giờ công chấm công nên không tính được chỉ số này.' : item.hint}
+            onClick={() => onMetricChange(item.id)}
+          >{item.label}</button>
+        })}
+      </div>
+    </div>
+
+    {!summary.measuredRows.length
+      ? <p className="empty-copy">Chưa có nhân sự nào vừa có doanh thu vừa có ca ghi nhận trong bộ lọc này.</p>
+      : <>
+        <div className="capacity-summary-grid">
+          <article>
+            <span>Trung bình đội</span>
+            <strong>{formatCapacityValue(metric, summary.teamAverage)}</strong>
+            <small>{metric === 'revenuePerHour'
+              ? `${formatNumber(summary.totalHours)} giờ công`
+              : `${formatNumber(summary.totalShifts)} ca có check-in`}</small>
+          </article>
+          <article>
+            <span>Cao nhất</span>
+            <strong>{formatCapacityValue(metric, summary.bestValue)}</strong>
+            <small>{summary.bestRow?.employeeName || '—'}</small>
+          </article>
+          <article>
+            <span>Trên mức trung bình</span>
+            <strong>{aboveAverage}/{summary.measuredRows.length}</strong>
+            <small>người tính được năng suất</small>
+          </article>
+          <article className="total">
+            <span>Tổng doanh thu</span>
+            <strong>{formatMoney(summary.totalRevenue)}</strong>
+            <small>{formatNumber(summary.totalSoldQuantity)} sản phẩm</small>
+          </article>
+        </div>
+
+        <div className="capacity-chart">
+          <header>
+            <div>
+              <span className="eyebrow dark">BIỂU ĐỒ SO SÁNH</span>
+              <h4>{salesCapacityMetricLabel(metric)} theo nhân viên</h4>
+            </div>
+            <span className="capacity-average-legend">Trung bình đội <b>{formatCapacityValue(metric, summary.teamAverage)}</b></span>
+          </header>
+          <div className="capacity-chart-rows">
+            {chartRows.map((row, index) => (
+              <article
+                key={`${row.branchId}-${row.employeeKey}`}
+                className={row.value >= summary.teamAverage ? 'above' : 'below'}
+              >
+                <span className={`leaderboard-rank rank-${index + 1}`}>{index + 1}</span>
+                <div>
+                  <div className="capacity-chart-line">
+                    <strong title={row.employeeName}>{row.employeeName}</strong>
+                    <b>{formatCapacityValue(metric, row.value)}</b>
+                  </div>
+                  <i className="capacity-track">
+                    <em style={{ width: `${Math.max(4, Math.min(100, row.value / chartMax * 100))}%` }} />
+                    <span className="capacity-average-mark" style={{ left: `${averageMarker}%` }} aria-hidden="true" />
+                  </i>
+                </div>
+              </article>
+            ))}
+          </div>
+          <p className="capacity-chart-note">
+            Cột xanh lá là người bán trên mức trung bình đội, cột xám là dưới mức. Vạch đứt là mốc trung bình
+            {' '}{formatCapacityValue(metric, summary.teamAverage)}. Biểu đồ hiển thị {chartRows.length} người dẫn đầu,
+            danh sách bên dưới có đủ {summary.rows.length} người.
+          </p>
+        </div>
+
+        <div className="capacity-list" role="table" aria-label={`Danh sách ${salesCapacityMetricLabel(metric)} theo nhân viên`}>
+          <div className="capacity-list-head" role="row">
+            <span>Hạng</span>
+            <span>Nhân sự</span>
+            <span>Chi nhánh</span>
+            <span>{salesCapacityMetricLabel(metric)}</span>
+            <span>So với TB đội</span>
+            <span>Tổng doanh thu</span>
+            <span>Ca / giờ công</span>
+          </div>
+          {summary.rows.map((row, index) => (
+            <div
+              key={`${row.branchId}-${row.employeeKey}`}
+              className={`capacity-list-row${row.measured ? '' : ' is-unmeasured'}`}
+              role="row"
+            >
+              <span data-label="Hạng" role="cell">
+                <b className={`leaderboard-rank rank-${index + 1}`}>{row.measured ? index + 1 : '—'}</b>
+              </span>
+              <span data-label="Nhân sự" role="cell" className="capacity-person">
+                <i className="employee-top-avatar">{row.avatarUrl
+                  ? <img src={row.avatarUrl} alt="" />
+                  : row.employeeName.slice(0, 1).toUpperCase()}</i>
+                <strong>{row.employeeName}</strong>
+              </span>
+              <span data-label="Chi nhánh" role="cell">{branchName(row.branchId)}</span>
+              <span data-label={salesCapacityMetricLabel(metric)} role="cell" className="capacity-value">
+                <b>{row.measured ? formatCapacityValue(metric, row.value) : '—'}</b>
+                <small>{row.measured ? capacitySecondaryLabel(metric, row) : 'Chưa có ca/giờ công để tính trung bình'}</small>
+              </span>
+              <span
+                data-label="So với TB đội"
+                role="cell"
+                className={`capacity-gap${!row.measured ? '' : row.value >= summary.teamAverage ? ' up' : ' down'}`}
+              >
+                <b>{row.measured && summary.teamAverage > 0
+                  ? `${row.teamRatio >= 100 ? '+' : '−'}${formatNumber(Math.abs(row.teamRatio - 100))}%`
+                  : '—'}</b>
+                <small>{row.measured && summary.teamAverage > 0
+                  ? `${row.diffFromTeam >= 0 ? '+' : '−'}${formatCapacityValue(metric, Math.abs(row.diffFromTeam))}`
+                  : 'Chưa đủ dữ liệu so sánh'}</small>
+              </span>
+              <span data-label="Tổng doanh thu" role="cell">
+                <b>{formatMoney(row.revenue)}</b>
+                <small>{formatNumber(row.soldQuantity)} sản phẩm</small>
+              </span>
+              <span data-label="Ca / giờ công" role="cell">
+                <b>{formatNumber(row.shiftCount)} ca</b>
+                <small>{row.totalHours > 0 ? formatDecimalHoursAsDuration(row.totalHours) : 'Chưa có giờ công'}</small>
+              </span>
+            </div>
+          ))}
+        </div>
+      </>}
+  </section>
 }
 
 function EmployeeCompetitionPoster({
