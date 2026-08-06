@@ -9,11 +9,10 @@ export interface AdminRouteDefinition {
 export const ADMIN_ROUTE_MAP: AdminRouteDefinition[] = [
   { section: 'overview', path: '/admin/dashboard', label: 'Tổng quan' },
   { section: 'revenue', path: '/admin/orders', label: 'Đơn hàng & doanh thu' },
-  { section: 'commission', path: '/admin/sales-performance', label: 'Hiệu suất bán hàng' },
+  { section: 'commission', path: '/admin/sales-performance', label: 'Thi đua nhân viên' },
   { section: 'inventory', path: '/admin/inventory', label: 'Kho' },
   { section: 'accounts', path: '/admin/employees', label: 'Nhân sự & Chi nhánh' },
   { section: 'attendance', path: '/admin/attendance', label: 'Chấm công' },
-  { section: 'payroll', path: '/admin/payroll', label: 'Lương & KPI' },
   { section: 'requests', path: '/admin/purchase-orders', label: 'Đơn hàng bếp' },
 ]
 

@@ -116,17 +116,75 @@ export function productById(productId: string) {
     || deletedProductsCache.get(productId)
 }
 
+// Phiếu xuất kho do chính hóa đơn POS sinh ra (RPC `post_pos_receipt_stock` /
+// LAN `POST /api/sales-receipts`). Ghi chú bắt đầu bằng tiền tố này để phân biệt
+// với phiếu xuất kho ca trưởng tự lập. Doanh thu KHÔNG được đọc lại nhóm phiếu
+// này: hóa đơn mới là nguồn sự thật, đọc cả hai là cộng đôi.
+export const POS_STOCK_NOTE_PREFIX = '[POS '
+
+export function isPosGeneratedSaleMovement(movement: { type: string; note?: string }) {
+  return movement.type === 'sale_out' && (movement.note || '').startsWith(POS_STOCK_NOTE_PREFIX)
+}
+
+/** Món menu đã gán công thức thì bán ra mới trừ được kho. */
+export function menuRecipeLines(product: Pick<Product, 'recipe'>) {
+  return (product.recipe || []).filter((line) => line.productId && Number(line.quantity) > 0)
+}
+
+export function hasMenuRecipe(product: Pick<Product, 'recipe'>) {
+  return menuRecipeLines(product).length > 0
+}
+
+/** Món đang bán trên POS nhưng chưa gán công thức → bán ra không trừ kho được. */
+export function getSaleProductsWithoutRecipe(): ConfiguredProduct[] {
+  return getSaleProducts().filter((product) => !hasMenuRecipe(product))
+}
+
+/**
+ * Lượng kho phải trừ cho một hóa đơn POS: bung công thức của từng món rồi gom theo SKU.
+ * Món chưa gán công thức không đóng góp gì (vẫn bán được, chỉ là không trừ được kho).
+ * Đây là bản đối chiếu của RPC `post_pos_receipt_stock` phía Supabase.
+ */
+export function posStockDeductionByProduct(lines: Array<{ productId: string; quantity: number }>) {
+  const byProduct = new Map<string, number>()
+  lines.forEach((line) => {
+    const menuProduct = productById(line.productId)
+    if (!menuProduct) return
+    menuRecipeLines(menuProduct).forEach((component) => {
+      const quantity = Number(component.quantity) * Number(line.quantity)
+      if (!Number.isFinite(quantity) || quantity <= 0) return
+      const total = (byProduct.get(component.productId) || 0) + quantity
+      byProduct.set(component.productId, Math.round(total * 10000) / 10000)
+    })
+  })
+  return byProduct
+}
+
+// Món trong menu bán = thành phẩm đóng gói sẵn, có giá, bán theo túi/hộp/phần (không phải kg rời).
+export function isMenuProduct(product: Pick<Product, 'category' | 'unit'> & { price?: number }) {
+  return product.category === 'finished'
+    && product.unit !== 'kg'
+    && Number(product.price || 0) > 0
+}
+
+// KHO chỉ quản lý nguyên vật liệu, bao bì và thành phẩm chế biến (hàng bàn giao giữa các ca).
+// Từ khi bỏ chia túi (§34 CODEMAP), món trong menu KHÔNG đi qua kho nữa: POS bán thẳng bằng
+// hóa đơn, không sinh stock movement; tồn thành phẩm chốt bằng kiểm kê hàng rời cuối ca.
+// Vì vậy mọi màn hình kho phải lọc bỏ món menu, nếu không danh sách tồn đầy SKU luôn bằng 0.
+export function isWarehouseProduct(product: Pick<Product, 'category' | 'unit'> & { price?: number }) {
+  return !isMenuProduct(product)
+}
+
+export function getWarehouseProducts(): ConfiguredProduct[] {
+  return getProducts().filter((product) => isWarehouseProduct(product))
+}
+
 // Menu POS của nhân viên = đúng những gì admin cấu hình ở Control Center:
 // thành phẩm đang bật (active), bán theo đơn vị đóng gói (không phải kg rời) và có giá > 0.
 // Admin bật/tắt món hoặc đổi giá là menu nhân viên đổi theo (một nguồn sự thật).
 export function getSaleProducts() {
   return getProducts()
-    .filter((product) =>
-      product.active !== false
-      && product.category === 'finished'
-      && product.unit !== 'kg'
-      && Number(product.price || 0) > 0,
-    )
+    .filter((product) => product.active !== false && isMenuProduct(product))
 }
 
 export function configuredProductPrice(productId: string, fallback = 0) {

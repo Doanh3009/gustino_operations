@@ -1,9 +1,22 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { useRef } from 'react'
 import { canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseSales, displayUserName, roleLabel } from '../lib/access'
 import { toggleLang, useLang } from '../lib/i18n'
 import { heartbeatActiveUser } from '../lib/activeUsers'
-import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
-import { localDateKey } from '../lib/dates'
+import {
+  fetchAttendanceRecords,
+  fetchOwnOpenAttendanceRecords,
+  fetchShiftRegistrations,
+  findAttendanceRecordForRegistration,
+  isCheckInDue,
+  isCheckOutDue,
+  withAttendanceReadDeadline,
+} from '../lib/attendance'
+import { addLocalDateKeyDays, localDateKey } from '../lib/dates'
+import { burstGuard } from '../lib/browser'
+import { shouldUseLanApi, supabase, uniqueChannelName } from '../lib/supabase'
+import { ATTENDANCE_OUTBOX_EVENT, inspectAttendanceOutbox } from '../lib/attendanceOutbox'
+import { pendingHandoverReportForToday, REPORT_PENDING_EVENT, type HandoverReportRequest } from '../lib/handoverReportRequest'
 import type { AppUser } from '../types'
 import { AppFooter } from './AppFooter'
 
@@ -13,6 +26,7 @@ export type Page =
   | 'today'
   | 'sales'
   | 'my-records'
+  | 'my-timesheet'
   | 'report-archive'
   | 'restaurant'
   | 'report'
@@ -25,7 +39,6 @@ export type Page =
   | 'manager-business'
   | 'manager-inventory'
   | 'manager-attendance'
-  | 'manager-payroll'
   | 'manager-requests'
   | 'admin-accounts'
   | 'control'
@@ -54,12 +67,13 @@ interface NavItem {
 const ADMIN_NAV: NavItem[] = [
   { id: 'management', section: 'overview', label: 'Tổng quan', icon: <IconDashboard />, canShow: () => true },
   { id: 'management', section: 'revenue', label: 'Doanh thu', icon: <IconChart />, canShow: () => true },
-  { id: 'orders', label: 'Đơn hàng', icon: <IconClipboard />, canShow: () => true },
+  // Admin không đặt hàng — chỉ theo dõi/lọc/xuất đơn của các chi nhánh ở mục Đặt hàng
+  // trong trang Quản trị, nên mục này trỏ vào đó thay vì trang đặt hàng của chi nhánh.
+  { id: 'management', section: 'requests', label: 'Đơn hàng', icon: <IconClipboard />, canShow: () => true },
   { id: 'management', section: 'inventory', label: 'Kho hàng', icon: <IconBox />, canShow: () => true },
   { id: 'management', section: 'accounts', label: 'Nhân sự', icon: <IconUsers />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'management', section: 'attendance', label: 'Chấm công', icon: <IconClock />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'management', section: 'commission', label: 'KPI nhân viên', icon: <IconChart />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'management', section: 'payroll', label: 'Lương', icon: <IconPayroll />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'management', section: 'commission', label: 'Thi đua nhân viên', icon: <IconChart />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'report-archive', label: 'Báo cáo', icon: <IconReport />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'control', label: 'Cài đặt', icon: <IconSettings />, canShow: (user) => canUseAdmin(user.role) },
 ]
@@ -96,6 +110,13 @@ const NAV_ITEMS: NavItem[] = [
     shortLabel: 'Lịch sử',
     icon: <IconHistory />,
     canShow: (user) => user.role === 'staff' || user.role === 'shift_leader',
+  },
+  {
+    id: 'my-timesheet',
+    label: 'Xem công',
+    shortLabel: 'Công',
+    icon: <IconClock />,
+    canShow: (user) => user.role === 'staff' || user.role === 'shift_leader' || user.role === 'supmt',
   },
   {
     id: 'handover',
@@ -151,7 +172,6 @@ const EN_NAV_LABELS: Partial<Record<Page, { label: string; shortLabel?: string }
   'manager-inventory': { label: 'Inventory' },
   attendance: { label: 'Schedule', shortLabel: 'Schedule' },
   'manager-attendance': { label: 'Timesheets', shortLabel: 'Time' },
-  'manager-payroll': { label: 'Payroll & KPI', shortLabel: 'Payroll' },
   'report-archive': { label: 'Report archive', shortLabel: 'Reports' },
   'manager-requests': { label: 'Orders', shortLabel: 'Orders' },
   'admin-accounts': { label: 'People', shortLabel: 'People' },
@@ -160,6 +180,7 @@ const EN_NAV_LABELS: Partial<Record<Page, { label: string; shortLabel?: string }
   today: { label: 'Today' },
   sales: { label: 'Sales' },
   'my-records': { label: 'History & reports', shortLabel: 'History' },
+  'my-timesheet': { label: 'My timesheet', shortLabel: 'Timesheet' },
   handover: { label: 'Shift handover', shortLabel: 'Handover' },
   inventory: { label: 'Inventory' },
   report: { label: 'Close shift' },
@@ -174,6 +195,10 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   const [sundayReminderDismissed, setSundayReminderDismissed] = useState(false)
   const [attendanceReminderDismissed, setAttendanceReminderDismissed] = useState(false)
   const [attendanceReminder, setAttendanceReminder] = useState<'check-in' | 'check-out' | null>(null)
+  const [attendanceReminderDay, setAttendanceReminderDay] = useState('')
+  const attendanceReminderRequestRef = useRef(0)
+  const [reportPending, setReportPending] = useState<HandoverReportRequest | null>(null)
+  const [reportReminderDismissed, setReportReminderDismissed] = useState(false)
   const baseNav = user.role === 'admin'
     ? ADMIN_NAV
     : user.role === 'manager'
@@ -204,6 +229,12 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
     && (user.role === 'staff' || user.role === 'shift_leader')
     && page !== 'attendance'
     && !attendanceReminderDismissed
+  // Bàn giao ca xong mà chưa chốt/gửi báo cáo là chuyện hay quên nhất; nhắc ở MỌI
+  // trang cho tới khi báo cáo được gửi (cờ localStorage do màn Báo cáo xoá khi xong).
+  const showReportReminder = Boolean(reportPending)
+    && user.role === 'shift_leader'
+    && page !== 'report'
+    && !reportReminderDismissed
 
   useEffect(() => {
     let active = true
@@ -221,40 +252,117 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
 
   useEffect(() => {
     if (user.role !== 'staff' && user.role !== 'shift_leader') return
+    if (page === 'attendance') {
+      setAttendanceReminder(null)
+      return
+    }
     let active = true
-    const today = localDateKey()
     const refreshReminder = async () => {
+      const requestId = ++attendanceReminderRequestRef.current
+      const today = localDateKey()
       try {
-        const [registrations, records] = await Promise.all([
-          fetchShiftRegistrations(user, { branchId: user.branchId, userId: user.id, from: today, to: today }),
-          fetchAttendanceRecords(user, { branchId: user.branchId, userId: user.id, from: today, to: today }),
+        // Ngày phải tính LẠI mỗi lượt: máy để app qua đêm sẽ giữ mãi ngày hôm qua
+        // và nhắc theo lịch cũ (BUG-113).
+        const from = addLocalDateKeyDays(today, -1)
+        const now = new Date()
+        const [registrations, datedRecords, openRecords, outboxOps] = await Promise.all([
+          withAttendanceReadDeadline(
+            () => fetchShiftRegistrations(user, { userId: user.id, from, to: today }),
+            'ca cần nhắc',
+          ),
+          withAttendanceReadDeadline(
+            () => fetchAttendanceRecords(user, { userId: user.id, from, to: today }),
+            'trạng thái chấm công cần nhắc',
+          ),
+          withAttendanceReadDeadline(
+            () => fetchOwnOpenAttendanceRecords(user),
+            'phiên chấm công đang mở',
+          ),
+          // BUG-131: máy IndexedDB lỗi vẫn phải được nhắc chấm công — dùng bản
+          // đọc không-throw; op RAM đã biết vẫn được tính là "đang chờ".
+          inspectAttendanceOutbox(user.id).then((snapshot) => snapshot.ops),
         ])
-        if (!active) return
+        if (!active || requestId !== attendanceReminderRequestRef.current) return
+        const records = Array.from(new Map([...datedRecords, ...openRecords].map((record) => [record.id, record])).values())
         const own = registrations.filter((item) => item.userId === user.id && item.status !== 'rejected')
+        const hasOwnOpenRecord = records.some((item) => item.userId === user.id && !item.checkOutTime)
+        const hasPendingCheckIn = outboxOps.some((item) =>
+          item.userId === user.id && item.kind === 'check-in' && item.deliveryState !== 'needs-review',
+        )
+        // Chỉ giục check-out khi ca SẮP/ĐÃ tan, không giục ngay sau lúc check-in.
+        // Quá hạn tự check-out thì cũng thôi giục: lúc đó phải đi đường đơn chỉnh công.
         const openRecord = own.some((item) => {
           const record = findAttendanceRecordForRegistration(records, item)
-          return Boolean(record && !record.checkOutTime)
+          return Boolean(record && !record.checkOutTime) && isCheckOutDue(item, now)
         })
-        const waitingCheckIn = own.some((item) => !findAttendanceRecordForRegistration(records, item))
+        const waitingCheckIn = !hasOwnOpenRecord && !hasPendingCheckIn && own.some((item) =>
+          item.workDate === today
+          && item.userId === user.id
+          && item.status !== 'rejected'
+          && !findAttendanceRecordForRegistration(records, item)
+          && isCheckInDue(item, now),
+        )
+        setAttendanceReminderDay(today)
         setAttendanceReminder(openRecord ? 'check-out' : waitingCheckIn ? 'check-in' : null)
       } catch {
-        // Popup là nhắc việc hỗ trợ; lỗi mạng không được làm crash toàn bộ AppShell.
+        // Không giữ popup cũ khi dữ liệu không còn đáng tin: đặc biệt qua nửa đêm,
+        // một nhắc Check-in cũ nguy hiểm hơn việc tạm thời không nhắc.
+        if (!active || requestId !== attendanceReminderRequestRef.current) return
+        setAttendanceReminderDay(today)
+        setAttendanceReminder(null)
       }
     }
     void refreshReminder()
-    const timer = window.setInterval(refreshReminder, 30000)
+    const timer = window.setInterval(refreshReminder, shouldUseLanApi(user) ? 30000 : 60000)
     const reload = () => void refreshReminder()
+    const reloadSoon = burstGuard(reload, 400)
     window.addEventListener('focus', reload)
     window.addEventListener('gustino-attendance-updated', reload)
+    window.addEventListener(ATTENDANCE_OUTBOX_EVENT, reload)
+    window.addEventListener('storage', reload)
+    const client = shouldUseLanApi(user) ? null : supabase
+    const channel = client
+      ?.channel(uniqueChannelName(`attendance-reminder:${user.id}`))
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'shift_registrations', filter: `user_id=eq.${user.id}`,
+      }, reloadSoon)
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'attendance_records', filter: `user_id=eq.${user.id}`,
+      }, reloadSoon)
+      .subscribe()
     return () => {
       active = false
+      attendanceReminderRequestRef.current += 1
+      reloadSoon.cancel()
       window.clearInterval(timer)
       window.removeEventListener('focus', reload)
       window.removeEventListener('gustino-attendance-updated', reload)
+      window.removeEventListener(ATTENDANCE_OUTBOX_EVENT, reload)
+      window.removeEventListener('storage', reload)
+      if (client && channel) void client.removeChannel(channel)
     }
-  }, [user.id, user.role, user.branchId])
+  }, [user.id, user.role, user.branchId, page])
 
-  useEffect(() => setAttendanceReminderDismissed(false), [attendanceReminder])
+  useEffect(() => setAttendanceReminderDismissed(false), [attendanceReminder, attendanceReminderDay])
+
+  useEffect(() => {
+    if (user.role !== 'shift_leader') {
+      setReportPending(null)
+      return
+    }
+    const sync = () => setReportPending(pendingHandoverReportForToday(localDateKey()))
+    sync()
+    window.addEventListener(REPORT_PENDING_EVENT, sync)
+    window.addEventListener('focus', sync)
+    window.addEventListener('storage', sync)
+    return () => {
+      window.removeEventListener(REPORT_PENDING_EVENT, sync)
+      window.removeEventListener('focus', sync)
+      window.removeEventListener('storage', sync)
+    }
+  }, [user.role, page])
+
+  useEffect(() => setReportReminderDismissed(false), [reportPending?.shiftId, reportPending?.sequence])
 
   return (
     <div className={`app-shell${sidebarOpen ? ' mobile-sidebar-open' : ''}${user.role === 'admin' && (page === 'management' || page === 'control') ? ' management-workspace' : ''}${user.role === 'manager' ? ' legacy-manager-workspace' : ''}${page === 'sales' ? ' pos-workspace' : ''}`} onClick={() => { setMenuOpen(false); setSidebarOpen(false) }}>
@@ -379,7 +487,20 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
         </aside>
       )}
 
-      {showSundayReminder && !showAttendanceReminder && (
+      {showReportReminder && !showAttendanceReminder && (
+        <aside className="sunday-shift-popup report-pending-popup" role="dialog" aria-label="Nhắc gửi báo cáo ca">
+          <button className="sunday-shift-popup-close" type="button" aria-label="Đóng" onClick={() => setReportReminderDismissed(true)}>×</button>
+          <img className="attendance-capybara-image attendance-popup-capybara" src="/mascots/capy-attendance-camera.png" alt="" width="256" height="256" decoding="async" aria-hidden="true" />
+          <div>
+            <small>CAPY NHẮC GỬI BÁO CÁO ✨</small>
+            <strong>{reportPending?.sequence === 2 ? 'Báo cáo Ca tối + Tổng ngày chưa gửi' : 'Báo cáo Ca sáng chưa gửi'}</strong>
+            <span>Bạn đã bàn giao ca nhưng chưa chốt &amp; gửi báo cáo lên Zalo. Mở màn Báo cáo để gửi ngay nhé.</span>
+          </div>
+          <button type="button" onClick={() => { setReportReminderDismissed(true); onNavigate('report') }}>Gửi báo cáo ngay</button>
+        </aside>
+      )}
+
+      {showSundayReminder && !showAttendanceReminder && !showReportReminder && (
         <aside className="sunday-shift-popup" role="dialog" aria-label="Nhắc đăng ký ca tuần mới">
           <button className="sunday-shift-popup-close" type="button" aria-label="Đóng" onClick={() => setSundayReminderDismissed(true)}>×</button>
           <CapybaraMascot />

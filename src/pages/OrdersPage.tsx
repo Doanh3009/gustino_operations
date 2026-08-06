@@ -114,7 +114,9 @@ export function OrdersPage({ user }: Props) {
       void refresh(false)
     }
     window.addEventListener('focus', refreshSilently)
-    window.addEventListener('visibilitychange', refreshSilently)
+    window.addEventListener('online', refreshSilently)
+    // visibilitychange là sự kiện của document (trên window chỉ chạy nhờ bubbling).
+    document.addEventListener('visibilitychange', refreshSilently)
     const timer = window.setInterval(refreshSilently, 30000)
     const client = supabase
     const channel = client
@@ -129,7 +131,8 @@ export function OrdersPage({ user }: Props) {
       : null
     return () => {
       window.removeEventListener('focus', refreshSilently)
-      window.removeEventListener('visibilitychange', refreshSilently)
+      window.removeEventListener('online', refreshSilently)
+      document.removeEventListener('visibilitychange', refreshSilently)
       window.clearInterval(timer)
       if (client && channel) void client.removeChannel(channel)
     }
@@ -405,18 +408,18 @@ export function OrdersPage({ user }: Props) {
               <tbody>
                 {activeRequests.length ? activeRequests.map((request, index) => (
                   <tr key={request.id}>
-                    <td>{index + 1}</td>
-                    <td>
+                    <td data-label="STT">{index + 1}</td>
+                    <td data-label="Tên hàng">
                       <strong>{request.productName}</strong>
                       {request.note ? <small>{request.note}</small> : null}
                     </td>
-                    <td className="num">{formatNumber(request.quantity)} {request.unit}</td>
-                    <td>
+                    <td className="num" data-label="Số lượng">{formatNumber(request.quantity)} {request.unit}</td>
+                    <td data-label="Ngày đặt / nhận">
                       <small>Ngày đặt: {formatDateTime(request.createdAt)}</small>
                       <strong>{formatRequestedDelivery(request)}</strong>
                     </td>
-                    <td><span className={`order-report-status ${request.status}`}>{statusLabel(request.status)}</span></td>
-                    <td>{request.requestedByName}</td>
+                    <td data-label="Trạng thái"><span className={`order-report-status ${request.status}`}>{statusLabel(request.status)}</span></td>
+                    <td data-label="Người đặt">{request.requestedByName}</td>
                   </tr>
                 )) : (
                   <tr><td colSpan={6} className="order-report-empty">Chưa có đơn nào đang xử lý. Gửi yêu cầu đặt hàng để phiếu tự điền tên hàng.</td></tr>

@@ -25,6 +25,12 @@ export function canUseKitchen(role: Role) {
   return KITCHEN_ROLES.includes(role)
 }
 
+// SUP MT (giám sát) + admin: được XEM bảng lương/bảng công của mọi người để đối chiếu
+// và trả lời phản hồi về kế toán. SUP MT không sửa được lương — chỉ admin sửa.
+export function canReviewPayroll(role: Role) {
+  return role === 'admin' || role === 'supmt'
+}
+
 export function normalizeRole(role: Role): Role {
   return role
 }
@@ -51,6 +57,7 @@ export function roleLabel(role: Role, lang: Lang = getLang()) {
     return {
       admin: 'System Admin',
       manager: 'Manager',
+      supmt: 'Supervisor (SUP MT)',
       shift_leader: 'Shift Leader',
       staff: 'Staff',
       cashier: 'POS Cashier',
@@ -61,6 +68,7 @@ export function roleLabel(role: Role, lang: Lang = getLang()) {
   return {
     admin: tx.roleAdmin,
     manager: tx.roleManager,
+    supmt: 'Giám sát (SUP MT)',
     shift_leader: tx.roleShiftLeader,
     staff: tx.roleStaff,
     cashier: 'Thu ngân POS',

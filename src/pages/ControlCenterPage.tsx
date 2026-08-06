@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { baseConfiguredProducts, productById, PROCESS_OUTPUT_OPTIONS_BY_INPUT } from '../lib/constants'
+import { baseConfiguredProducts, hasMenuRecipe, productById, PROCESS_OUTPUT_OPTIONS_BY_INPUT } from '../lib/constants'
 import { createId, downloadBlob } from '../lib/browser'
 import { fetchSalesReceiptsRange, type SalesReceipt } from '../lib/salesReceipts'
 import { fetchConfiguredBranchRows, hardDeleteConfiguredBranch, readConfiguredBranchRows, syncConfiguredBranchRows, writeConfiguredBranchRows, type ConfigBranch } from '../lib/branches'
 import { deleteConfiguredProduct, fetchConfiguredProducts, syncConfiguredProducts } from '../lib/products'
+import { formatQuantity } from '../lib/inventoryEntry'
 import { ensureDefaultWorkShifts } from '../lib/attendance'
 import { shouldUseLanApi, supabase } from '../lib/supabase'
 import type { AppUser, Product, ProductRecipeLine, Role } from '../types'
@@ -91,6 +92,7 @@ const MODULES = [
 
 const ROLE_LABELS: Record<PermissionRole, string> = {
   manager: 'Quản lý',
+  supmt: 'Giám sát (SUP MT)',
   shift_leader: 'Ca trưởng',
   staff: 'Nhân viên bán hàng',
   cashier: 'Thu ngân POS',
@@ -162,6 +164,12 @@ export function ControlCenterPage({ user }: { user: AppUser }) {
   const customBranchCount = activeBranches.filter((branch) => branch.source === 'custom').length
   const stockProducts = products.filter((product) => !isMenuProduct(product))
   const menuProducts = products.filter(isMenuProduct)
+  // Món đang bán nhưng chưa gán công thức: POS vẫn cho bán (không được chặn doanh
+  // thu của quầy), nhưng hóa đơn đó KHÔNG trừ được kho nên tồn sẽ cao hơn thực tế.
+  // Admin phải thấy ngay danh sách này để bổ sung công thức.
+  const menuWithoutRecipe = menuProducts.filter((product) =>
+    product.active !== false && !hasMenuRecipe(product),
+  )
   // Thành phẩm nguồn để "gán món trừ thành phẩm": thành phẩm rời (kg) + thành phẩm
   // là ĐẦU RA của chế biến (vd Bánh hạt dẻ thành phẩm `cake-ready`, đơn vị "cái").
   // Trước đây lọc cứng `!isMenuProduct` nên thành phẩm theo cái (như bánh hạt dẻ)
@@ -948,6 +956,19 @@ export function ControlCenterPage({ user }: { user: AppUser }) {
               <div><span className="eyebrow dark">MENU / MÓN BÁN</span><h2>Cấu hình món và giá bán</h2></div>
               <span className="date-chip">{menuProducts.length} món</span>
             </div>
+            {menuWithoutRecipe.length > 0 && (
+              <div className="menu-norecipe-alert">
+                <strong>{`${menuWithoutRecipe.length} món đang bán nhưng chưa gán công thức`}</strong>
+                <p>Nhân viên vẫn bán được bình thường, nhưng hóa đơn của các món này KHÔNG trừ kho, nên tồn thành phẩm sẽ cao hơn thực tế cho tới lúc kiểm đếm cuối ca. Bấm "Sửa" từng món để gán thành phẩm nguồn hoặc NVL.</p>
+                <div className="menu-norecipe-list">
+                  {menuWithoutRecipe.map((product) => (
+                    <button type="button" className="mini-button" key={product.id} onClick={() => editMenuItem(product)}>
+                      {product.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <form className="menu-editor-form" onSubmit={saveMenuItem}>
               {editingMenuId && <p className="menu-recipe-required">Đang sửa món hiện có. Lưu xong nhân viên sẽ thấy menu mới sau khi đồng bộ.</p>}
               <div className="menu-core-grid">
@@ -1009,6 +1030,7 @@ export function ControlCenterPage({ user }: { user: AppUser }) {
                   <div className="adm-metrics">
                     <span className={product.active ? 'ok' : 'warn'}><i>Trạng thái</i><b>{product.active ? 'Đang bán' : 'Tạm ngưng'}</b></span>
                     <span className={product.active && Number(product.price) > 0 ? 'ok' : 'warn'}><i>Menu POS</i><b>{product.active && Number(product.price) > 0 ? 'Hiển thị' : 'Ẩn (cần bật + có giá)'}</b></span>
+                    <span className={hasMenuRecipe(product) ? 'ok' : 'warn'}><i>Trừ kho khi bán</i><b>{hasMenuRecipe(product) ? 'Có' : 'Chưa gán công thức'}</b></span>
                     {product.recipe?.map((line) => {
                       const recipeProduct = productById(line.productId)
                       return <span key={`${product.id}-${line.role}-${line.productId}`}><i>{line.role === 'source' ? 'Trừ từ mẻ' : line.role === 'packaging' ? 'Trừ bao bì' : 'Trừ NVL'}</i><b>{formatNumber(line.quantity)} {recipeProduct?.unit || ''} {recipeProduct?.name || line.productId}</b><small>{recipeProduct ? inboundConversionLabel(recipeProduct) : ''}</small></span>
@@ -1167,6 +1189,7 @@ function loadPermissions(): PermissionMatrix {
   const exportable: PermissionAction[] = ['view', 'export']
   const matrix: PermissionMatrix = {
     manager: {},
+    supmt: {},
     shift_leader: {},
     staff: {},
     cashier: {},
@@ -1174,6 +1197,8 @@ function loadPermissions(): PermissionMatrix {
   }
   MODULES.forEach((module) => {
     matrix.manager[module.id] = allActions
+    // SUP MT chỉ XEM để đối chiếu lương/bảng công — không thao tác nghiệp vụ.
+    matrix.supmt[module.id] = ['dashboard', 'attendance', 'schedule', 'payroll', 'commission'].includes(module.id) ? viewOnly : []
     matrix.shift_leader[module.id] = ['inventory', 'handover', 'report', 'orders', 'pos', 'attendance'].includes(module.id) ? operate : viewOnly
     matrix.staff[module.id] = ['pos', 'attendance', 'schedule'].includes(module.id) ? operate : []
     matrix.cashier[module.id] = module.id === 'pos' ? operate : []
@@ -1357,8 +1382,10 @@ function formatMoney(value: number) {
   return `${Math.round(value).toLocaleString('vi-VN')}đ`
 }
 
+// Định mức trừ kho là số lượng kho: giữ đủ 3 chữ số lẻ như DB, đừng làm tròn 2
+// số rồi để công thức hiện một đằng, phiếu kho trừ một nẻo.
 function formatNumber(value: number) {
-  return Number(value || 0).toLocaleString('vi-VN', { maximumFractionDigits: 2 })
+  return formatQuantity(Number(value || 0))
 }
 
 function formatDate(date: string) {

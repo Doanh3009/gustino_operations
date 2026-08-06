@@ -1,4 +1,5 @@
 import { productSaleValues, soldBagQuantity } from './commission'
+import { isPosGeneratedSaleMovement } from './constants'
 import type { SalesReceipt } from './salesReceipts'
 import type { BagAllocation, ReportSnapshot, StockMovement } from '../types'
 
@@ -73,6 +74,30 @@ export function buildDailyRevenueRows(
     .sort((a, b) => b.reportDate.localeCompare(a.reportDate) || b.createdAt.localeCompare(a.createdAt))
 }
 
+/**
+ * Thời điểm bản kê snapshot được VIẾT LẦN CUỐI — không phải `created_at` của dòng.
+ *
+ * BUG-119: từ 25/07 snapshot được TẠO ngay lúc chốt báo cáo Ca 1 (~15:17) rồi bị
+ * GHI ĐÈ payload lúc chốt Tổng ngày (~22:16); `created_at` đứng nguyên ở giờ chốt
+ * Ca 1. Lớp cộng "hóa đơn phát sinh sau snapshot" (BUG-104) so với `created_at`
+ * nên cộng LẶP toàn bộ hóa đơn Ca 2 — 29/07 dashboard hiện 13,17tr trong khi POS
+ * thật 8,42tr. Mọi đường ghi snapshot đều đóng dấu `payload.finalizedAt`, nên mốc
+ * đúng là max(created_at, finalizedAt, các finalizedAt/updatedAt trong shiftReports).
+ */
+function snapshotStatementAt(snap: ReportSnapshot): string {
+  const payload = snap.payload as ReportSnapshot['payload'] & { finalizedAt?: string }
+  const candidates: Array<string | undefined> = [snap.createdAt, payload?.finalizedAt]
+  Object.values(payload?.shiftReports || {}).forEach((entry) => {
+    candidates.push(entry?.finalizedAt)
+    const delivery = entry?.n8nDelivery as { updatedAt?: string } | undefined
+    candidates.push(delivery?.updatedAt)
+  })
+  return candidates
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .sort((a, b) => a.localeCompare(b))
+    .pop() || snap.createdAt
+}
+
 function latestSnapshotRows(
   snapshots: ReportSnapshot[],
   options: { branchId?: string; from?: string; to?: string },
@@ -96,7 +121,9 @@ function latestSnapshotRows(
     grade: snap.payload.summary?.grade,
     leader: snap.payload.summary?.leader,
     source: 'report' as const,
-    createdAt: snap.createdAt,
+    // Mốc để BUG-104 cộng thêm hóa đơn "sau bản kê": lần VIẾT cuối, không phải
+    // lúc dòng được tạo — nếu không Ca 2 bị cộng hai lần (BUG-119).
+    createdAt: snapshotStatementAt(snap),
     hasRevenueSummary: typeof snap.payload.summary?.revenue === 'number',
   }))
 }
@@ -177,7 +204,10 @@ function liveMovementRows(
   options: { branchId?: string; from?: string; to?: string },
 ): DailyRevenueRow[] {
   const rows = new Map<string, DailyRevenueRow>()
-  movements.filter((item) => item.type === 'sale_out').forEach((movement) => {
+  // Bỏ phiếu xuất do POS tự sinh: nó là bản sao kho của chính hóa đơn, và mỗi dòng
+  // là NGUYÊN LIỆU/thành phẩm rời (kg) chứ không phải món bán, nên đọc vào đây thì
+  // "số lượng bán" sẽ ra kg lẫn lộn dù doanh thu vẫn bằng 0.
+  movements.filter((item) => item.type === 'sale_out' && !isPosGeneratedSaleMovement(item)).forEach((movement) => {
     if (!inScope(movement.branchId, movement.shiftDate, options)) return
     const key = `${movement.branchId}|${movement.shiftDate}`
     const current = rows.get(key) || {

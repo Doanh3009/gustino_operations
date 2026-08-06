@@ -53,16 +53,24 @@ try {
   })
   assert.equal(registration.status, 'approved')
 
+  const stableSelfiePath = '../../victim/known-selfie.jpg'
+  const selfiePayload = {
+    registrationId,
+    branchId: user.branchId,
+    selfiePath: stableSelfiePath,
+    dataUrl: 'data:image/jpeg;base64,/9j/2Q==',
+  }
   const selfie = await jsonRequest('/api/attendance/selfies', {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      registrationId,
-      branchId: user.branchId,
-      dataUrl: 'data:image/jpeg;base64,/9j/2Q==',
-    }),
+    body: JSON.stringify(selfiePayload),
   })
   assert.match(selfie.url, /attendance-selfies/)
+  assert.ok(selfie.url.includes(user.id.replace(/[^a-zA-Z0-9_-]/g, '_')), 'LAN phải namespace file ảnh theo user đã xác thực, không tin path client.')
+  const retriedSelfie = await jsonRequest('/api/attendance/selfies', {
+    method: 'POST', headers, body: JSON.stringify(selfiePayload),
+  })
+  assert.equal(retriedSelfie.url, selfie.url, 'Retry cùng outbox op phải ghi lại đúng một đường dẫn ảnh LAN, không tạo file Date.now mới.')
 
   const recordId = randomUUID()
   const checkedIn = await jsonRequest('/api/attendance/records', {
@@ -70,9 +78,9 @@ try {
     headers,
     body: JSON.stringify({
       id: recordId,
-      userId: user.id,
-      userName: user.name,
-      branchId: user.branchId,
+      userId: 'forged-user',
+      userName: 'Forged User',
+      branchId: 'forged-branch',
       shiftRegistrationId: registrationId,
       checkInTime: '2000-01-01T00:00:00.000Z',
       selfieUrl: selfie.url,
@@ -83,9 +91,14 @@ try {
     }),
   })
   assert.equal(checkedIn.id, recordId)
+  assert.equal(checkedIn.userId, user.id, 'LAN phải lấy userId từ session, không tin payload.')
+  assert.equal(checkedIn.branchId, user.branchId, 'LAN phải lấy branchId từ registration, không tin payload.')
   assert.notEqual(checkedIn.checkInTime, '2000-01-01T00:00:00.000Z', 'Server phải ghi thời gian check-in tin cậy.')
 
   const checkoutPayload = {
+    userId: 'forged-user',
+    branchId: 'forged-branch',
+    checkInTime: '1999-01-01T00:00:00.000Z',
     checkOutTime: '2000-01-01T00:00:00.000Z',
     checkOutSelfieUrl: selfie.url,
     checkOutLatitude: 10.346,
@@ -97,12 +110,81 @@ try {
     method: 'PATCH', headers, body: JSON.stringify(checkoutPayload),
   })
   assert.ok(checkedOut.checkOutTime)
+  assert.equal(checkedOut.userId, user.id, 'PATCH không được đổi owner bản ghi.')
+  assert.equal(checkedOut.branchId, user.branchId, 'PATCH không được đổi chi nhánh bản ghi.')
+  assert.equal(checkedOut.checkInTime, checkedIn.checkInTime, 'PATCH không được sửa ngược giờ check-in.')
   assert.notEqual(checkedOut.checkOutTime, checkoutPayload.checkOutTime, 'Server phải ghi thời gian check-out tin cậy.')
 
   const repeatedCheckout = await jsonRequest(`/api/attendance/records/${recordId}`, {
     method: 'PATCH', headers, body: JSON.stringify(checkoutPayload),
   })
   assert.equal(repeatedCheckout.checkOutTime, checkedOut.checkOutTime, 'Retry checkout phải trả lại bản ghi đã lưu, không ghi đè thời gian.')
+
+  const replayCapturedAt = new Date(Date.now() - 5 * 60_000)
+  replayCapturedAt.setUTCSeconds(0, 0)
+  const replayShiftStartMinutes = (vietnamMinuteOfDay(replayCapturedAt) + 12 * 60) % (24 * 60)
+  const replayShiftEndMinutes = (replayShiftStartMinutes + 60) % (24 * 60)
+  const replayRegistrationId = randomUUID()
+  await jsonRequest('/api/attendance/registrations', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      id: replayRegistrationId,
+      userId: user.id,
+      userName: user.name,
+      branchId: user.branchId,
+      workDate: vietnamDateKey(replayCapturedAt),
+      startTime: clockTime(replayShiftStartMinutes),
+      endTime: clockTime(replayShiftEndMinutes),
+      status: 'approved',
+      note: 'Kiểm thử replay mất mạng',
+      createdAt: new Date().toISOString(),
+    }),
+  })
+  const replayRecordId = randomUUID()
+  const replayedCheckIn = await jsonRequest('/api/attendance/records', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      id: replayRecordId,
+      userId: user.id,
+      userName: user.name,
+      branchId: user.branchId,
+      shiftRegistrationId: replayRegistrationId,
+      replayedFromOutbox: true,
+      checkInTime: replayCapturedAt.toISOString(),
+      selfieUrl: selfie.url,
+    }),
+  })
+  assert.equal(replayedCheckIn.checkInTime, replayCapturedAt.toISOString(), 'Replay phải giữ đúng giờ bấm check-in lúc mất mạng, kể cả ngoài giờ ca nhưng vẫn đúng ngày như UI hiện tại cho phép.')
+  assert.equal(replayedCheckIn.replayedFromOutbox, undefined, 'Cờ vận chuyển outbox không được lưu vào bản ghi chấm công.')
+  assert.notEqual(replayedCheckIn.createdAt, replayCapturedAt.toISOString(), 'createdAt phải phản ánh lúc LAN commit, không giả thành lúc người dùng bấm.')
+
+  await assert.rejects(
+    jsonRequest(`/api/attendance/records/${replayRecordId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({
+        replayedFromOutbox: true,
+        checkOutTime: new Date(Date.now() + 5 * 60_000).toISOString(),
+      }),
+    }),
+    /400 Giờ check-out lưu lúc mất mạng không hợp lệ/,
+    'LAN phải từ chối timestamp replay ở tương lai.',
+  )
+  const replayCheckoutAt = new Date(Date.now() - 60_000).toISOString()
+  const replayedCheckOut = await jsonRequest(`/api/attendance/records/${replayRecordId}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({
+      replayedFromOutbox: true,
+      checkOutTime: replayCheckoutAt,
+      checkOutSelfieUrl: selfie.url,
+    }),
+  })
+  assert.equal(replayedCheckOut.checkOutTime, replayCheckoutAt, 'Replay phải giữ đúng giờ nhân viên bấm check-out lúc mất mạng.')
+  assert.equal(replayedCheckOut.replayedFromOutbox, undefined, 'Cờ replay checkout không được lưu vào bản ghi.')
+  assert.notEqual(replayedCheckOut.updatedAt, replayCheckoutAt, 'updatedAt phải phản ánh lúc LAN commit, không giả thành giờ chấm gốc.')
 
   const records = await jsonRequest(`/api/attendance/records?userId=${encodeURIComponent(user.id)}`, { headers })
   assert.equal(records.filter((record) => record.id === recordId).length, 1)
@@ -149,4 +231,32 @@ function freePort() {
       probe.close((error) => error ? reject(error) : resolve(port))
     })
   })
+}
+
+function vietnamDateKey(value) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(value)
+  const get = (type) => parts.find((part) => part.type === type)?.value
+  return `${get('year')}-${get('month')}-${get('day')}`
+}
+
+function vietnamMinuteOfDay(value) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(value)
+  const get = (type) => Number(parts.find((part) => part.type === type)?.value || 0)
+  return get('hour') * 60 + get('minute')
+}
+
+function clockTime(totalMinutes) {
+  const hours = String(Math.floor(totalMinutes / 60)).padStart(2, '0')
+  const minutes = String(totalMinutes % 60).padStart(2, '0')
+  return `${hours}:${minutes}`
 }

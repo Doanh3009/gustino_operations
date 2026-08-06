@@ -10,8 +10,11 @@ const [app, shell, orders, report, toolbar, styles] = await Promise.all([
   readFile(new URL('../src/styles.css', import.meta.url), 'utf8'),
 ])
 
-assert.match(shell, /\{ id: 'orders', label: 'Đơn hàng'/)
-assert.match(app, /if \(page === 'orders'\) return canUseManagement\(user\.role\) \|\| canUseOperations\(user\.role\)/)
+// Hai khẳng định dưới đây đã đổi so với bản cũ: admin KHÔNG còn vào trang lập phiếu đặt
+// hàng của chi nhánh nữa, mà theo dõi/lọc/xuất đơn ở mục requests của trang Quản trị.
+// Hợp đồng đầy đủ của hành vi mới nằm ở scripts/test-admin-orders-readonly.mjs.
+assert.match(shell, /section: 'requests', label: 'Đơn hàng'/)
+assert.match(app, /if \(page === 'orders'\) return user\.role !== 'admin' && \(canUseManagement\(user\.role\) \|\| canUseOperations\(user\.role\)\)/)
 assert.match(app, /\{page === 'orders' && <OrdersPage/)
 assert.match(orders, /table: 'supply_requests'/)
 assert.match(orders, /filter: `branch_id=eq\.\$\{user\.branchId\}`/)

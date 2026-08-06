@@ -4,7 +4,7 @@ import { PRODUCTS } from '../lib/constants'
 import { branchName } from '../lib/branches'
 import { calculateStock, fetchReportSnapshots, getOperationDay } from '../lib/store'
 import { fetchBagShiftSessions, ownsBagShiftSession, uploadBagShiftPhoto } from '../lib/shiftLedger'
-import { imageFileToDataUrl } from '../lib/browser'
+import { burstGuard, imageFileToDataUrl } from '../lib/browser'
 import { ShiftPhotoButton } from '../components/ShiftPhotoButton'
 import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
 import { createSupplyRequests, type SupplyDeliveryPeriod } from '../lib/supplyRequests'
@@ -58,7 +58,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   const todayKey = localDateKey(clockNow)
   const todayItems = movements.filter((item) => item.shiftDate === todayKey)
   const currentBranchName = branchName(user.branchId)
-  const stock = calculateStock(movements)
+  const stock = useMemo(() => calculateStock(movements), [movements])
   const lowStock = stock.filter((line) => line.expected <= line.product.lowStock)
   const inboundDone = todayItems.some((item) => item.type === 'inbound')
   const processingDone = todayItems.some((item) => item.type === 'processing_in')
@@ -121,19 +121,32 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
         setSalesReceipts(nextReceipts)
       }).catch(() => undefined)
     }
-    const timer = window.setInterval(reloadOperations, 8000)
+    // Chỉ tải lại khi tab hiện — visibilitychange bắn cả lúc tab bị ẨN đi.
+    const reloadWhenVisible = () => {
+      if (document.visibilityState === 'visible') reloadOperations()
+    }
+    // Nhịp nền không chạy khi máy đang khoá/đang ở app khác: điện thoại ngoài
+    // quầy để mở trang này cả ca, cứ 8 giây gọi 2 truy vấn là tốn pin và mạng.
+    const timer = window.setInterval(reloadWhenVisible, 8000)
+    // Realtime bắn theo từng dòng nên phải gộp, nếu không mỗi hoá đơn là vài lượt tải lại.
+    const reloadSoon = burstGuard(reloadOperations)
     window.addEventListener('focus', reloadOperations)
-    document.addEventListener('visibilitychange', reloadOperations)
+    window.addEventListener('online', reloadOperations)
+    document.addEventListener('visibilitychange', reloadWhenVisible)
     const client = user.authToken ? null : supabase
     const channel = client?.channel(uniqueChannelName(`today-live:${user.branchId}:${todayKey}`))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_shift_sessions', filter: `branch_id=eq.${user.branchId}` }, reloadOperations)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts', filter: `branch_id=eq.${user.branchId}` }, reloadOperations)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, reloadOperations)
-      .subscribe()
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_shift_sessions', filter: `branch_id=eq.${user.branchId}` }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts', filter: `branch_id=eq.${user.branchId}` }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, reloadSoon)
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') reloadOperations()
+      })
     return () => {
       window.clearInterval(timer)
+      reloadSoon.cancel()
       window.removeEventListener('focus', reloadOperations)
-      document.removeEventListener('visibilitychange', reloadOperations)
+      window.removeEventListener('online', reloadOperations)
+      document.removeEventListener('visibilitychange', reloadWhenVisible)
       if (client && channel) void client.removeChannel(channel)
     }
   }, [todayKey, user.id, user.branchId, user.authToken])

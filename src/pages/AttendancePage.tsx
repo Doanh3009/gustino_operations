@@ -19,6 +19,8 @@ import {
   fetchShiftRegistrations,
   fetchWorkShifts,
   findAttendanceRecordForRegistration,
+  flushAttendanceOutbox,
+  isCheckOutOverdue,
   isOvertimeRegistration,
   permittedBranchIds,
   setScheduleEntry,
@@ -27,21 +29,25 @@ import {
 } from '../lib/attendance'
 import { useRef } from 'react'
 import { branchName as configuredBranchName, useConfiguredBranches } from '../lib/branches'
-import { downloadBlob, shareOrDownloadBlob } from '../lib/browser'
+import { burstGuard, downloadBlob, shareOrDownloadBlob } from '../lib/browser'
 import { calculateStock, ensureOperationDay } from '../lib/store'
 import { getFinishedBulkProducts, getSaleProducts } from '../lib/constants'
-import { fetchBagShiftSessions, startBagShift } from '../lib/shiftLedger'
-import { canOpenNextScheduledOperationalShift } from '../lib/operationalShiftAssignment'
-import { supabase, uniqueChannelName } from '../lib/supabase'
+import {
+  findOwnOpenShift,
+  markShiftLeftWithoutHandover,
+  openShiftAfterLeaderCheckIn,
+} from '../lib/shiftAutoOpen'
+import { shouldUseLanApi, supabase, uniqueChannelName } from '../lib/supabase'
+import { addLocalDateKeyDays, localDateKey, localDateKeyWeekday, VN_UTC_OFFSET } from '../lib/dates'
 import { employeePositionLabel, roleLabel as accessRoleLabel } from '../lib/access'
 import { useLang } from '../lib/i18n'
 import { createAttendanceAdjustment } from '../lib/attendanceAdjustments'
+import { ATTENDANCE_OUTBOX_EVENT, inspectAttendanceOutbox, type AttendanceOutboxOp } from '../lib/attendanceOutbox'
 import { AttendanceAdjustmentArchive } from '../components/AttendanceAdjustmentArchive'
-import { AttendanceDeviceCheck } from '../components/AttendanceDeviceCheck'
 import { formatDecimalHoursAsDuration, formatWorkDurationBetween } from '../lib/workDuration'
 import type {
   AppUser,
-  AttendanceAdjustmentRequest,
+  AttendanceAdjustmentKind,
   AttendanceRecord,
   EmployeeProfile,
   EmploymentType,
@@ -64,7 +70,6 @@ function attendanceDataNeeds(tab: AttendanceTab, canAdjustSchedule: boolean) {
     board: [
       'shifts',
       'registrations',
-      'records',
       'schedulePeople',
       ...(canAdjustSchedule ? ['employees' as const] : []),
     ],
@@ -85,12 +90,23 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
   const [employees, setEmployees] = useState<EmployeeProfile[]>([])
   const [schedulePeople, setSchedulePeople] = useState<SchedulePerson[]>([])
   const [loading, setLoading] = useState(true)
+  // Đã tải xong ít nhất một lần. Sau đó KHÔNG được tháo panel nữa: state của panel
+  // giữ ảnh nhân viên vừa chụp, tháo ra là mất ảnh mà không báo gì (BUG-114).
+  const [ready, setReady] = useState(false)
+  // Lượt tải gần nhất có đọc được lịch + chấm công không. BUG-131 bỏ màn khóa nên
+  // màn hình vẫn dùng được khi mạng lỗi, nhưng KHÔNG được khẳng định "chưa đăng ký
+  // ca" từ một mảng rỗng chỉ vì request hỏng — đó là câu làm nhân viên hoang mang.
+  const [loadFailed, setLoadFailed] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [reportRange, setReportRange] = useState(() => attendanceMonthRange())
+  const [boardRange, setBoardRange] = useState(() => {
+    const from = canAdjustSchedule ? registrationWeekStartKey() : localDateKey()
+    return { from, to: addLocalDateKeyDays(from, 6) }
+  })
   const refreshInFlightRef = useRef<Promise<void> | null>(null)
   const refreshQueuedRef = useRef(false)
-  const attendanceRefreshContextRef = useRef({ tab, reportRange })
-  attendanceRefreshContextRef.current = { tab, reportRange }
+  const attendanceRefreshContextRef = useRef({ tab, reportRange, boardRange })
+  attendanceRefreshContextRef.current = { tab, reportRange, boardRange }
 
   async function refresh(showLoading = false) {
     if (refreshInFlightRef.current) {
@@ -102,7 +118,13 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
       try {
         const refreshContext = attendanceRefreshContextRef.current
         const needs = attendanceDataNeeds(refreshContext.tab, canAdjustSchedule)
-        const attendanceFilters = isManager && refreshContext.tab === 'report' ? refreshContext.reportRange : {}
+        const attendanceFilters = isManager && refreshContext.tab === 'report'
+          ? refreshContext.reportRange
+          : refreshContext.tab === 'schedule'
+            ? { userId: user.id }
+            : refreshContext.tab === 'board'
+              ? refreshContext.boardRange
+              : {}
         // Mỗi lệnh đọc phải có hạn chót cứng: một request treo không được phép
         // giữ màn chấm công ở trạng thái quay vòng vĩnh viễn (xem BUG-111).
         const results = await Promise.allSettled([
@@ -115,15 +137,20 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
         const [nextShifts, nextRegistrations, nextRecords, nextEmployees, nextSchedulePeople] = results
         if (nextShifts.status === 'fulfilled' && nextShifts.value) setShifts(nextShifts.value)
         if (nextRegistrations.status === 'fulfilled' && nextRegistrations.value) setRegistrations(nextRegistrations.value)
-        if (nextRecords.status === 'fulfilled' && nextRecords.value) setRecords(nextRecords.value)
+        if (needs.has('records') && nextRecords.status === 'fulfilled' && nextRecords.value) {
+          setRecords(nextRecords.value)
+        }
         if (nextEmployees.status === 'fulfilled' && nextEmployees.value) setEmployees(nextEmployees.value)
         if (nextSchedulePeople.status === 'fulfilled' && nextSchedulePeople.value) setSchedulePeople(nextSchedulePeople.value)
         const failed = results.find((result) => result.status === 'rejected') as PromiseRejectedResult | undefined
+        setLoadFailed(Boolean(failed))
         if (failed) throw failed.reason
       } catch (error) {
+        setLoadFailed(true)
         setFeedback(error instanceof Error ? error.message : 'Không thể tải dữ liệu chấm công.')
       } finally {
         if (showLoading) setLoading(false)
+        setReady(true)
       }
     })()
     refreshInFlightRef.current = run
@@ -143,38 +170,63 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
   useEffect(() => {
     if (loading) return
     void refresh(false)
-  }, [tab, reportRange.from, reportRange.to])
+  }, [tab, reportRange.from, reportRange.to, boardRange.from, boardRange.to])
 
   useEffect(() => {
     const reload = () => void refresh(false)
+    const reloadSoon = burstGuard(reload, 400)
     const reloadWhenVisible = () => {
       if (document.visibilityState === 'visible') reload()
     }
-    const timer = window.setInterval(reload, 15000)
+    // Supabase realtime là đường chính; polling chỉ là lưới an toàn khi socket bị
+    // rớt. LAN không có realtime nên giữ nhịp cũ 15 giây.
+    const timer = window.setInterval(reload, shouldUseLanApi(user) ? 15000 : 60000)
     window.addEventListener('gustino-attendance-updated', reload)
     window.addEventListener('focus', reload)
     document.addEventListener('visibilitychange', reloadWhenVisible)
-    const client = supabase
+    const client = shouldUseLanApi(user) ? null : supabase
     if (!client) {
       return () => {
+        reloadSoon.cancel()
         window.clearInterval(timer)
         window.removeEventListener('gustino-attendance-updated', reload)
         window.removeEventListener('focus', reload)
         document.removeEventListener('visibilitychange', reloadWhenVisible)
       }
     }
-    const channel = client.channel(uniqueChannelName(`attendance-live:${user.id}`))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_registrations' }, reload)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records' }, reload)
-      .subscribe()
+    let channel = client.channel(uniqueChannelName(`attendance-live:${user.id}`))
+    const personalScope = tab === 'schedule' && !isManager
+    if (tab === 'board') {
+      // Bảng lịch chỉ dùng registration; không nghe bảng bản ghi chấm công rồi tải
+      // lại dữ liệu không dùng mỗi khi bất kỳ nhân viên nào chấm công.
+      for (const branchId of permittedBranchIds(user)) {
+        channel = channel.on('postgres_changes', {
+          event: '*', schema: 'public', table: 'shift_registrations', filter: `branch_id=eq.${branchId}`,
+        }, reloadSoon)
+      }
+    } else if (personalScope) {
+      channel = channel
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_registrations', filter: `user_id=eq.${user.id}` }, reloadSoon)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records', filter: `user_id=eq.${user.id}` }, reloadSoon)
+    } else if (tab === 'report') {
+      // Ca trưởng/quản lý chỉ nghe các chi nhánh họ được phép xem. Một sự kiện ở
+      // chi nhánh khác không còn làm mọi máy tải lại toàn bộ bảng chấm công.
+      for (const branchId of permittedBranchIds(user)) {
+        channel = channel
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_registrations', filter: `branch_id=eq.${branchId}` }, reloadSoon)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records', filter: `branch_id=eq.${branchId}` }, reloadSoon)
+      }
+    }
+    const subscribedChannel = channel.subscribe()
     return () => {
+      reloadSoon.cancel()
       window.clearInterval(timer)
       window.removeEventListener('gustino-attendance-updated', reload)
       window.removeEventListener('focus', reload)
       document.removeEventListener('visibilitychange', reloadWhenVisible)
-      void client.removeChannel(channel)
+      void client.removeChannel(subscribedChannel)
     }
-  }, [user.id, user.branchId])
+  }, [user.id, user.branchId, user.role, (user.branchIds || []).join(','), tab, isManager])
 
   const tabs: Array<{ id: AttendanceTab; label: string; show: boolean }> = [
     { id: 'schedule', label: 'Hôm nay', show: !isManager },
@@ -185,14 +237,15 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
     { id: 'report', label: 'Bảng công', show: isManager },
   ]
 
+  const changeTab = (nextTab: AttendanceTab) => {
+    setTab(nextTab)
+  }
+
   return (
     <div className="page attendance-page">
       <div className="function-navigation">
         <button className="function-back-button" onClick={() => onNavigate('launcher')}>
           <span>←</span> Trở lại
-        </button>
-        <button className="function-exit-button" onClick={() => onNavigate('launcher')}>
-          Thoát
         </button>
       </div>
       <div className="page-heading attendance-heading">
@@ -221,40 +274,46 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
 
       <div className="attendance-tabs">
         {tabs.filter((item) => item.show).map((item) => (
-          <button key={item.id} className={tab === item.id ? 'active' : ''} disabled={loading} onClick={() => setTab(item.id)}>{item.label}</button>
+          <button key={item.id} className={tab === item.id ? 'active' : ''} disabled={loading} onClick={() => changeTab(item.id)}>{item.label}</button>
         ))}
       </div>
 
-      {loading && (
+      {/* Khung chờ CHỈ cho lần tải đầu. Những lần tải lại sau vẫn giữ nguyên panel,
+          nếu không thì ảnh nhân viên vừa chụp bị xoá âm thầm (BUG-114). */}
+      {loading && !ready && (
         <section className="section-card attendance-loading" aria-busy="true" aria-live="polite">
           <div className="attendance-loading-skeleton" aria-hidden="true"><i /><i /><i /></div>
           <strong>Đang đồng bộ dữ liệu cần thiết</strong>
           <small>Chỉ tải nội dung của mục đang mở.</small>
         </section>
       )}
-      {!loading && tab === 'schedule' && (
+      {ready && tab === 'schedule' && (
         <SchedulePanel
           user={user}
           registrations={registrations}
           records={records}
+          loadFailed={loadFailed}
           movements={movements}
           onChanged={refresh}
           onFeedback={setFeedback}
           onOpenRegistration={() => setTab('board')}
+          onNavigate={onNavigate}
         />
       )}
-      {!loading && tab === 'board' && (
+      {ready && tab === 'board' && (
         <SharedScheduleBoard
           user={user}
           shifts={shifts}
           registrations={registrations}
           people={schedulePeople}
           employees={employees}
+          range={boardRange}
+          onRangeChange={setBoardRange}
           onChanged={refresh}
           onFeedback={setFeedback}
         />
       )}
-      {!loading && tab === 'report' && isManager && (
+      {ready && tab === 'report' && isManager && (
         <AttendanceReportPanel
           user={user}
           shifts={shifts}
@@ -266,7 +325,7 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
           onRangeChange={setReportRange}
         />
       )}
-      {!loading && tab === 'documents' && canViewAttendanceDocuments && (
+      {ready && tab === 'documents' && canViewAttendanceDocuments && (
         <AttendanceAdjustmentArchive user={user} />
       )}
     </div>
@@ -285,23 +344,46 @@ function mergeAttendanceRecords(
   return Array.from(byId.values())
 }
 
+function attendanceTimestampMatches(left?: string, right?: string) {
+  if (!left || !right) return !left && !right
+  if (left === right) return true
+  const leftTime = Date.parse(left)
+  const rightTime = Date.parse(right)
+  return Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime === rightTime
+}
+
 function SchedulePanel({
-  user, registrations, records, movements, onChanged, onFeedback, onOpenRegistration,
+  user, registrations, records, loadFailed, movements, onChanged, onFeedback, onOpenRegistration, onNavigate,
 }: {
   user: AppUser
   registrations: ShiftRegistration[]
   records: AttendanceRecord[]
+  loadFailed: boolean
   movements: StockMovement[]
   onChanged: () => Promise<void>
   onFeedback: (message: string) => void
   onOpenRegistration: () => void
+  onNavigate: (page: Page) => void
 }) {
   const [selfies, setSelfies] = useState<Record<string, File | undefined>>({})
   const [selfieLocalPreviews, setSelfieLocalPreviews] = useState<Record<string, string>>({})
   const [selfiePreviews, setSelfiePreviews] = useState<Record<string, string>>({})
   const [optimisticRecords, setOptimisticRecords] = useState<Record<string, AttendanceRecord>>({})
+  const [pendingCheckOut, setPendingCheckOut] = useState<{ registrationId: string; sequence: number } | null>(null)
+  // Cảnh báo khi bấm check-in ca khác trong lúc còn một ca chưa check-out: đây là
+  // đường sinh ra bản ghi treo rồi "sáng hôm sau bị đòi check-out lại" (BUG-113).
+  const [pendingDoubleCheckIn, setPendingDoubleCheckIn] = useState<{
+    registrationId: string
+    openLabel: string
+    autoClosing: boolean
+  } | null>(null)
   const [busyId, setBusyId] = useState('')
   const [busyPhase, setBusyPhase] = useState<'locating' | 'saving' | ''>('')
+  /** Lượt chấm công đã chụp đủ bằng chứng nhưng máy chủ CHƯA xác nhận (BUG-118). */
+  const [outboxOps, setOutboxOps] = useState<AttendanceOutboxOp[]>([])
+  // BUG-131 (quyết định chủ quán 04/08): outbox chỉ còn là hàng chờ gửi-lại-nền
+  // cho các lượt CŨ từng lưu trên máy — tuyệt đối không tham gia/chặn đường
+  // Check-in trực tiếp. Chống trùng phiên do DB đảm nhiệm (unique một-phiên-mở).
   const [now, setNow] = useState(() => new Date())
   const ownRegistrations = registrations.filter((item) => item.userId === user.id && item.status !== 'rejected')
   const effectiveRecords = useMemo(
@@ -310,6 +392,27 @@ function SchedulePanel({
   )
   const today = localDateKey(now)
   const hasTodayRegistration = ownRegistrations.some((item) => item.workDate === today)
+  const hasOwnOpenRecord = effectiveRecords.some((item) => item.userId === user.id && !item.checkOutTime)
+
+  // Optimistic chỉ che khoảng trống cho tới khi server xác nhận. Dọn ngay khi
+  // bản authoritative đã hội tụ để sửa/xóa realtime sau đó không bị state cũ
+  // trong tab ghi đè mãi tới lúc remount.
+  useEffect(() => {
+    setOptimisticRecords((current) => {
+      let changed = false
+      const next = { ...current }
+      for (const [id, optimistic] of Object.entries(current)) {
+        const server = records.find((item) => item.id === id)
+        if (!server) continue
+        if (attendanceTimestampMatches(server.checkInTime, optimistic.checkInTime)
+          && attendanceTimestampMatches(server.checkOutTime, optimistic.checkOutTime)) {
+          delete next[id]
+          changed = true
+        }
+      }
+      return changed ? next : current
+    })
+  }, [records])
 
   useEffect(() => {
     const updateClock = () => setNow(new Date())
@@ -322,6 +425,28 @@ function SchedulePanel({
       document.removeEventListener('visibilitychange', updateClock)
     }
   }, [])
+
+  useEffect(() => {
+    let active = true
+    const reloadOutbox = () => {
+      void inspectAttendanceOutbox(user.id)
+        .then((snapshot) => {
+          if (!active) return
+          setOutboxOps(snapshot.ops)
+        })
+        .catch(() => undefined)
+    }
+    reloadOutbox()
+    window.addEventListener(ATTENDANCE_OUTBOX_EVENT, reloadOutbox)
+    window.addEventListener('focus', reloadOutbox)
+    window.addEventListener('storage', reloadOutbox)
+    return () => {
+      active = false
+      window.removeEventListener(ATTENDANCE_OUTBOX_EVENT, reloadOutbox)
+      window.removeEventListener('focus', reloadOutbox)
+      window.removeEventListener('storage', reloadOutbox)
+    }
+  }, [user.id])
 
   // Ảnh xem trước cục bộ để PG kiểm tra trước khi check-in (cho phép chụp lại)
   function pickSelfie(registration: ShiftRegistration, file?: File) {
@@ -336,12 +461,47 @@ function SchedulePanel({
     })
   }
 
+  /**
+   * BẤT KỲ phiên chấm công nào của mình còn đang mở (đã check-in, chưa check-out)
+   * — kể cả ca treo của NGÀY TRƯỚC. DB có ràng buộc một-phiên-mở
+   * (attendance_records_one_open_per_user) nên check-in mới chắc chắn bị từ chối;
+   * guard này để báo sớm và chỉ đúng chỗ cần xử lý thay vì đợi lỗi máy chủ.
+   */
+  function findOpenShift(registration: ShiftRegistration) {
+    const openRecord = effectiveRecords.find((item) =>
+      item.userId === user.id && !item.checkOutTime && item.shiftRegistrationId !== registration.id,
+    )
+    if (!openRecord) return undefined
+    const owner = ownRegistrations.find((item) => item.id === openRecord.shiftRegistrationId)
+    return { registration: owner, record: openRecord }
+  }
+
   async function handleCheckIn(registration: ShiftRegistration) {
-    const selfie = selfies[registration.id]
-    if (!selfie) {
-      onFeedback('Bạn cần chụp ảnh trước khi check-in.')
+    onFeedback('')
+    // Check-in khi còn một phiên chưa đóng là cách bản ghi cũ bị bỏ quên: người
+    // dùng tưởng đã check-out xong, hôm sau ca cũ vẫn đòi check-out. DB đã chặn
+    // cứng (một-phiên-mở); ở đây KHÔNG còn đường "vẫn check-in" — phải đóng ca cũ.
+    const openShift = findOpenShift(registration)
+    if (openShift) {
+      const label = openShift.registration
+        ? `${formatDate(openShift.registration.workDate)} ${openShift.registration.startTime}–${openShift.registration.endTime}`
+        : `check-in lúc ${formatTime(openShift.record.checkInTime)}`
+      const autoClosing = Boolean(openShift.registration && openShift.registration.workDate < today)
+      setPendingDoubleCheckIn({ registrationId: registration.id, openLabel: label, autoClosing })
+      onFeedback(autoClosing
+        ? `Ca ${label} thuộc ngày trước đang được hệ thống tự đóng. Vui lòng tải lại sau ít phút; Admin sẽ thấy lỗi để rà soát.`
+        : `Bạn còn ca ${label} trong ngày chưa check-out. Hãy hoàn tất check-out ca đang làm rồi mới check-in ca mới.`)
       return
     }
+    // BUG-131 (chốt cuối theo chủ quán): outbox/bộ nhớ tạm là best-effort — KHÔNG
+    // được chặn Check-in vì bất kỳ trạng thái nào của nó. Chống trùng phiên do DB
+    // đảm nhiệm (unique attendance_records_one_open_per_user + dedupe read-back).
+    const selfie = selfies[registration.id]
+    if (!selfie) {
+      onFeedback('Chưa có ảnh nên chưa check-in được. Hãy bấm "Chụp ảnh check-in" trước, rồi bấm Check-in lại.')
+      return
+    }
+    setPendingDoubleCheckIn(null)
     setBusyId(registration.id)
     setBusyPhase('locating')
     try {
@@ -354,39 +514,69 @@ function SchedulePanel({
       let autoShiftMessage = ''
       if (user.role === 'shift_leader') {
         try {
-          autoShiftMessage = await openShiftAfterLeaderCheckIn(user, registration, movements)
+          autoShiftMessage = await openShiftAfterLeaderCheckIn(user, registration)
         } catch (error) {
-          autoShiftMessage = ` Check-in đã lưu, nhưng ca vận hành chưa tự mở: ${error instanceof Error ? error.message : 'hãy thử tải lại trang.'}`
+          // Check-in đã lưu rồi nên không thể check-in lại để thử mở ca lần nữa.
+          // Chỉ đường sang màn Bàn giao, ở đó có nút "Nhận ca ngay" để tự khắc phục.
+          autoShiftMessage = ` Check-in đã lưu, nhưng ca vận hành chưa tự mở: ${error instanceof Error ? error.message : 'lỗi kết nối.'} Hãy vào mục Bàn giao và bấm "Nhận ca ngay".`
         }
       }
-      await onChanged().catch(() => undefined)
+      void onChanged().catch(() => undefined)
       onFeedback(`Check-in thành công.${autoShiftMessage || ' Chúc bạn một ca làm việc tốt!'}`)
     } catch (error) {
       onFeedback(error instanceof Error ? error.message : 'Không thể check-in. Hãy thử lại.')
-      await onChanged().catch(() => undefined)
+      void onChanged().catch(() => undefined)
     } finally {
       setBusyId('')
       setBusyPhase('')
     }
   }
 
-  async function handleCheckOut(record: AttendanceRecord, registration: ShiftRegistration) {
+  async function handleCheckOut(
+    record: AttendanceRecord,
+    registration: ShiftRegistration,
+    options: { force?: boolean } = {},
+  ) {
+    // Xoá thông báo cũ NGAY khi bắt đầu: dòng "Check-in thành công" từ đầu ca còn
+    // nằm trên màn hình khiến nhân viên tưởng vừa check-out xong (BUG-114).
+    onFeedback('')
     const selfie = selfies[registration.id]
     if (!selfie) {
-      onFeedback('Bạn cần chụp ảnh bàn giao trước khi check-out.')
+      onFeedback('Chưa có ảnh bàn giao nên chưa check-out được. Hãy bấm "Chụp ảnh check-out" trước, rồi bấm Check-out lại.')
       return
     }
+    // Chặn MỀM: check-out là việc cá nhân, chốt ca là việc vận hành có kiểm đếm
+    // tồn thật. Không bao giờ để check-out tự ghi số tồn. Chỉ nhắc ca trưởng
+    // sang Bàn giao trước; vẫn có lối vượt cho sự cố thật (ốm, hết pin, mất máy).
+    if (user.role === 'shift_leader' && !options.force) {
+      const openShift = await findOwnOpenShift(user).catch(() => undefined)
+      if (openShift) {
+        setPendingCheckOut({ registrationId: registration.id, sequence: openShift.sequence })
+        onFeedback(`Bạn còn Ca ${openShift.sequence} chưa bàn giao. Hãy chốt ca ở mục Bàn giao trước khi check-out.`)
+        return
+      }
+    }
+    setPendingCheckOut(null)
     setBusyId(record.id)
     setBusyPhase('locating')
     try {
       const saved = await checkOut(user, record, registration, selfie, setBusyPhase)
       setOptimisticRecords((current) => ({ ...current, [saved.id]: saved }))
       pickSelfie(registration, undefined)
-      await onChanged().catch(() => undefined)
-      onFeedback('Check-out thành công. Ảnh, GPS và địa chỉ bàn giao đã được lưu.')
+      // Vượt chặn: ghi dấu lên chính phiên ca để quản lý thấy trong báo cáo rằng
+      // ca này kết thúc mà chưa kiểm đếm. KHÔNG tự chốt ca, KHÔNG tự ghi tồn.
+      let overrideNote = ''
+      if (options.force) {
+        const marked = await markShiftLeftWithoutHandover(user).catch(() => false)
+        overrideNote = marked
+          ? ' Ca vận hành vẫn đang mở và đã được đánh dấu "chưa kiểm đếm" để quản lý rà soát.'
+          : ' Lưu ý: ca vận hành vẫn đang mở và chưa được bàn giao.'
+      }
+      void onChanged().catch(() => undefined)
+      onFeedback(`Check-out thành công. Ảnh, GPS và địa chỉ bàn giao đã được lưu.${overrideNote}`)
     } catch (error) {
       onFeedback(error instanceof Error ? error.message : 'Không thể check-out. Hãy thử lại.')
-      await onChanged().catch(() => undefined)
+      void onChanged().catch(() => undefined)
     } finally {
       setBusyId('')
       setBusyPhase('')
@@ -397,11 +587,30 @@ function SchedulePanel({
   const decorated = ownRegistrations.map((registration) => {
     const record = findAttendanceRecordForRegistration(effectiveRecords, registration)
     const checkInWindow = getCheckInWindow(registration)
-    const canCheckIn = registration.workDate === today && !record
+    const pendingOp = outboxOps.find((item) => item.registrationId === registration.id)
+    const blockedByOpenSession = !record && hasOwnOpenRecord
+    const canCheckIn = registration.workDate === today
+      && !record
+      && !hasOwnOpenRecord
     const isCheckedOut = Boolean(record?.checkOutTime)
-    const canCheckOut = Boolean(record && !record.checkOutTime)
+    const isOpenRecord = Boolean(record && !record.checkOutTime)
+    // Quá hạn thì KHÔNG cho check-out bằng giờ bấm nút nữa: giờ đó sai sự thật và
+    // đi thẳng vào bảng công (đã có ca 24h/96h/238h trên dữ liệu thật — BUG-113).
+    const isOverdueCheckOut = isOpenRecord && isCheckOutOverdue(registration, now)
+    const canCheckOut = isOpenRecord && !isOverdueCheckOut && pendingOp?.kind !== 'check-out'
     const checkOutTooEarly = false
-    return { registration, record, checkInWindow, canCheckIn, canCheckOut, isCheckedOut, checkOutTooEarly }
+    return {
+      registration,
+      record,
+      checkInWindow,
+      canCheckIn,
+      canCheckOut,
+      isCheckedOut,
+      isOverdueCheckOut,
+      checkOutTooEarly,
+      blockedByOpenSession,
+      pendingOp,
+    }
   })
   function sortKey(d: typeof decorated[number]) {
     if (d.canCheckIn || d.canCheckOut) return 0 // thao tác được ngay → lên đầu
@@ -411,8 +620,11 @@ function SchedulePanel({
   }
   const missed = decorated.filter((d) => !d.record && d.registration.workDate < today)
     .sort((a, b) => b.registration.workDate.localeCompare(a.registration.workDate))
+  const overdue = decorated.filter((d) => d.isOverdueCheckOut)
+    .sort((a, b) => b.registration.workDate.localeCompare(a.registration.workDate))
   const pending = decorated.filter((d) =>
     !d.isCheckedOut
+    && !d.isOverdueCheckOut
     && !(d.registration.workDate < today && !d.record)
     && (d.registration.workDate === today || Boolean(d.record && !d.record.checkOutTime)),
   )
@@ -424,6 +636,7 @@ function SchedulePanel({
     const { registration, record, checkInWindow, canCheckIn, canCheckOut, checkOutTooEarly } = d
     const isOvertime = isOvertimeRegistration(registration)
     const localPreview = selfieLocalPreviews[registration.id]
+    const pendingOp = d.pendingOp
     return (
       <article className={`shift-card ${registration.status}${d.isCheckedOut ? ' done' : ''}${isOvertime ? ' overtime' : ''}`} key={registration.id}>
         <div className="shift-date">
@@ -436,6 +649,18 @@ function SchedulePanel({
           </span>
           <h3>{registration.startTime} – {registration.endTime}</h3>
           <p>{branchName(registration.branchId)}{registration.note ? ` · ${registration.note}` : ''}</p>
+          {pendingOp && (
+            <p className="attendance-outbox-note">
+              {pendingOp.deliveryState === 'needs-review'
+                ? `⚠️ Lượt ${pendingOp.kind === 'check-in' ? 'check-in' : 'check-out'} lúc ${formatTime(pendingOp.capturedAt)} không tự gửi lại: ${pendingOp.deliveryNote || 'cần quản lý rà soát.'}`
+                : pendingOp.durability === 'memory'
+                  ? `⏳ Lượt ${pendingOp.kind === 'check-in' ? 'check-in' : 'check-out'} lúc ${formatTime(pendingOp.capturedAt)} chỉ đang GIỮ TẠM trong tab này. Giữ app mở và gửi lại ngay khi có mạng.`
+                  : `⏳ Lượt ${pendingOp.kind === 'check-in' ? 'check-in' : 'check-out'} lúc ${formatTime(pendingOp.capturedAt)} đã lưu bền trên máy, đang chờ máy chủ xác nhận (giữ nguyên giờ chấm gốc).`}
+            </p>
+          )}
+          {d.blockedByOpenSession && (
+            <p className="attendance-outbox-note">Bạn còn một ca chưa check-out. Hãy đóng ca đang mở trước khi check-in ca mới.</p>
+          )}
           {record && <div className="attendance-times">
             <span>Vào: <strong>{formatTime(record.checkInTime)}</strong></span>
             <span>Ra: <strong>{record.checkOutTime ? formatTime(record.checkOutTime) : 'Chưa check-out'}</strong></span>
@@ -468,9 +693,20 @@ function SchedulePanel({
                 />
                 {selfies[registration.id] ? '🔄 Chụp lại' : '📷 Chụp ảnh chấm công'}
               </label>
-              <button className="primary-button" disabled={busyId === registration.id || !selfies[registration.id]} onClick={() => handleCheckIn(registration)}>
+              <button className="primary-button" disabled={busyId === registration.id} onClick={() => handleCheckIn(registration)}>
                 {busyId === registration.id ? busyLabel(busyPhase) : 'Check-in'}
               </button>
+              {pendingDoubleCheckIn?.registrationId === registration.id && (
+                <div className="checkout-handover-guard">
+                  <p>{pendingDoubleCheckIn.autoClosing
+                    ? `Ca ${pendingDoubleCheckIn.openLabel} thuộc ngày trước đang chờ hệ thống tự đóng. Bạn không cần khai thêm giờ; Admin sẽ nhận lỗi để chỉnh nếu cần.`
+                    : `Ca ${pendingDoubleCheckIn.openLabel} của bạn trong ngày chưa check-out. Hệ thống chỉ cho phép một phiên làm việc đang mở.`}</p>
+                  <button className="primary-button" onClick={() => {
+                    if (pendingDoubleCheckIn.autoClosing) void onChanged()
+                    setPendingDoubleCheckIn(null)
+                  }}>{pendingDoubleCheckIn.autoClosing ? 'Tải lại trạng thái' : 'Về ca chưa check-out'}</button>
+                </div>
+              )}
               {busyId === registration.id && <small className="attendance-busy-hint">Đang xử lý, vui lòng giữ máy vài giây…</small>}
             </>}
             {canCheckOut && <>
@@ -483,15 +719,32 @@ function SchedulePanel({
                 />
                 {selfies[registration.id] ? 'Chụp lại ảnh check-out' : 'Chụp ảnh check-out'}
               </label>
-              <button className="primary-button checkout-button" disabled={busyId === record?.id || !selfies[registration.id]} onClick={() => handleCheckOut(record!, registration)}>
+              {/* KHÔNG tắt nút theo ảnh: nút tắt bấm vào không phản hồi gì, nhân viên
+                  tưởng đã check-out xong rồi bỏ đi (BUG-114). Cứ cho bấm để
+                  handleCheckOut() nói thẳng là còn thiếu ảnh. */}
+              <button className="primary-button checkout-button" disabled={busyId === record?.id} onClick={() => handleCheckOut(record!, registration)}>
                 {busyId === record?.id ? busyLabel(busyPhase) : 'Check-out'}
               </button>
+              {pendingCheckOut?.registrationId === registration.id && (
+                <div className="checkout-handover-guard">
+                  <p>{`Ca ${pendingCheckOut.sequence} chưa bàn giao. Chốt tồn ở mục Bàn giao rồi hãy check-out để số liệu kho đúng.`}</p>
+                  <button className="primary-button" onClick={() => onNavigate('handover')}>Sang Bàn giao chốt ca</button>
+                  <button
+                    className="secondary-button"
+                    disabled={busyId === record?.id}
+                    onClick={() => handleCheckOut(record!, registration, { force: true })}
+                  >
+                    Vẫn check-out (ca ghi "chưa kiểm đếm")
+                  </button>
+                </div>
+              )}
               {busyId === record?.id && <small className="attendance-busy-hint">Đang xử lý, vui lòng giữ máy vài giây…</small>}
             </>}
             {checkOutTooEarly && (
               <small>Check-out mở lúc {checkInWindow.checkOutOpensAt.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} (30 phút trước giờ ra).</small>
             )}
-            {!canCheckIn && !canCheckOut && !checkOutTooEarly && !record && (
+            {!canCheckIn && !canCheckOut && !checkOutTooEarly && !record
+              && !d.blockedByOpenSession && (
               <small>{checkInHint(registration, checkInWindow, now)}</small>
             )}
           </div>
@@ -513,6 +766,30 @@ function SchedulePanel({
     )
   }
 
+  function renderOverdueCard(d: typeof decorated[number]) {
+    const { registration, record } = d
+    return (
+      <article className="shift-card overdue-checkout" key={registration.id}>
+        <div className="shift-date">
+          <strong>{new Date(`${registration.workDate}T00:00:00`).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}</strong>
+          <small>{new Date(`${registration.workDate}T00:00:00`).toLocaleDateString('vi-VN', { weekday: 'short' })}</small>
+        </div>
+        <div className="shift-main">
+          <span className="attendance-status overdue">Chờ hệ thống tự đóng</span>
+          <h3>{registration.startTime} – {registration.endTime}</h3>
+          <p>{branchName(registration.branchId)}</p>
+          <div className="attendance-times">
+            <span>Vào: <strong>{record ? formatTime(record.checkInTime) : '-'}</strong></span>
+            <span>Ra: <strong>Chưa ghi nhận</strong></span>
+          </div>
+          <p className="overdue-checkout-note">
+            Hệ thống sẽ tự đóng ca này khi sang ngày mới theo giờ tan ca đã đăng ký. Bạn không cần nhập hay chấm thêm giờ. Admin sẽ nhận ca này trong danh sách lỗi chấm công và chỉnh lại nếu giờ thực tế khác.
+          </p>
+        </div>
+      </article>
+    )
+  }
+
   function renderMissedRow(d: typeof decorated[number]) {
     const { registration } = d
     return (
@@ -525,9 +802,30 @@ function SchedulePanel({
     )
   }
 
+  const memoryOutboxCount = outboxOps.filter((op) => op.durability === 'memory').length
+  const reviewOutboxCount = outboxOps.filter((op) => op.deliveryState === 'needs-review').length
+  const sendableOutboxCount = outboxOps.length - reviewOutboxCount
+  // Chỉ hiện khi còn lượt CŨ chờ gửi lại — không còn trạng thái "chưa xác minh"
+  // và không khóa gì cả (BUG-131).
+  const outboxBanner = outboxOps.length > 0 ? (
+    <section className="section-card attendance-outbox-banner">
+      <div className="section-title">
+        <div>
+          <span className="eyebrow dark">CHỜ XỬ LÝ</span>
+          <h2>{`${outboxOps.length} lượt chấm công chưa được máy chủ xác nhận`}</h2>
+        </div>
+      </div>
+      {reviewOutboxCount > 0 && <p className="empty-copy">{reviewOutboxCount} lượt xung đột được giữ làm bằng chứng và KHÔNG tự replay giờ cũ. Quản lý cần rà soát/chỉnh công nếu cần.</p>}
+      {sendableOutboxCount > 0 && <p className="empty-copy">Các lượt này sẽ tự gửi lại theo thứ tự và giữ nguyên giờ chấm gốc.</p>}
+    </section>
+  ) : null
+
+  // BUG-131: mạng chậm/lỗi đọc KHÔNG chặn màn chấm công nữa — nếu người đã
+  // check-in bấm lại, máy chủ tự nhận diện bản ghi hiện có (idempotent) hoặc
+  // unique một-phiên-mở từ chối; client không cần màn hình khóa.
   return (
     <>
-      <AttendanceDeviceCheck />
+      {outboxBanner}
       <section className="section-card attendance-schedule">
         <div className="section-title">
           <div><span className="eyebrow dark">CẦN CHẤM CÔNG</span><h2>Ca cần chấm</h2></div>
@@ -535,15 +833,29 @@ function SchedulePanel({
         </div>
         <div className="shift-card-list">
           {pending.map((d) => renderCard(d, false))}
-          {!pending.length && !hasTodayRegistration && (
+          {!pending.length && loadFailed && (
+            <p className="empty-copy">Chưa tải được lịch và dữ liệu chấm công nên chưa biết hôm nay bạn có ca hay không. Hãy kiểm tra mạng rồi bấm "Tải lại".</p>
+          )}
+          {!pending.length && !loadFailed && !hasTodayRegistration && (
             <div className="attendance-registration-empty">
               <p className="empty-copy">Bạn chưa đăng ký ca hôm nay nên chưa thể check-in.</p>
               <button type="button" className="primary-button" onClick={onOpenRegistration}>Đăng ký ca hôm nay</button>
             </div>
           )}
-          {!pending.length && hasTodayRegistration && <p className="empty-copy">Không có ca nào cần chấm công lúc này.</p>}
+          {!pending.length && !loadFailed && hasTodayRegistration && <p className="empty-copy">Không có ca nào cần chấm công lúc này.</p>}
         </div>
       </section>
+      {overdue.length > 0 && (
+        <section className="section-card attendance-schedule attendance-overdue">
+          <div className="section-title">
+            <div><span className="eyebrow dark">CA CHỜ TỰ ĐÓNG</span><h2>Ca quá hạn đang được hệ thống xử lý</h2></div>
+            <span className="date-chip">{overdue.length} ca</span>
+          </div>
+          <div className="shift-card-list">
+            {overdue.map(renderOverdueCard)}
+          </div>
+        </section>
+      )}
       <AttendanceAdjustmentForm user={user} onFeedback={onFeedback} />
       {completed.length > 0 && (
         <section className="section-card attendance-schedule attendance-done">
@@ -571,8 +883,13 @@ function SchedulePanel({
   )
 }
 
-function AttendanceAdjustmentForm({ user, onFeedback }: { user: AppUser; onFeedback: (message: string) => void }) {
-  const [kind, setKind] = useState<AttendanceAdjustmentRequest['kind']>('late_arrival')
+type EmployeeAdjustmentKind = Exclude<AttendanceAdjustmentKind, 'missing_checkout'>
+
+function AttendanceAdjustmentForm({ user, onFeedback }: {
+  user: AppUser
+  onFeedback: (message: string) => void
+}) {
+  const [kind, setKind] = useState<EmployeeAdjustmentKind>('late_arrival')
   const [workDate, setWorkDate] = useState(localDateKey())
   const [scheduledTime, setScheduledTime] = useState('08:00')
   const [actualTime, setActualTime] = useState('08:15')
@@ -607,7 +924,7 @@ function AttendanceAdjustmentForm({ user, onFeedback }: { user: AppUser; onFeedb
   }
 
   return (
-    <section className="section-card attendance-adjustment-card">
+    <section className="section-card attendance-adjustment-card" id="attendance-adjustment-form">
       <div className="section-title">
         <div>
           <span className="eyebrow dark">CHỨNG TỪ CÔNG</span>
@@ -616,7 +933,7 @@ function AttendanceAdjustmentForm({ user, onFeedback }: { user: AppUser; onFeedb
       </div>
       <form className="attendance-adjustment-form" onSubmit={submit}>
         <label>Loại đơn
-          <select value={kind} onChange={(event) => setKind(event.target.value as AttendanceAdjustmentRequest['kind'])}>
+          <select value={kind} onChange={(event) => setKind(event.target.value as EmployeeAdjustmentKind)}>
             <option value="late_arrival">Đi trễ</option>
             <option value="early_leave">Xin về sớm</option>
           </select>
@@ -766,19 +1083,21 @@ function RegistrationPanel({
 }
 
 function SharedScheduleBoard({
-  user, shifts, registrations, people, employees, onChanged, onFeedback,
+  user, shifts, registrations, people, employees, range, onRangeChange, onChanged, onFeedback,
 }: {
   user: AppUser
   shifts: WorkShift[]
   registrations: ShiftRegistration[]
   people: SchedulePerson[]
   employees: EmployeeProfile[]
+  range: { from: string; to: string }
+  onRangeChange: (range: { from: string; to: string }) => void
   onChanged: () => Promise<void>
   onFeedback: (message: string) => void
 }) {
   const isScheduleManager = canManageShiftSetup(user)
   const [branchId, setBranchId] = useState(user.branchId)
-  const [from, setFrom] = useState(isScheduleManager ? registrationWeekStartKey() : localDateKey())
+  const from = range.from
   const [liveUsers, setLiveUsers] = useState<string[]>([])
   const [savingCell, setSavingCell] = useState('')
   const [entries, setEntries] = useState<ScheduleEntry[]>([])
@@ -797,15 +1116,12 @@ function SharedScheduleBoard({
   const [customDrafts, setCustomDrafts] = useState<Record<string, { startTime: string; endTime: string }>>({})
   const [savedCustomCells, setSavedCustomCells] = useState<Record<string, string>>({})
   const [bootstrappedBranches, setBootstrappedBranches] = useState<Record<string, boolean>>({})
-  const days = Array.from({ length: 7 }, (_, index) => {
-    const date = new Date(`${from}T00:00:00`)
-    date.setDate(date.getDate() + index)
-    return localDateKey(date)
-  })
+  const days = Array.from({ length: 7 }, (_, index) => addLocalDateKeyDays(from, index))
+  function setFrom(next: string) {
+    onRangeChange({ from: next, to: addLocalDateKeyDays(next, 6) })
+  }
   function moveWeek(deltaDays: number) {
-    const base = new Date(`${from}T00:00:00`)
-    base.setDate(base.getDate() + deltaDays)
-    let next = localDateKey(base)
+    let next = addLocalDateKeyDays(from, deltaDays)
     if (!isScheduleManager && next < localDateKey()) next = localDateKey()
     setFrom(next)
   }
@@ -1462,12 +1778,18 @@ function AttendanceReportPanel({
     && (!activeEmployeeIds.size || activeEmployeeIds.has(item.userId))
     && item.workDate >= from && item.workDate <= to,
   ), [registrations, branchId, userId, from, to, activeEmployeeIds])
+  const filteredRegistrationIds = useMemo(
+    () => new Set(filteredRegistrations.map((item) => item.id)),
+    [filteredRegistrations],
+  )
   const filteredRecords = useMemo(() => records.filter((item) =>
     (!branchId || item.branchId === branchId)
     && (!userId || item.userId === userId)
     && (!activeEmployeeIds.size || activeEmployeeIds.has(item.userId))
-    && localDateKey(new Date(item.checkInTime)) >= from && localDateKey(new Date(item.checkInTime)) <= to,
-  ), [records, branchId, userId, from, to, activeEmployeeIds])
+    // Ngày bảng công thuộc về registration.workDate. Không lọc lại bằng giờ
+    // check-in vì ca qua đêm/offline có thể được gửi ở ngày kế tiếp.
+    && Boolean(item.shiftRegistrationId && filteredRegistrationIds.has(item.shiftRegistrationId)),
+  ), [records, branchId, userId, activeEmployeeIds, filteredRegistrationIds])
   const grace = useMemo(() => new Map(shifts.map((item) => [item.id, item.graceMinutes])), [shifts])
   const registeredEmployeeKeys = useMemo(
     () => new Set(filteredRegistrations.filter((item) => item.status !== 'rejected').map((item) => `${item.userId}|${item.branchId}`)),
@@ -1672,38 +1994,6 @@ function roleLabel(role: AppUser['role']) { return accessRoleLabel(role) }
 function statusLabel(status: ShiftRegistration['status']) { return status === 'rejected' ? 'Không hiệu lực' : 'Đã đăng ký' }
 function busyLabel(phase: 'locating' | 'saving' | '') { return phase === 'saving' ? 'Đang lưu ảnh…' : 'Đang định vị chính xác…' }
 
-async function openShiftAfterLeaderCheckIn(
-  user: AppUser,
-  registration: ShiftRegistration,
-  movements: StockMovement[],
-) {
-  const sessions = await fetchBagShiftSessions(user, { branchId: user.branchId, date: registration.workDate })
-  if (sessions.some((item) => item.status === 'open')) return ' Ca vận hành đang mở.'
-  if (sessions.length >= 2) return ' Hôm nay đã đủ 2 ca vận hành.'
-  const workShifts = await fetchWorkShifts(user)
-  if (!canOpenNextScheduledOperationalShift(registration, sessions, workShifts)) {
-    const nextSequence = sessions.length ? Math.max(...sessions.map((session) => session.sequence)) + 1 : 1
-    return nextSequence === 2
-      ? ' Đã check-in Ca 1, nhưng chỉ ca trưởng có lịch Ca 2 mới được tự nhận Ca 2.'
-      : ' Đã check-in, đang chờ ca trưởng được xếp Ca 1 tự mở ca vận hành.'
-  }
-  await ensureOperationDay(user, registration.workDate)
-  const finishedProducts = getFinishedBulkProducts()
-  const products = finishedProducts.length ? finishedProducts : getSaleProducts()
-  const stock = calculateStock(movements.filter((item) => item.branchId === user.branchId))
-  const openingBalances = Object.fromEntries(products.map((product) => [
-    product.id,
-    Math.max(0, stock.find((line) => line.product.id === product.id)?.expected || 0),
-  ]))
-  try {
-    const session = await startBagShift(user, registration.workDate, openingBalances)
-    return ` Ca ${session.sequence} đã tự mở; hãy chụp ảnh quầy đầu ca ở trang Hôm nay.`
-  } catch (error) {
-    const latest = await fetchBagShiftSessions(user, { branchId: user.branchId, date: registration.workDate })
-    if (latest.some((item) => item.status === 'open')) return ' Ca vận hành đã tự mở.'
-    throw error
-  }
-}
 function normalizeName(value: string) { return value.trim().toLocaleLowerCase('vi').normalize('NFD').replace(/\p{Diacritic}/gu, '') }
 function formatDate(date: string) { return new Date(`${date}T00:00:00`).toLocaleDateString('vi-VN') }
 function formatTime(date: string) { return new Date(date).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) }
@@ -1815,22 +2105,19 @@ function normalizeAttendanceSelfiePath(value: string) {
   }
   return ''
 }
-function localDateKey(date = new Date()) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
 function attendanceMonthRange(date = new Date()) {
+  const [year, month] = localDateKey(date).split('-').map(Number)
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  const monthKey = String(month).padStart(2, '0')
   return {
-    from: localDateKey(new Date(date.getFullYear(), date.getMonth(), 1)),
-    to: localDateKey(new Date(date.getFullYear(), date.getMonth() + 1, 0)),
+    from: `${year}-${monthKey}-01`,
+    to: `${year}-${monthKey}-${String(lastDay).padStart(2, '0')}`,
   }
 }
 function getCheckInWindow(registration: ShiftRegistration) {
-  const startsAt = new Date(`${registration.workDate}T${registration.startTime}:00`)
-  const closesAt = new Date(`${registration.workDate}T${registration.endTime}:00`)
-  if (registration.endTime <= registration.startTime) closesAt.setDate(closesAt.getDate() + 1)
+  const startsAt = new Date(`${registration.workDate}T${registration.startTime}:00${VN_UTC_OFFSET}`)
+  let closesAt = new Date(`${registration.workDate}T${registration.endTime}:00${VN_UTC_OFFSET}`)
+  if (registration.endTime <= registration.startTime) closesAt = new Date(closesAt.getTime() + 24 * 60 * 60 * 1000)
   return {
     startsAt,
     opensAt: new Date(startsAt.getTime() - 30 * 60000),
@@ -1852,17 +2139,15 @@ function checkInHint(
   return 'Đang chuẩn bị mở chấm công.'
 }
 function weekStartKey(date = new Date()) {
-  const start = new Date(date)
-  const day = start.getDay()
-  start.setDate(start.getDate() - (day === 0 ? 6 : day - 1))
-  return localDateKey(start)
+  const dateKey = localDateKey(date)
+  const day = localDateKeyWeekday(dateKey)
+  return addLocalDateKeyDays(dateKey, -(day === 0 ? 6 : day - 1))
 }
 function registrationWeekStartKey(date = new Date()) {
-  const start = new Date(date)
-  const day = start.getDay()
+  const dateKey = localDateKey(date)
+  const day = localDateKeyWeekday(dateKey)
   const offset = day === 0 ? 1 : -(day - 1)
-  start.setDate(start.getDate() + offset)
-  return localDateKey(start)
+  return addLocalDateKeyDays(dateKey, offset)
 }
 function csvCell(value: string | number) { return `"${String(value).replace(/"/g, '""')}"` }
 function download(blob: Blob, name: string) {

@@ -1,13 +1,7 @@
 import { roleLabel } from '../../lib/access'
+import { formatQuantity } from '../../lib/inventoryEntry'
+import type { SalesReceipt } from '../../lib/salesReceipts'
 import type { ActiveUserSession } from '../../types'
-
-interface ArchiveRow {
-  id: string
-  type: string
-  date: string
-  branchId: string
-  detail: string
-}
 
 interface WasteRow {
   branchId: string
@@ -26,7 +20,7 @@ interface Props {
   employeeCount: number
   activeUsers: ActiveUserSession[]
   showActiveUsers: boolean
-  archiveRows: ArchiveRow[]
+  recentBills: SalesReceipt[]
   wasteRows: WasteRow[]
   branchName: (branchId: string) => string
 }
@@ -34,7 +28,7 @@ interface Props {
 export function DashboardPage(props: Props) {
   const {
     from, to, branchCount, revenue, employeeCount, activeUsers, showActiveUsers,
-    archiveRows, wasteRows,
+    recentBills, wasteRows,
     branchName,
   } = props
   return (
@@ -48,12 +42,25 @@ export function DashboardPage(props: Props) {
         <Metric label="Tổng nhân viên" value={employeeCount.toLocaleString('vi-VN')} hint="Nhân sự đang hoạt động" />
         <Metric label="Số chi nhánh" value={branchCount.toLocaleString('vi-VN')} hint="Trong phạm vi quản lý" />
       </div>
+      <a className="admin-competition-shortcut" href="#/admin/sales-performance">
+        <span><small>KPI & XẾP HẠNG</small><strong>Thi đua nhân viên</strong><em>Xem theo ngày, theo tháng, vai trò và chi nhánh.</em></span>
+        <b>Xem bảng thi đua →</b>
+      </a>
       <div className="admin-report-grid">
         <section className="section-card">
-          <div className="section-title"><div><span className="eyebrow dark">HOẠT ĐỘNG</span><h2>Lịch sử gần đây</h2></div><span className="date-chip">{archiveRows.length} bản ghi</span></div>
-          <div className="admin-archive-list">
-            {archiveRows.slice(0, 30).map((row) => <article key={`${row.type}-${row.id}`}><time>{formatDate(row.date)}</time><span><strong>{row.type}</strong><small>{branchName(row.branchId)} · {row.detail}</small></span><b>ĐÃ LƯU</b></article>)}
-            {!archiveRows.length && <p className="empty-copy">Chưa có hoạt động trong khoảng đang chọn.</p>}
+          <div className="section-title"><div><span className="eyebrow dark">HOẠT ĐỘNG POS</span><h2>Lịch sử bill gần đây</h2></div><span className="date-chip">{recentBills.length} bill</span></div>
+          <div className="admin-archive-list admin-bill-history">
+            {recentBills.slice(0, 30).map((receipt) => (
+              <article key={receipt.id}>
+                <time>{formatBillDateTime(receipt.createdAt, receipt.businessDate)}</time>
+                <span>
+                  <strong>{receipt.code || 'Bill POS'}</strong>
+                  <small>{branchName(receipt.branchId)} · {receipt.sellerName || 'Chưa có nhân viên bán'} · {formatNumber(receipt.totalQuantity)} sản phẩm</small>
+                </span>
+                <b>{formatMoney(receipt.totalAmount)}</b>
+              </article>
+            ))}
+            {!recentBills.length && <p className="empty-copy">Chưa có bill trong khoảng đang chọn.</p>}
           </div>
         </section>
         <section className="section-card admin-waste-report">
@@ -84,10 +91,24 @@ function formatDate(value: string) {
   return day && month && year ? `${day}/${month}/${year}` : value
 }
 
+function formatBillDateTime(createdAt: string, businessDate: string) {
+  const date = new Date(createdAt)
+  if (Number.isNaN(date.getTime())) return formatDate(businessDate)
+  return date.toLocaleString('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
+
 function formatMoney(value: number) {
   return `${Math.round(value).toLocaleString('vi-VN')}đ`
 }
 
+// Số lượng kho (hao hụt, sản phẩm) hiển thị đúng 3 chữ số lẻ như DB, khớp màn Kho.
 function formatNumber(value: number) {
-  return new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 }).format(value)
+  return formatQuantity(value)
 }

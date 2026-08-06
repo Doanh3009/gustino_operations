@@ -97,6 +97,7 @@ export function EmployeesPage({
             <option value="all">Tất cả</option>
             <option value="admin">Admin hệ thống</option>
             <option value="manager">Quản lý</option>
+            <option value="supmt">Giám sát (SUP MT)</option>
             <option value="shift_leader">Ca trưởng</option>
             <option value="staff">Nhân viên</option>
             <option value="cashier">Thu ngân POS</option>

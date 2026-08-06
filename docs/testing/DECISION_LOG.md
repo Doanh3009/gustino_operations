@@ -1,5 +1,33 @@
 # Decision Log
 
+## 2026-08-03 — correction actions preserve filter context
+
+- Opening an attendance correction from a row already visible in the correction list must not change its day/employee mode, date, branch, employee or search text. Viewing all shifts for that employee is a separate explicit action.
+- A deep link from the auto-close error table is the only correction action that may reveal a different context; it selects the exact existing day and branch, without changing attendance data.
+- Branch selection belongs inside the correction workspace and applies independently in both modes. Changing month retains employee/search so repeated historical corrections do not require re-entry. These are UI/filter-state decisions only; RPCs, attendance records, payroll formulas, audit and permissions remain unchanged.
+
+## 2026-08-03 — Thi đua export uses a monthly audit workbook with hidden exact keys
+
+- Decision: keep the on-screen day/month/leader classifier, but make the evidence export cover the selected month so one file always contains both monthly ranking and daily employee detail. Day-type, role, branch and shift-count filters remain applied.
+- Visible workbook content is business-facing only. Employee/branch UUIDs are retained as hidden helper columns solely for exact COUNTIFS/SUMIFS reconciliation; source IDs are not exported visibly. Sheets are `Tổng hợp tháng`, `Theo ngày nhân viên`, and `Chi tiết doanh thu`.
+- Reason: the owner explicitly requested month + day-by-employee tables and removal of long code columns. Hidden stable keys avoid name-collision errors without reintroducing visual noise. Revenue/KPI/reward formulas and source attribution are unchanged.
+
+## 2026-08-03 — repair attendance state convergence without changing business rules
+
+- Treat “hôm sau lại hiện Check-in” as an implementation/state-consistency defect: use the existing Vietnam business-day contract everywhere, suppress new Check-in while any own session or pending check-in exists, and make the newest read the only read allowed to update the reminder.
+- Reduce many-employee load by filtering realtime to the current user/authorized branch scope and coalescing bursts; keep a bounded polling/focus reconciliation path for dropped events. Do not alter roles, approval flow, payroll/KPI formulas, evidence requirements or API contract.
+- Make outbox persistence/notification honest and retries idempotent. Do not claim evidence is saved if local persistence failed; do not generate a new Storage object path per retry.
+- Do not apply the existing untracked single-open migration or modify the legacy schedule RPC in this batch. Both are schema/data-risk actions requiring a production catalog audit and direct approval; the current migration contains historical UPDATE logic and must not be run merely to make tests pass.
+- Never delete unconfirmed attendance evidence by age. A one-open conflict or an older pending check-in discovered after a newer attendance row is evidence for review, not an idempotent success: retain it as `needs-review`, exclude it from automatic replay, and require a fresh real-time check-in after the old session is closed.
+- Treat an IndexedDB read error as unknown state, not zero pending operations. RAM fallback remains an availability aid within the current tab only and must be described truthfully; it is not equivalent to durable storage.
+- Preserve the original button timestamp during a LAN outbox replay only when the request is explicitly marked as replay and the server validates it against the registered Vietnam business date/current time. Do not introduce a shift-hour gate: current UI/business permits check-in throughout the registered date. Keep ordinary LAN check-in/check-out server-timestamped; quarantine permanent timestamp rejections for review instead of automatic retry or deletion.
+
+## 2026-07-22 — fix the visible mobile order report without changing its export or workflow
+
+- Treat the owner's screenshot as a separate responsive defect from the compact order-history layout: transform only the on-screen six-column table into semantic label/value records at phone width.
+- Explicitly exclude `.order-report-sheet-export`, preserving the existing 1080×1350 six-column capture. Keep order values, statuses, actions, permissions, APIs and business workflow unchanged.
+- Release from an isolated `HEAD + OrdersPage/styles` package so unrelated Report/Handover worktree changes are not deployed. Verify only public assets and the read-only health endpoint; do not create an order, invoke n8n or mutate production data for proof.
+
 ## 2026-07-21 — incident fixes stay inside existing business contracts
 
 - Keep the owner-confirmed permanent `Xóa nhân viên` behavior. Fix only the missing route/state recovery so a removed ID cannot blank the personnel workspace; do not reintroduce deactivation or a second test-delete action.

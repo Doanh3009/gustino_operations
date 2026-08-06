@@ -3,6 +3,7 @@ import { isSupabaseConfigured, supabase } from '../lib/supabase'
 import type { AppUser, Role } from '../types'
 import { normalizeRole } from '../lib/access'
 import { usernameToEmail } from '../lib/authIdentity'
+import { consumeSessionExpiredNotice } from '../lib/sessionExpiry'
 import { AppFooter } from '../components/AppFooter'
 
 interface Props {
@@ -18,6 +19,8 @@ export function LoginPage({ onLogin }: Props) {
   const [branchId] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  // Bị đăng xuất vì phiên quá 24 giờ → giải thích rõ để nhân viên không tưởng là lỗi.
+  const [sessionNotice] = useState(() => consumeSessionExpiredNotice())
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -59,7 +62,8 @@ export function LoginPage({ onLogin }: Props) {
         const role = normalizeRole((profile?.role || metadata.role || 'shift_leader') as Role)
         const profileBranchId = profile?.branch_id || metadata.branch_id || branchId
         let branchIds: string[] = []
-        if (role === 'admin') {
+        // SUP MT (giám sát) đối chiếu bảng lương/bảng công toàn hệ thống → thấy mọi chi nhánh active.
+        if (role === 'admin' || role === 'supmt') {
           const { data: activeBranches } = await supabase
             .from('branches')
             .select('id')
@@ -192,6 +196,11 @@ export function LoginPage({ onLogin }: Props) {
             <input type="checkbox" checked={showPassword} onChange={(event) => setShowPassword(event.target.checked)} />
             Hiện mật khẩu
           </label>
+          {sessionNotice && !error && (
+            <div className="form-notice">
+              Phiên đăng nhập đã quá 24 giờ nên hệ thống tự đăng xuất để làm mới dữ liệu. Vui lòng đăng nhập lại.
+            </div>
+          )}
           {error && <div className="form-error">{error}</div>}
           <button className="primary-button wide" disabled={loading}>
             {loading ? 'Đang đăng nhập...' : 'Đăng nhập →'}

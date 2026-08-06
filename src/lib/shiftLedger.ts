@@ -112,6 +112,7 @@ export async function startBagShift(
   user: AppUser,
   businessDate: string,
   openingBalances: Record<string, number>,
+  options: { note?: string } = {},
 ) {
   const session: BagShiftSession = {
     id: createId(),
@@ -122,6 +123,7 @@ export async function startBagShift(
     leaderName: user.name,
     status: 'open',
     openingBalances,
+    discrepancyNote: options.note?.trim() || undefined,
     startedAt: new Date().toISOString(),
   }
   if (shouldUseLanApi(user)) return ledgerApi<BagShiftSession>(user, '/sessions', { method: 'POST', body: JSON.stringify(session) })
@@ -156,10 +158,46 @@ export async function startBagShift(
     leader_name: session.leaderName,
     status: session.status,
     opening_balances: session.openingBalances,
+    discrepancy_note: session.discrepancyNote || null,
     started_at: session.startedAt,
   })
   if (error) throw error
   return session
+}
+
+/**
+ * Chuyển quyền chủ ca sang ca trưởng.
+ * Chủ ca phải là ca trưởng, nhưng ca phó có thể lỡ mở ca trước (check-in sớm
+ * hơn vài giây, hoặc mở thay khi ca trưởng chưa tới). Khi ca trưởng đúng lịch
+ * vào app, phiên ca được trả về đúng người. Ca phó không mất gì: vẫn nhập kho,
+ * chế biến và bán hàng trong ca, chỉ không đứng tên phiên ca.
+ */
+export async function transferBagShiftLeadership(
+  user: AppUser,
+  session: BagShiftSession,
+  reason: string,
+): Promise<BagShiftSession> {
+  const note = appendSessionNote(session.discrepancyNote, `[CHỦ CA] ${reason}`)
+  if (shouldUseLanApi(user)) {
+    return ledgerApi<BagShiftSession>(user, `/sessions/${session.id}/leader`, {
+      method: 'POST',
+      body: JSON.stringify({ leaderId: user.id, leaderName: user.name, discrepancyNote: note }),
+    })
+  }
+  const { error } = await supabase!
+    .from('bag_shift_sessions')
+    .update({ leader_id: user.id, leader_name: user.name, discrepancy_note: note })
+    .eq('id', session.id)
+    .eq('status', 'open')
+  if (error) throw error
+  return { ...session, leaderId: user.id, leaderName: user.name, discrepancyNote: note }
+}
+
+/** Ghi chú ca là nhật ký cộng dồn — không bao giờ đè mất ghi chú đã có. */
+export function appendSessionNote(existing: string | undefined, line: string) {
+  const current = String(existing || '').trim()
+  if (current.includes(line)) return current
+  return current ? `${current}\n${line}` : line
 }
 
 async function closeStaleOpenBagShift(user: AppUser, sessionId: string) {
@@ -243,6 +281,39 @@ export async function closeBagShift(
   await closeBagShiftDirect(user, session, closingBalances, patch.discrepancyNote, postedAllocationIds, movements, endedAt)
 }
 
+/**
+ * Mở lại ca vừa chốt nhầm (BUG-114). Toàn bộ phần hoàn tác số liệu kho nằm trong
+ * RPC `reopen_bag_shift` để chốt lại lần sau không cộng đôi; client chỉ gọi và
+ * dịch lỗi sang tiếng Việt.
+ */
+export async function reopenBagShift(user: AppUser, session: BagShiftSession, reason = '') {
+  if (shouldUseLanApi(user)) {
+    return ledgerApi<BagShiftSession>(user, `/sessions/${session.id}/reopen`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    })
+  }
+  const { error } = await supabase!.rpc('reopen_bag_shift', {
+    p_session_id: session.id,
+    p_reason: reason,
+  })
+  if (!error) return
+  if (isMissingRpc(error, 'reopen_bag_shift')) {
+    throw new Error('Máy chủ chưa có chức năng mở lại ca. Hãy chạy migration 20260724_reopen_bag_shift.sql rồi thử lại.')
+  }
+  const message = String(error.message || '')
+  if (/mo lai duoc ca trong ngay/i.test(message)) {
+    throw new Error('Chỉ mở lại được ca của hôm nay. Ca ngày cũ phải nhờ quản lý mở lại ngày vận hành.')
+  }
+  if (/Ngay van hanh da chot/i.test(message)) {
+    throw new Error('Ngày vận hành đã chốt. Hãy mở lại ngày trước khi mở lại ca.')
+  }
+  if (/Khong co quyen/i.test(message)) {
+    throw new Error('Tài khoản này không có quyền mở lại ca tại chi nhánh đó.')
+  }
+  throw error
+}
+
 async function closeBagShiftDirect(
   user: AppUser,
   session: BagShiftSession,
@@ -278,7 +349,10 @@ async function closeBagShiftDirect(
       source_quantity: movement.source_quantity || null,
       measured_weight_kg: movement.measured_weight_kg || null,
       created_by: user.id,
-      created_at: movement.created_at || endedAt,
+      // Bỏ trống = để `stock_movements.created_at` dùng `default now()` của máy
+      // chủ. `endedAt` cũng là đồng hồ MÁY nên không dùng làm mốc kiểm kê được:
+      // phiếu `count` đặt sai vị trí thời gian là tồn tính sai (xem BUG-134).
+      ...(movement.created_at ? { created_at: movement.created_at } : {}),
     }))
     for (const row of rows) await insertStockMovementIfMissing(row)
   }
@@ -329,7 +403,7 @@ async function insertStockMovementIfMissing(row: {
   source_quantity: number | null
   measured_weight_kg: number | null
   created_by: string
-  created_at: string
+  created_at?: string
 }) {
   if (row.document_id) {
     const { data: existing, error: readError } = await supabase!

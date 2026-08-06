@@ -1,6 +1,25 @@
 import { forwardRef, useEffect, useMemo, useRef, useState } from 'react'
-import { INBOUND_PRODUCTS, MOVEMENT_LABELS, PACKING_OPTIONS_BY_OUTPUT, PRODUCTS, getInboundProducts, getProcessInputProducts, getProcessingOutputOptions, getProducts, productById } from '../lib/constants'
+import { INBOUND_PRODUCTS, MOVEMENT_LABELS, PACKING_OPTIONS_BY_OUTPUT, PRODUCTS, getInboundProducts, getProcessInputProducts, getProcessingOutputOptions, getProducts, isWarehouseProduct, productById } from '../lib/constants'
 import { canvasToBlob, createId, shareOrDownloadBlob } from '../lib/browser'
+import {
+  STOCK_EPSILON,
+  convertEntryToStockQuantity,
+  defaultEntryUnit,
+  formatQuantity,
+  formatStockAmount,
+  hasQuantityInput,
+  hasStock,
+  inboundEntryUnit,
+  inboundPackSize,
+  matchesProductQuery,
+  parseQuantityInput,
+  planOutbound,
+  planStockReset,
+  quantityInputValue,
+  roundQuantity,
+  sanitizeQuantityInput,
+} from '../lib/inventoryEntry'
+import type { EntryUnit, QuantityEntry, StockAvailability } from '../lib/inventoryEntry'
 import { addMovements, calculateStock, deleteMovements, ensureOperationDay, saveInventoryReport } from '../lib/store'
 import { branchName as configuredBranchName } from '../lib/branches'
 import { localDateKey } from '../lib/dates'
@@ -24,33 +43,21 @@ interface Props {
   onNavigate: (page: Page) => void
 }
 
-interface VoucherLine { id: string; productId: string; quantity: string; note: string; entryWeightUnit?: 'kg' | 'g' }
 interface ProcessLine { id: string; productId: string; quantity: string }
 type InventoryCrmMode = 'stock' | 'inbound' | 'outbound' | 'count'
 type InboundSub = 'material' | 'processing'
-type StockDisplayCategory = 'all' | 'raw' | 'packaging' | 'finished' | 'sale'
+/** Xuất kho có 2 việc: lấy hàng ra bán, và sửa lại tồn khi sổ sách lệch thực tế. */
+type OutboundSub = 'issue' | 'reset'
+type StockDisplayCategory = 'all' | 'raw' | 'packaging' | 'finished'
 type InventoryPeriod = 'day' | 'month' | 'year' | 'all'
+/** Bảng nhập liệu theo SKU: khoá là productId, không còn "dòng phiếu" phải tự thêm/xoá. */
+type EntryMap = Record<string, QuantityEntry>
 
 function crmModeFromTab(tab: InventoryTab): InventoryCrmMode {
   if (tab === 'inbound' || tab === 'processing_out') return 'inbound'
   if (tab === 'count') return 'count'
   return 'stock'
 }
-
-const newVoucherLine = (): VoucherLine => ({
-  id: createId(),
-  productId: INBOUND_PRODUCTS[0].id,
-  quantity: '',
-  note: '',
-  entryWeightUnit: 'kg',
-})
-
-const newOutboundLine = (): VoucherLine => ({
-  id: createId(),
-  productId: '',
-  quantity: '',
-  note: '',
-})
 
 const newProcessLine = (kind: 'input' | 'output'): ProcessLine => ({
   id: createId(),
@@ -64,10 +71,13 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
   const canOperateInventory = ['admin', 'manager', 'shift_leader'].includes(user.role)
   const [crmMode, setCrmMode] = useState<InventoryCrmMode>(crmModeFromTab(initialTab))
   const [inboundSub, setInboundSub] = useState<InboundSub>(initialTab === 'processing_out' ? 'processing' : 'material')
-  const [voucherLines, setVoucherLines] = useState<VoucherLine[]>([newVoucherLine()])
+  const [outboundSub, setOutboundSub] = useState<OutboundSub>('issue')
+  const [inboundEntries, setInboundEntries] = useState<EntryMap>({})
   const [voucherNote, setVoucherNote] = useState('')
-  const [outboundLines, setOutboundLines] = useState<VoucherLine[]>([newOutboundLine()])
+  const [outboundEntries, setOutboundEntries] = useState<EntryMap>({})
   const [outboundNote, setOutboundNote] = useState('')
+  const [resetEntries, setResetEntries] = useState<EntryMap>({})
+  const [resetNote, setResetNote] = useState('')
   const [processInputs, setProcessInputs] = useState<ProcessLine[]>([newProcessLine('input')])
   const [processOutputs, setProcessOutputs] = useState<ProcessLine[]>([newProcessLine('output')])
   const [batchPhase, setBatchPhase] = useState<'opening' | 'additional'>('opening')
@@ -89,9 +99,19 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
   // Catalog SKU is shared company-wide. Every active SKU must remain visible at
   // every branch even when this branch currently has zero stock.
   const visibleOverviewStock = stock
-  const outboundStockOptions = useMemo(
-    () => visibleOverviewStock.filter((line) => line.expected > 0.0001),
-    [visibleOverviewStock],
+  // Bảng tồn dùng chung cho 3 màn nhập liệu (nhập / xuất / sửa tồn).
+  const availabilityByProduct = useMemo<StockAvailability[]>(
+    () => stock.map((line) => ({ product: line.product, available: line.expected })),
+    [stock],
+  )
+  const inboundAvailability = useMemo<StockAvailability[]>(() => {
+    const stockById = new Map(stock.map((line) => [line.product.id, line.expected]))
+    const products = inboundProducts.length ? inboundProducts : INBOUND_PRODUCTS
+    return products.map((product) => ({ product, available: stockById.get(product.id) || 0 }))
+  }, [inboundProducts, stock])
+  const outboundAvailability = useMemo(
+    () => availabilityByProduct.filter((line) => hasStock(line.available)),
+    [availabilityByProduct],
   )
   const lowStockLines = visibleOverviewStock.filter(stockNeedsAttention)
   const periodMovements = useMemo(
@@ -153,28 +173,20 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
     setNextStepHint('')
   }
 
-  function updateVoucherLine(id: string, patch: Partial<VoucherLine>) {
-    setVoucherLines((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item))
-  }
+  const updateInboundEntry = entryUpdater(setInboundEntries)
+  const updateOutboundEntry = entryUpdater(setOutboundEntries)
+  const updateResetEntry = entryUpdater(setResetEntries)
 
-  function resetVoucher() {
-    setVoucherLines([newVoucherLine()])
-    setVoucherNote('')
-  }
-
-  function updateOutboundLine(id: string, patch: Partial<VoucherLine>) {
-    setOutboundLines((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item))
-  }
-
-  function resetOutboundVoucher() {
-    setOutboundLines([newOutboundLine()])
-    setOutboundNote('')
-  }
-
-  async function saveVoucher() {
-    const validLines = voucherLines.filter((line) => Number(line.quantity) > 0)
-    if (!validLines.length) {
-      setFeedback('Phiếu phải có ít nhất một sản phẩm có số lượng lớn hơn 0.')
+  async function saveInboundVoucher() {
+    const lines = inboundAvailability.flatMap(({ product }) => {
+      const entry = inboundEntries[product.id]
+      if (!entry || !hasQuantityInput(entry.quantity)) return []
+      const { quantity, conversionNote } = convertEntryToStockQuantity(product, entry, { usePackSize: true })
+      if (quantity <= 0) return []
+      return [{ product, quantity, conversionNote, note: entry.note?.trim() || '' }]
+    })
+    if (!lines.length) {
+      setFeedback('Chưa có mặt hàng nào được nhập số lượng. Gõ số vào ô của mặt hàng cần nhập kho rồi lưu.')
       return
     }
     setSaving(true)
@@ -182,34 +194,22 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
     const now = new Date().toISOString()
     try {
       await makeSureDayIsOpen()
-      await addMovements(validLines.map((line) => {
-        const product = productById(line.productId)!
-        const enteredQuantity = Number(line.quantity)
-        const inboundPackSize = product.inboundPackKg ?? product.inboundPackQuantity
-        const storedQuantity = inboundPackSize
-          ? enteredQuantity * inboundPackSize
-          : quantityInProductUnit(product, line)
-        const conversionNote = inboundPackSize
-          ? `${enteredQuantity} ${product.inboundUnit} × ${inboundPackSize} ${product.unit} = ${storedQuantity} ${product.unit}`
-          : product.unit === 'kg' && line.entryWeightUnit === 'g'
-            ? `${enteredQuantity} g = ${storedQuantity} kg`
-            : ''
-        return {
-          id: createId(),
-          documentId,
-          branchId: user.branchId,
-          productId: line.productId,
-          type: 'inbound',
-          quantity: storedQuantity,
-          shiftDate: today,
-          note: [conversionNote, voucherNote, line.note].filter(Boolean).join(' — '),
-          createdBy: user.id,
-          createdAt: now,
-        }
-      }), user)
-      setFeedback(`Đã lưu phiếu nhập gồm ${validLines.length} sản phẩm.`)
+      await addMovements(lines.map((line) => ({
+        id: createId(),
+        documentId,
+        branchId: user.branchId,
+        productId: line.product.id,
+        type: 'inbound' as const,
+        quantity: line.quantity,
+        shiftDate: today,
+        note: [line.conversionNote, voucherNote, line.note].filter(Boolean).join(' — '),
+        createdBy: user.id,
+        createdAt: now,
+      })), user)
+      setFeedback(`Đã lưu phiếu nhập gồm ${lines.length} mặt hàng.`)
       setNextStepHint('processing')
-      resetVoucher()
+      setInboundEntries({})
+      setVoucherNote('')
       await onChanged()
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'Không thể lưu phiếu.')
@@ -219,48 +219,23 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
   }
 
   async function saveOutboundVoucher() {
-    if (!outboundStockOptions.length) {
-      setFeedback('Kho hiện không có SKU nào còn tồn để lập phiếu xuất.')
+    if (!outboundAvailability.length) {
+      setFeedback('Kho hiện không có mặt hàng nào còn tồn để lập phiếu xuất.')
       return
     }
-    const defaultProductId = outboundStockOptions[0]?.product.id || ''
-    const validLines = outboundLines
-      .map((line) => {
-        const productId = line.productId || defaultProductId
-        const product = productById(productId)
-        const stockLine = stock.find((item) => item.product.id === productId)
-        const normalizedLine = {
-          ...line,
-          productId,
-          entryWeightUnit: line.entryWeightUnit || preferredOutboundWeightUnit(product, stockLine?.expected),
-        }
-        return {
-          ...normalizedLine,
-          quantityValue: product ? quantityInProductUnit(product, normalizedLine) : Number(line.quantity),
-        }
-      })
-      .filter((line) => line.productId && line.quantityValue > 0)
-    if (!validLines.length) {
-      setFeedback('Phiếu xuất phải có ít nhất một sản phẩm có số lượng lớn hơn 0.')
+    // `planOutbound` tự khớp về đúng tồn khi số gõ chỉ lệch mức làm tròn → không còn
+    // cảnh "xuất xong vẫn dư 0,00x nên phải xuất lại lần nữa".
+    const plan = planOutbound(outboundAvailability, outboundEntries)
+    if (!plan.lines.length) {
+      setFeedback('Chưa chọn mặt hàng nào để xuất. Gõ số lượng hoặc bấm “Xuất hết” ở mặt hàng cần lấy ra.')
       return
-    }
-    const requestedByProduct = new Map<string, number>()
-    validLines.forEach((line) => {
-      requestedByProduct.set(line.productId, (requestedByProduct.get(line.productId) || 0) + line.quantityValue)
-    })
-    const shortLines: string[] = []
-    for (const [productId, requested] of requestedByProduct) {
-      const stockLine = stock.find((line) => line.product.id === productId)
-      const available = stockLine?.expected || 0
-      if (requested > available + 0.0001) {
-        const unit = stockLine?.product.unit || ''
-        shortLines.push(`${stockLine?.product.name || productId}: cần ${formatStockQuantity(requested, unit)}, tồn ${formatStockQuantity(available, unit)}`)
-      }
     }
     let allowInsufficientStock = false
-    if (shortLines.length) {
-      const proceed = window.confirm(`Tồn kho chưa đủ cho phiếu xuất:\n\n${shortLines.join('\n')}\n\nVẫn tiếp tục lập phiếu?`)
-      if (!proceed) return
+    if (plan.shortages.length) {
+      const detail = plan.shortages
+        .map((item) => `${item.product.name}: cần ${formatStockAmount(item.requested, item.product.unit)}, tồn ${formatStockAmount(item.available, item.product.unit)}`)
+        .join('\n')
+      if (!window.confirm(`Tồn kho chưa đủ cho phiếu xuất:\n\n${detail}\n\nVẫn tiếp tục lập phiếu?`)) return
       allowInsufficientStock = true
     }
     setSaving(true)
@@ -268,27 +243,77 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
     const now = new Date().toISOString()
     try {
       await makeSureDayIsOpen()
-      await addMovements(validLines.map((line) => {
-        const product = productById(line.productId)
-        return {
-          id: createId(),
-          documentId,
-          branchId: user.branchId,
-          productId: line.productId,
-          type: 'sale_out' as const,
-          quantity: line.quantityValue,
-          shiftDate: today,
-          note: ['[Phiếu xuất kho]', outboundNote, line.note].filter(Boolean).join(' — ') || '[Phiếu xuất kho]',
-          createdBy: user.id,
-          createdAt: now,
-          measuredWeightKg: product?.unit === 'kg' ? line.quantityValue : undefined,
-        }
-      }), user, { allowInsufficientStock })
-      setFeedback(`Đã lưu phiếu xuất kho gồm ${validLines.length} dòng hàng.`)
-      resetOutboundVoucher()
+      await addMovements(plan.lines.map((line) => ({
+        id: createId(),
+        documentId,
+        branchId: user.branchId,
+        productId: line.product.id,
+        type: 'sale_out' as const,
+        quantity: line.quantity,
+        shiftDate: today,
+        note: [
+          '[Phiếu xuất kho]',
+          line.snapped ? `Xuất hết tồn ${formatStockAmount(line.available, line.product.unit)}` : '',
+          outboundNote,
+          line.note,
+        ].filter(Boolean).join(' — '),
+        createdBy: user.id,
+        createdAt: now,
+        measuredWeightKg: line.product.unit === 'kg' ? line.quantity : undefined,
+      })), user, { allowInsufficientStock })
+      const clearedCount = plan.lines.filter((line) => line.remaining <= STOCK_EPSILON).length
+      setFeedback(`Đã lưu phiếu xuất ${plan.lines.length} mặt hàng${clearedCount ? ` · ${clearedCount} mặt hàng đã về 0` : ''}.`)
+      setOutboundEntries({})
+      setOutboundNote('')
       await onChanged()
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'Không thể lưu phiếu xuất kho.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /**
+   * SỬA TỒN — đường tắt cho tình huống "sổ kho sai": khai thẳng số đúng, hệ thống
+   * ghi một phiếu kiểm kê (`count`) làm mốc reset. Không phải xuất hết rồi nhập lại.
+   */
+  async function saveStockReset() {
+    const lines = planStockReset(availabilityByProduct, resetEntries)
+    if (!lines.length) {
+      setFeedback('Chưa có mặt hàng nào thay đổi. Nhập số tồn đúng (gõ 0 nếu đã hết sạch) rồi lưu.')
+      return
+    }
+    const detail = lines
+      .map((line) => `• ${line.product.name}: ${formatStockAmount(line.current, line.product.unit)} → ${formatStockAmount(line.target, line.product.unit)} (${formatDeltaAmount(line.delta, line.product.unit)})`)
+      .join('\n')
+    if (!window.confirm(`Đặt lại tồn kho cho ${lines.length} mặt hàng:\n\n${detail}\n\nSố khai sẽ thay cho số hệ thống đang tính. Xác nhận?`)) return
+    setSaving(true)
+    const documentId = createId()
+    const now = new Date().toISOString()
+    try {
+      await makeSureDayIsOpen()
+      await addMovements(lines.map((line) => ({
+        id: createId(),
+        documentId,
+        branchId: user.branchId,
+        productId: line.product.id,
+        type: 'count' as const,
+        quantity: line.target,
+        shiftDate: today,
+        note: [
+          `${STOCK_RESET_TAG} hệ thống ${formatStockAmount(line.current, line.product.unit)} → thực tế ${formatStockAmount(line.target, line.product.unit)} (${formatDeltaAmount(line.delta, line.product.unit)})`,
+          resetNote,
+          line.note,
+        ].filter(Boolean).join(' — '),
+        createdBy: user.id,
+        createdAt: now,
+      })), user)
+      setFeedback(`Đã đặt lại tồn cho ${lines.length} mặt hàng. Tồn kho hiện lấy theo số vừa khai.`)
+      setResetEntries({})
+      setResetNote('')
+      await onChanged()
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : 'Không thể lưu phiếu sửa tồn.')
     } finally {
       setSaving(false)
     }
@@ -461,7 +486,7 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
           <span className="eyebrow dark">{canOperateInventory ? 'KHO CA TRƯỞNG' : text.reportEyebrow}</span>
           <h1>{canOperateInventory ? 'Quản lý kho' : text.reportTitle}</h1>
           <p>{canOperateInventory
-            ? 'Bốn chức năng: Nhập hàng · Xuất bán · Kiểm kê · Tồn kho. Cuối ca chốt tồn thành phẩm ở màn Bàn giao ca.'
+            ? 'Nhập hàng · Xuất kho & sửa tồn · Kiểm kê · Tồn kho. Kho lệch số thì vào Xuất kho › Sửa tồn để khai thẳng số đúng.'
             : text.reportSubtitle}</p>
         </div>
       </div>
@@ -550,16 +575,22 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
           </div>
         )}
         {inboundSub === 'material' ? <>
-          <VoucherEditor
-            lines={voucherLines}
-            products={inboundProducts}
+          <StockEntryBoard
+            mode="in"
+            eyebrow="BƯỚC 1 · ĐẦU NGÀY"
+            title="Nhập hàng vào kho"
+            hint="Gõ số lượng ngay tại mặt hàng cần nhập — không cần thêm dòng, không cần chọn trong danh sách xổ."
+            rows={inboundAvailability}
+            entries={inboundEntries}
             note={voucherNote}
+            notePlaceholder="Áp dụng cho toàn bộ phiếu: nhà cung cấp, người giao…"
+            noteLabel="Ghi chú chung / Nhà cung cấp / Người nhận"
+            saveLabel="✓ Lưu phiếu nhập kho"
             saving={saving}
             onNote={setVoucherNote}
-            onUpdate={updateVoucherLine}
-            onAdd={() => setVoucherLines((items) => [...items, newVoucherLine()])}
-            onRemove={(id) => setVoucherLines((items) => items.length === 1 ? items : items.filter((item) => item.id !== id))}
-            onSave={saveVoucher}
+            onEntry={updateInboundEntry}
+            onClear={() => setInboundEntries({})}
+            onSave={saveInboundVoucher}
           />
           <InboundVoucherHistory
             movements={movements.filter((item) => item.shiftDate === today)}
@@ -589,28 +620,68 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
         </>}
       </>}
 
-      {/* ── XUẤT ── */}
+      {/* ── XUẤT + SỬA TỒN ── */}
       {crmMode === 'outbound' && (
         <>
           {canOperateInventory && (
-            <OutboundVoucherEditor
-              lines={outboundLines}
+            <div className="inventory-subtabs" role="tablist">
+              <button type="button" className={outboundSub === 'issue' ? 'active' : ''} onClick={() => setOutboundSub('issue')}>① Xuất hàng khỏi kho</button>
+              <button type="button" className={outboundSub === 'reset' ? 'active' : ''} onClick={() => setOutboundSub('reset')}>② Sửa tồn cho đúng</button>
+            </div>
+          )}
+          {canOperateInventory && outboundSub === 'issue' && (
+            <StockEntryBoard
+              mode="out"
+              eyebrow="PHIẾU XUẤT KHO"
+              title="Lấy hàng ra khỏi kho"
+              hint="Bấm “Xuất hết” là lấy đúng số tồn thật (kể cả phần lẻ) — kho về 0 trong một lần, không phải xuất đi xuất lại."
+              rows={outboundAvailability}
+              entries={outboundEntries}
               note={outboundNote}
-              stock={outboundStockOptions}
+              noteLabel="Ghi chú chung / Người nhận / Lý do xuất"
+              notePlaceholder="Ví dụ: xuất ra quầy bán, chuyển ca, bổ sung tủ trưng bày…"
+              saveLabel="✓ Lưu phiếu xuất kho"
               saving={saving}
+              emptyCopy="Kho hiện không còn mặt hàng nào có tồn để xuất."
+              footerNote={<>Kho lệch nhiều mặt hàng? Sang tab <b>② Sửa tồn cho đúng</b> để khai thẳng số đúng — nhanh hơn xuất hết rồi nhập lại.</>}
               onNote={setOutboundNote}
-              onUpdate={updateOutboundLine}
-              onAdd={() => setOutboundLines((items) => [...items, newOutboundLine()])}
-              onRemove={(id) => setOutboundLines((items) => items.length === 1 ? items : items.filter((item) => item.id !== id))}
+              onEntry={updateOutboundEntry}
+              onClear={() => setOutboundEntries({})}
               onSave={saveOutboundVoucher}
             />
           )}
-          <OutboundMovementHistory
-            movements={periodMovements}
-            saving={saving}
-            canDelete={canOperateInventory}
-            onDelete={(rows) => canOperateInventory && deleteMovementGroup(rows, 'phiếu xuất kho')}
-          />
+          {canOperateInventory && outboundSub === 'reset' && <>
+            <StockEntryBoard
+              mode="set"
+              eyebrow="SỬA TỒN KHO"
+              title="Đặt lại số tồn cho đúng thực tế"
+              hint="Khai số đang có thật trong kho (gõ 0 nếu đã hết sạch). Hệ thống ghi một phiếu kiểm kê làm mốc — không cần xuất hết rồi nhập lại."
+              rows={availabilityByProduct}
+              entries={resetEntries}
+              note={resetNote}
+              noteLabel="Lý do sửa tồn"
+              notePlaceholder="Ví dụ: kiểm lại kho đầu ca, sổ lệch do ghi thiếu phiếu…"
+              saveLabel="✓ Lưu phiếu sửa tồn"
+              saving={saving}
+              onNote={setResetNote}
+              onEntry={updateResetEntry}
+              onClear={() => setResetEntries({})}
+              onSave={saveStockReset}
+            />
+            <StockResetHistory
+              movements={periodMovements}
+              saving={saving}
+              onDelete={(rows) => deleteMovementGroup(rows, 'phiếu sửa tồn')}
+            />
+          </>}
+          {outboundSub === 'issue' && (
+            <OutboundMovementHistory
+              movements={periodMovements}
+              saving={saving}
+              canDelete={canOperateInventory}
+              onDelete={(rows) => canOperateInventory && deleteMovementGroup(rows, 'phiếu xuất kho')}
+            />
+          )}
         </>
       )}
 
@@ -743,16 +814,14 @@ function SmartStockList({
   compact?: boolean
 }) {
   const [category, setCategory] = useState<StockDisplayCategory>('all')
+  // Kho không còn nhóm "món trong menu bán" — món menu đã bị loại khỏi calculateStock.
   const displayCategory = (line: ReturnType<typeof calculateStock>[number]): Exclude<StockDisplayCategory, 'all'> =>
-    line.product.category === 'finished' && line.product.unit !== 'kg' && Number(line.product.price || 0) > 0
-      ? 'sale'
-      : line.product.category
+    line.product.category
   const categoryLabel = (value: string) =>
     value === 'raw' ? text.raw
       : value === 'packaging' ? text.packaging
-        : value === 'sale' ? 'Món trong menu bán'
-          : 'Thành phẩm tồn khi chế biến'
-  const presentCategories = (['sale', 'finished', 'raw', 'packaging'] as const).filter((value) =>
+        : 'Thành phẩm chế biến'
+  const presentCategories = (['finished', 'raw', 'packaging'] as const).filter((value) =>
     stock.some((line) => displayCategory(line) === value))
   const sorted = [...stock].sort((a, b) => stockPriority(a) - stockPriority(b) || a.product.name.localeCompare(b.product.name, 'vi'))
   const activeCategory = category !== 'all' && presentCategories.includes(category) ? category : 'all'
@@ -871,130 +940,349 @@ function OutboundMovementHistory({
   )
 }
 
-function OutboundVoucherEditor({
-  lines, note, stock, saving, onNote, onUpdate, onAdd, onRemove, onSave,
+/**
+ * BẢNG NHẬP LIỆU KHO DÙNG CHUNG cho 3 việc: nhập hàng, xuất hàng, sửa tồn.
+ *
+ * Thiết kế lại 05/08/2026 theo phản hồi ca trưởng — trước đây mỗi phiếu là một
+ * danh sách "dòng" phải tự bấm thêm rồi chọn sản phẩm trong dropdown, số tồn lại
+ * chỉ hiện 2 chữ số thập phân nên xuất hết mãi vẫn dư vài gram. Nay:
+ *  · mỗi SKU là một dòng có sẵn, chỉ việc gõ số (có ô tìm kiếm + lọc nhóm),
+ *  · hiện ĐỦ số lẻ như sổ kho lưu,
+ *  · có nút “Xuất hết” / “Về 0” lấy đúng số tồn thật để kho về 0 dứt điểm.
+ */
+function StockEntryBoard({
+  mode, eyebrow, title, hint, rows, entries, note, noteLabel, notePlaceholder, saveLabel, saving,
+  emptyCopy, footerNote, onNote, onEntry, onClear, onSave,
 }: {
-  lines: VoucherLine[]
+  mode: 'in' | 'out' | 'set'
+  eyebrow: string
+  title: string
+  hint: string
+  rows: StockAvailability[]
+  entries: EntryMap
   note: string
-  stock: ReturnType<typeof calculateStock>
+  noteLabel: string
+  notePlaceholder: string
+  saveLabel: string
   saving: boolean
+  emptyCopy?: string
+  footerNote?: React.ReactNode
   onNote: (value: string) => void
-  onUpdate: (id: string, patch: Partial<VoucherLine>) => void
-  onAdd: () => void
-  onRemove: (id: string) => void
+  onEntry: (productId: string, patch: Partial<QuantityEntry>) => void
+  onClear: () => void
   onSave: () => void
 }) {
-  const firstProductId = stock[0]?.product.id || ''
-  const activeLines = lines.filter((line) => Number(line.quantity) > 0)
-  const totalQty = activeLines.reduce((sum, line) => {
-    const stockLine = stock.find((item) => item.product.id === (line.productId || firstProductId))
-    return sum + (stockLine ? quantityInProductUnit(stockLine.product, {
-      ...line,
-      entryWeightUnit: line.entryWeightUnit || preferredOutboundWeightUnit(stockLine.product, stockLine.expected),
-    }) : Number(line.quantity || 0))
-  }, 0)
+  const [query, setQuery] = useState('')
+  const [category, setCategory] = useState<StockDisplayCategory>('all')
+  const [onlyFilled, setOnlyFilled] = useState(false)
+  const presentCategories = (['finished', 'raw', 'packaging'] as const)
+    .filter((value) => rows.some((row) => row.product.category === value))
+  const activeCategory = category !== 'all' && presentCategories.includes(category) ? category : 'all'
+  const filledIds = new Set(rows
+    .filter((row) => hasQuantityInput(entries[row.product.id]?.quantity))
+    .map((row) => row.product.id))
+  const visibleRows = rows.filter((row) => {
+    if (onlyFilled && !filledIds.has(row.product.id)) return false
+    if (activeCategory !== 'all' && row.product.category !== activeCategory) return false
+    return matchesProductQuery(row.product, query)
+  })
+  const outboundPlan = useMemo(() => mode === 'out' ? planOutbound(rows, entries) : null, [mode, rows, entries])
+  const resetLines = useMemo(() => mode === 'set' ? planStockReset(rows, entries) : [], [mode, rows, entries])
+  const clearedCount = outboundPlan?.lines.filter((line) => line.remaining <= STOCK_EPSILON).length || 0
+
+  /** Đổ số tồn thật vào ô nhập (nút "Xuất hết") — lấy nguyên số lẻ, không làm tròn cho đẹp. */
+  function fillFullStock(row: StockAvailability) {
+    const unit = defaultEntryUnit(row.product, row.available)
+    const rounded = roundQuantity(row.available)
+    onEntry(row.product.id, {
+      unit,
+      quantity: quantityInputValue(unit === 'g' ? rounded * 1000 : rounded),
+    })
+  }
+
+  const summary = mode === 'out'
+    ? `${outboundPlan?.lines.length || 0} mặt hàng sẽ xuất${clearedCount ? ` · ${clearedCount} về 0` : ''}`
+    : mode === 'set'
+      ? `${resetLines.length} mặt hàng thay đổi tồn`
+      : `${filledIds.size} mặt hàng sẽ nhập kho`
+
   return (
-    <section className="entry-card voucher-card outbound-voucher-card">
+    <section className="entry-card stock-entry-board">
       <div className="section-title">
-        <div><span className="eyebrow dark">PHIẾU XUẤT KHO</span><h2>Lấy hàng khỏi kho bán</h2></div>
+        <div><span className="eyebrow dark">{eyebrow}</span><h2>{title}</h2></div>
         <span className="date-chip">{new Date().toLocaleDateString('vi-VN')}</span>
       </div>
-      <p className="outbound-voucher-note">
-        Phiếu này trừ tồn kho ngay khi lưu. Nếu xuất nhầm số lượng, xóa cả phiếu trong lịch sử bên dưới rồi lập lại.
-      </p>
-      <p className="inventory-weight-warning">⚠ Với hàng cân ký: <b>5,123 kg = 5.123 kg</b>. Nếu số cân là 5123 gram, chọn đơn vị <b>g</b> trước khi lưu.</p>
-      <label className="voucher-note">Ghi chú chung / Người nhận / Lý do xuất
-        <input value={note} onChange={(event) => onNote(event.target.value)} placeholder="Ví dụ: xuất ra quầy bán, chuyển ca, bổ sung tủ trưng bày..." />
-      </label>
-      {!stock.length && <p className="empty-copy">Chưa có SKU nào còn tồn để lập phiếu xuất.</p>}
-      {stock.length > 0 && (
-        <>
-          <div className="voucher-mobile-list">
-            {lines.map((line, index) => {
-              const selectedProductId = line.productId || firstProductId
-              const stockLine = stock.find((item) => item.product.id === selectedProductId) || stock[0]
-              const entryWeightUnit = line.entryWeightUnit || preferredOutboundWeightUnit(stockLine.product, stockLine.expected)
-              const requested = lines
-                .filter((item) => (item.productId || firstProductId) === stockLine.product.id)
-                .reduce((sum, item) => sum + quantityInProductUnit(stockLine.product, {
-                  ...item,
-                  entryWeightUnit: item.entryWeightUnit || preferredOutboundWeightUnit(stockLine.product, stockLine.expected),
-                }), 0)
-              return <article className="voucher-mobile-card" key={line.id}>
-                <div className="voucher-mobile-card-head">
-                  <strong>Dòng xuất #{index + 1}</strong>
-                  {lines.length > 1 && <button type="button" className="row-remove" onClick={() => onRemove(line.id)}>×</button>}
-                </div>
-                <label>Sản phẩm
-                  <select value={selectedProductId} onChange={(event) => {
-                    const selected = stock.find((item) => item.product.id === event.target.value)
-                    onUpdate(line.id, {
-                      productId: event.target.value,
-                      entryWeightUnit: preferredOutboundWeightUnit(selected?.product, selected?.expected),
-                    })
-                  }}>
-                    {stock.map((item) => <option key={item.product.id} value={item.product.id}>{item.product.name}</option>)}
-                  </select>
-                </label>
-                <div className="voucher-mobile-quantity">
-                  <label>Số lượng xuất
-                    <input inputMode="decimal" value={line.quantity} onChange={(event) => onUpdate(line.id, { quantity: cleanNumber(event.target.value) })} placeholder="0" />
-                  </label>
-                  <div><span>Đơn vị nhập</span>{stockLine.product.unit === 'kg'
-                    ? <select value={entryWeightUnit} onChange={(event) => onUpdate(line.id, { entryWeightUnit: event.target.value as 'kg' | 'g' })}><option value="kg">kg</option><option value="g">gram (g)</option></select>
-                    : <strong>{stockLine.product.unit}</strong>}</div>
-                </div>
-                <small className="stock-available">Khả dụng: {formatStockQuantity(stockLine.expected, stockLine.product.unit)}</small>
-                <small className={requested > stockLine.expected ? 'stock-available insufficient' : 'stock-available'}>
-                  Tổng đang xuất SKU này: {formatStockQuantity(requested, stockLine.product.unit)}
-                </small>
-                <label>Ghi chú dòng
-                  <input value={line.note} onChange={(event) => onUpdate(line.id, { note: event.target.value })} placeholder="Tùy chọn" />
-                </label>
-              </article>
-            })}
-          </div>
-          <div className="voucher-table-wrap">
-            <table className="voucher-table">
-              <thead><tr><th>STT</th><th>Sản phẩm</th><th>Khả dụng</th><th>ĐVT nhập</th><th>Số lượng xuất</th><th>Ghi chú dòng</th><th /></tr></thead>
-              <tbody>
-                {lines.map((line, index) => {
-                  const selectedProductId = line.productId || firstProductId
-                  const stockLine = stock.find((item) => item.product.id === selectedProductId) || stock[0]
-                  const entryWeightUnit = line.entryWeightUnit || preferredOutboundWeightUnit(stockLine.product, stockLine.expected)
-                  const requested = lines
-                    .filter((item) => (item.productId || firstProductId) === stockLine.product.id)
-                    .reduce((sum, item) => sum + quantityInProductUnit(stockLine.product, {
-                      ...item,
-                      entryWeightUnit: item.entryWeightUnit || preferredOutboundWeightUnit(stockLine.product, stockLine.expected),
-                    }), 0)
-                  return <tr key={line.id}>
-                    <td>{index + 1}</td>
-                    <td><select value={selectedProductId} onChange={(event) => {
-                      const selected = stock.find((item) => item.product.id === event.target.value)
-                      onUpdate(line.id, {
-                        productId: event.target.value,
-                        entryWeightUnit: preferredOutboundWeightUnit(selected?.product, selected?.expected),
-                      })
-                    }}>{stock.map((item) => <option key={item.product.id} value={item.product.id}>{item.product.name}</option>)}</select></td>
-                    <td><span className={requested > stockLine.expected ? 'stock-available insufficient' : 'stock-available'}>{formatStockQuantity(stockLine.expected, stockLine.product.unit)}</span></td>
-                    <td>{stockLine.product.unit === 'kg'
-                      ? <select value={entryWeightUnit} onChange={(event) => onUpdate(line.id, { entryWeightUnit: event.target.value as 'kg' | 'g' })}><option value="kg">kg</option><option value="g">g</option></select>
-                      : <span className="unit-chip">{stockLine.product.unit}</span>}</td>
-                    <td><input inputMode="decimal" value={line.quantity} onChange={(event) => onUpdate(line.id, { quantity: cleanNumber(event.target.value) })} placeholder="0" /></td>
-                    <td><input value={line.note} onChange={(event) => onUpdate(line.id, { note: event.target.value })} placeholder="Tùy chọn" /></td>
-                    <td><button type="button" className="row-remove" onClick={() => onRemove(line.id)}>×</button></td>
-                  </tr>
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="voucher-footer">
-            <button type="button" className="secondary-button" onClick={onAdd}>＋ Thêm sản phẩm</button>
-            <div><span>{activeLines.length} dòng · {formatNumber(totalQty)} đơn vị</span><button type="button" className="primary-button" onClick={onSave} disabled={saving}>{saving ? 'Đang lưu...' : '✓ Lưu phiếu xuất kho'}</button></div>
-          </div>
-        </>
+      {/* Một dòng hướng dẫn duy nhất: màn kho là màn thao tác nhanh, không phải trang đọc. */}
+      <p className="stock-entry-hint">{hint} <span>Cân ký: 5,123 kg = 5.123 kg — cân hiện 5123 gram thì đổi đơn vị sang g.</span></p>
+      <div className="stock-entry-tools">
+        <input
+          className="stock-entry-search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="🔍 Tìm mặt hàng: hat de, bao bi…"
+          inputMode="search"
+          aria-label="Tìm mặt hàng"
+        />
+        {presentCategories.length > 1 && (
+          <select
+            className="stock-entry-filter"
+            value={activeCategory}
+            onChange={(event) => setCategory(event.target.value as StockDisplayCategory)}
+            aria-label="Lọc theo nhóm hàng"
+          >
+            <option value="all">Tất cả nhóm ({rows.length})</option>
+            {presentCategories.map((value) => (
+              <option key={value} value={value}>
+                {value === 'raw' ? 'Nguyên liệu' : value === 'packaging' ? 'Bao bì' : 'Thành phẩm'} ({rows.filter((row) => row.product.category === value).length})
+              </option>
+            ))}
+          </select>
+        )}
+        <button
+          type="button"
+          className={onlyFilled ? 'chip-toggle active' : 'chip-toggle'}
+          onClick={() => setOnlyFilled((value) => !value)}
+          disabled={!filledIds.size}
+        >
+          {onlyFilled ? '✓ Dòng đã nhập' : `Dòng đã nhập (${filledIds.size})`}
+        </button>
+        <input
+          className="stock-entry-voucher-note"
+          value={note}
+          onChange={(event) => onNote(event.target.value)}
+          placeholder={notePlaceholder}
+          aria-label={noteLabel}
+          title={noteLabel}
+        />
+      </div>
+      {!rows.length && <p className="empty-copy">{emptyCopy || 'Chưa có mặt hàng nào trong danh mục kho.'}</p>}
+      {rows.length > 0 && !visibleRows.length && <p className="empty-copy">Không có mặt hàng nào khớp bộ lọc hiện tại.</p>}
+      {visibleRows.length > 0 && (
+        <div className="stock-entry-head" aria-hidden="true">
+          <span>Mặt hàng</span>
+          <span>{mode === 'set' ? 'Tồn hệ thống' : 'Đang có'}</span>
+          <span>{mode === 'set' ? 'Tồn thực tế' : 'Số lượng'}</span>
+          <span />
+          <span>{mode === 'in' ? 'Sau nhập' : mode === 'out' ? 'Còn lại' : 'Lệch'}</span>
+        </div>
       )}
+      <div className="stock-entry-list">
+        {visibleRows.map((row) => (
+          <StockEntryRow
+            key={row.product.id}
+            mode={mode}
+            row={row}
+            entry={entries[row.product.id]}
+            planLine={outboundPlan?.lines.find((line) => line.product.id === row.product.id)}
+            onEntry={onEntry}
+            onFillFullStock={() => fillFullStock(row)}
+          />
+        ))}
+      </div>
+      <div className="stock-entry-footer">
+        <div className="stock-entry-summary">
+          <strong>{summary}</strong>
+          {footerNote && <small>{footerNote}</small>}
+        </div>
+        <div className="stock-entry-footer-actions">
+          {mode === 'out' && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => visibleRows.forEach((row) => hasStock(row.available) && fillFullStock(row))}
+              disabled={!visibleRows.length}
+            >
+              ⇧ Xuất hết {visibleRows.length} mặt hàng đang xem
+            </button>
+          )}
+          {mode === 'set' && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => visibleRows.forEach((row) => onEntry(row.product.id, { quantity: '0' }))}
+              disabled={!visibleRows.length}
+            >
+              ⊘ Khai hết sạch cho {visibleRows.length} mặt hàng đang xem
+            </button>
+          )}
+          <button type="button" className="secondary-button" onClick={onClear} disabled={!filledIds.size}>↺ Xóa số đã nhập</button>
+          <button type="button" className="primary-button" onClick={onSave} disabled={saving}>{saving ? 'Đang lưu…' : saveLabel}</button>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function StockEntryRow({
+  mode, row, entry, planLine, onEntry, onFillFullStock,
+}: {
+  mode: 'in' | 'out' | 'set'
+  row: StockAvailability
+  entry?: QuantityEntry
+  planLine?: ReturnType<typeof planOutbound>['lines'][number]
+  onEntry: (productId: string, patch: Partial<QuantityEntry>) => void
+  onFillFullStock: () => void
+}) {
+  const { product, available } = row
+  const packSize = mode === 'in' ? inboundPackSize(product) : undefined
+  const canPickWeightUnit = product.unit === 'kg' && !packSize
+  const unit = entry?.unit || defaultEntryUnit(product, available) || 'kg'
+  const filled = hasQuantityInput(entry?.quantity)
+  const { quantity: converted, conversionNote } = convertEntryToStockQuantity(
+    product,
+    { quantity: entry?.quantity || '', unit },
+    { usePackSize: mode === 'in' },
+  )
+  const entered = parseQuantityInput(entry?.quantity)
+  const [noteOpen, setNoteOpen] = useState(false)
+  // Kết quả để ở dạng NGẮN (một cụm số) cho vừa một dòng; câu đầy đủ nằm ở tooltip.
+  const resultValue = mode === 'in'
+    ? formatStockAmount(available + converted, product.unit)
+    : mode === 'out'
+      ? formatStockAmount(planLine ? planLine.remaining : available - converted, product.unit)
+      : filled
+        ? formatDeltaAmount(roundQuantity(converted - available), product.unit)
+        : '—'
+  const resultTitle = mode === 'in'
+    ? `Tồn sau khi nhập: ${resultValue}`
+    : mode === 'out'
+      ? `Còn lại sau phiếu: ${resultValue}`
+      : filled ? `Chênh lệch so với tồn hệ thống: ${resultValue}` : 'Chưa khai — tồn giữ nguyên'
+  const shortage = mode === 'out' && !planLine?.snapped && converted > roundQuantity(available)
+  const willClear = mode === 'out' && filled && planLine !== undefined && planLine.remaining <= STOCK_EPSILON
+  const hintText = [
+    conversionNote,
+    planLine?.snapped ? `Đã khớp đúng tồn ${formatStockAmount(planLine.available, product.unit)}` : '',
+    shortage ? `Vượt tồn ${formatStockAmount(roundQuantity(converted - available), product.unit)} — lưu sẽ phải xác nhận.` : '',
+    mode === 'in' && packSize && entered > 0 ? `Quy cách 1 ${inboundEntryUnit(product)} = ${formatQuantity(packSize)} ${product.unit}` : '',
+  ].filter(Boolean).join(' · ')
+  return (
+    <article className={`stock-entry-row${filled ? ' filled' : ''}${shortage ? ' shortage' : ''}`}>
+      <div className="stock-entry-id">
+        <strong title={product.name}>{product.name}</strong>
+        <small>{product.sku}</small>
+      </div>
+      {/* Hiện ĐỦ số lẻ: đây chính là chỗ trước đây cắt còn 2 chữ số làm ca trưởng xuất thiếu. */}
+      <b className="stock-entry-current" title={mode === 'set' ? 'Tồn hệ thống' : 'Đang có trong kho'}>{formatStockAmount(available, product.unit)}</b>
+      <div className="stock-entry-input">
+        <input
+          inputMode="decimal"
+          value={entry?.quantity || ''}
+          onChange={(event) => onEntry(product.id, { quantity: sanitizeQuantityInput(event.target.value), unit })}
+          placeholder={mode === 'set' ? 'Tồn thật' : 'Số lượng'}
+          aria-label={`${mode === 'set' ? 'Tồn thực tế' : 'Số lượng'} của ${product.name}`}
+        />
+        {canPickWeightUnit
+          ? (
+            <select value={unit} onChange={(event) => onEntry(product.id, { unit: event.target.value as EntryUnit })} aria-label={`Đơn vị nhập của ${product.name}`}>
+              <option value="kg">kg</option>
+              <option value="g">g</option>
+            </select>
+          )
+          : <span className="unit-chip">{mode === 'in' ? inboundEntryUnit(product) : product.unit}</span>}
+      </div>
+      <div className="stock-entry-actions">
+        {mode === 'out' && (
+          <button type="button" className="chip-action" onClick={onFillFullStock} disabled={!hasStock(available)}>Hết</button>
+        )}
+        {mode === 'set' && (
+          <button type="button" className="chip-action" onClick={() => onEntry(product.id, { quantity: '0' })} disabled={!hasStock(available)}>Hết sạch</button>
+        )}
+        {mode === 'set' && hasStock(available) && (
+          <button type="button" className="chip-action ghost" onClick={onFillFullStock} title="Điền đúng số tồn hệ thống">= Tồn</button>
+        )}
+        <button
+          type="button"
+          className={noteOpen ? 'chip-action ghost active' : 'chip-action ghost'}
+          onClick={() => setNoteOpen((value) => !value)}
+          title="Ghi chú cho dòng này"
+          aria-label={`Ghi chú dòng ${product.name}`}
+        >
+          ✎{entry?.note ? '•' : ''}
+        </button>
+        <button
+          type="button"
+          className="chip-action ghost"
+          onClick={() => { onEntry(product.id, { quantity: '', note: '' }); setNoteOpen(false) }}
+          disabled={!filled}
+          title="Xóa số đã nhập ở dòng này"
+          aria-label={`Xóa số đã nhập của ${product.name}`}
+        >
+          ×
+        </button>
+      </div>
+      <div className={`stock-entry-result${shortage ? ' insufficient' : ''}${willClear ? ' cleared' : ''}`} title={resultTitle}>
+        <b>{resultValue}</b>
+        {willClear && <i>về 0</i>}
+      </div>
+      {hintText && <small className={shortage ? 'stock-entry-hintline insufficient' : 'stock-entry-hintline'}>{hintText}</small>}
+      {noteOpen && (
+        <input
+          className="stock-entry-note"
+          value={entry?.note || ''}
+          onChange={(event) => onEntry(product.id, { note: event.target.value })}
+          placeholder={`Ghi chú cho ${product.name}`}
+          aria-label={`Ghi chú dòng ${product.name}`}
+        />
+      )}
+    </article>
+  )
+}
+
+/** Lịch sử phiếu SỬA TỒN — xóa phiếu là bỏ mốc kiểm kê, tồn quay lại cách tính cũ. */
+function StockResetHistory({
+  movements, saving, onDelete,
+}: {
+  movements: StockMovement[]
+  saving: boolean
+  onDelete: (rows: StockMovement[]) => void
+}) {
+  const groups = groupMovementDocuments(
+    movements.filter((item) => item.type === 'count' && item.note.includes(STOCK_RESET_TAG)),
+  )
+  return (
+    <section className="section-card compact-history">
+      <div className="section-title">
+        <div><span className="eyebrow dark">SỬA TỒN ĐÃ LƯU</span><h2>Lịch sử đặt lại tồn</h2></div>
+        <span className="date-chip">{groups.length} phiếu</span>
+      </div>
+      {!groups.length && <p className="empty-copy">Chưa có phiếu sửa tồn trong kỳ đang xem.</p>}
+      <div className="document-list">
+        {groups.map(([id, rows]) => (
+          <details className="document-card" key={id}>
+            <summary className="document-summary">
+              <div>
+                <strong>Phiếu sửa tồn · {new Date(rows[0].createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}</strong>
+                <small>{rows.length} mặt hàng · chạm để xem chi tiết</small>
+              </div>
+              <button
+                type="button"
+                className="danger-button compact"
+                disabled={saving}
+                onClick={(event) => {
+                  event.preventDefault()
+                  event.stopPropagation()
+                  onDelete(rows)
+                }}
+              >
+                Xóa phiếu
+              </button>
+            </summary>
+            <div className="document-products">
+              {rows.map((item) => {
+                const product = productById(item.productId)
+                return (
+                  <span key={item.id}>
+                    <strong>{product?.name || item.productId}</strong>
+                    <b>{formatStockQuantity(item.quantity, product?.unit || '')}</b>
+                    <small>{item.note.replace(STOCK_RESET_TAG, '').trim()}</small>
+                  </span>
+                )
+              })}
+            </div>
+          </details>
+        ))}
+      </div>
     </section>
   )
 }
@@ -1227,98 +1515,6 @@ function ProcessingBatchEditor({
   )
 }
 
-function VoucherEditor({
-  lines, products, note, saving, onNote, onUpdate, onAdd, onRemove, onSave,
-}: {
-  lines: VoucherLine[]
-  products: Product[]
-  note: string
-  saving: boolean
-  onNote: (value: string) => void
-  onUpdate: (id: string, patch: Partial<VoucherLine>) => void
-  onAdd: () => void
-  onRemove: (id: string) => void
-  onSave: () => void
-}) {
-  const allowedProducts = products.length ? products : INBOUND_PRODUCTS
-  return (
-    <section className="entry-card voucher-card">
-      <div className="section-title">
-        <div><span className="eyebrow dark">BƯỚC 1 · ĐẦU NGÀY</span><h2>Nhập hàng vào kho</h2></div>
-        <span className="date-chip">{new Date().toLocaleDateString('vi-VN')}</span>
-      </div>
-      <label className="voucher-note">Ghi chú chung / Nhà cung cấp / Người nhận
-        <input value={note} onChange={(e) => onNote(e.target.value)} placeholder="Áp dụng cho toàn bộ phiếu" />
-      </label>
-      <p className="inventory-weight-warning">⚠ Nhập số ký bằng dấu phẩy hoặc dấu chấm thập phân: <b>5,123 kg = 5.123 kg</b>. Nếu cân theo gram, hãy chọn <b>g</b>; không nhập 5123 khi đang chọn kg.</p>
-      <p className="mobile-table-hint">Vuốt ngang bảng để nhập số lượng và ghi chú cho từng sản phẩm.</p>
-      <div className="voucher-mobile-list">
-        {lines.map((line, index) => {
-          const product = allowedProducts.find((item) => item.id === line.productId) || allowedProducts[0]
-          const entryUnit = product.inboundUnit || product.unit
-          const inboundPackSize = product.inboundPackKg ?? product.inboundPackQuantity
-          const canChooseWeightUnit = product.unit === 'kg' && !inboundPackSize
-          const convertedQuantity = inboundPackSize
-            ? Number(line.quantity || 0) * inboundPackSize
-            : null
-          return <article className="voucher-mobile-card" key={line.id}>
-            <div className="voucher-mobile-card-head">
-              <strong>Sản phẩm #{index + 1}</strong>
-              {lines.length > 1 && <button type="button" className="row-remove" onClick={() => onRemove(line.id)}>×</button>}
-            </div>
-            <label>Sản phẩm
-              <select value={product.id} onChange={(e) => onUpdate(line.id, { productId: e.target.value, entryWeightUnit: 'kg' })}>
-                {allowedProducts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-              </select>
-            </label>
-            <div className="voucher-mobile-quantity">
-              <label>Số lượng
-                <input inputMode="decimal" value={line.quantity} onChange={(e) => onUpdate(line.id, { quantity: cleanNumber(e.target.value) })} placeholder="Để trống nếu chưa nhập" />
-              </label>
-              <div><span>Đơn vị</span>{canChooseWeightUnit
-                ? <select value={line.entryWeightUnit || 'kg'} onChange={(e) => onUpdate(line.id, { entryWeightUnit: e.target.value as 'kg' | 'g' })}><option value="kg">kg</option><option value="g">gram (g)</option></select>
-                : <strong>{entryUnit}</strong>}{convertedQuantity !== null && <small>= {formatNumber(convertedQuantity)} {product.unit}</small>}</div>
-            </div>
-            <label>Ghi chú
-              <input value={line.note} onChange={(e) => onUpdate(line.id, { note: e.target.value })} placeholder="Tùy chọn" />
-            </label>
-          </article>
-        })}
-      </div>
-      <div className="voucher-table-wrap">
-        <table className="voucher-table">
-          <thead><tr><th>STT</th><th>Sản phẩm</th><th>ĐVT</th><th>Số lượng</th><th>Ghi chú dòng</th><th /></tr></thead>
-          <tbody>
-            {lines.map((line, index) => {
-              const product = allowedProducts.find((item) => item.id === line.productId) || allowedProducts[0]
-              const entryUnit = product.inboundUnit || product.unit
-              const inboundPackSize = product.inboundPackKg ?? product.inboundPackQuantity
-              const canChooseWeightUnit = product.unit === 'kg' && !inboundPackSize
-              const convertedQuantity = inboundPackSize
-                ? Number(line.quantity || 0) * inboundPackSize
-                : null
-              return <tr key={line.id}>
-                <td>{index + 1}</td>
-                <td><select value={product.id} onChange={(e) => onUpdate(line.id, { productId: e.target.value, entryWeightUnit: 'kg' })}>{allowedProducts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></td>
-                <td>{canChooseWeightUnit
-                  ? <select value={line.entryWeightUnit || 'kg'} onChange={(e) => onUpdate(line.id, { entryWeightUnit: e.target.value as 'kg' | 'g' })}><option value="kg">kg</option><option value="g">g</option></select>
-                  : <span className="unit-chip">{entryUnit}</span>}{convertedQuantity !== null && <small className="inbound-conversion">= {formatNumber(convertedQuantity)} {product.unit}</small>}</td>
-                <td><input inputMode="decimal" value={line.quantity} onChange={(e) => onUpdate(line.id, { quantity: cleanNumber(e.target.value) })} placeholder="0" /></td>
-                <td><input value={line.note} onChange={(e) => onUpdate(line.id, { note: e.target.value })} placeholder="Tùy chọn" /></td>
-                <td><button type="button" className="row-remove" onClick={() => onRemove(line.id)}>×</button></td>
-              </tr>
-            })}
-          </tbody>
-        </table>
-      </div>
-      <div className="voucher-footer">
-        <button type="button" className="secondary-button" onClick={onAdd}>＋ Thêm sản phẩm</button>
-        <div><span>{lines.filter((line) => Number(line.quantity) > 0).length} dòng có dữ liệu</span><button type="button" className="primary-button" onClick={onSave} disabled={saving}>{saving ? 'Đang lưu…' : '✓ Lưu toàn bộ phiếu'}</button></div>
-      </div>
-    </section>
-  )
-}
-
 function InventoryReportForm({
   user, stock, productTick, onChanged, onFeedback,
 }: {
@@ -1338,7 +1534,7 @@ function InventoryReportForm({
     reporter: user.name,
   })
   const reportProducts = useMemo(() => getProducts().filter(isInventoryReportProduct), [productTick])
-  const [lines, setLines] = useState<InventoryCountLine[]>(() => defaultInventoryLines(stock))
+  const [lines, setLines] = useState<InventoryCountFormLine[]>(() => defaultInventoryLines(stock))
   const [newProductId, setNewProductId] = useState('')
   const [saving, setSaving] = useState(false)
   const [exportingImage, setExportingImage] = useState(false)
@@ -1355,13 +1551,13 @@ function InventoryReportForm({
     })
   }, [productTick])
 
-  function updateLine(productId: string, patch: Partial<InventoryCountLine>) {
+  function updateLine(productId: string, patch: Partial<InventoryCountFormLine>) {
     setLines((items) => items.map((item) => item.productId === productId ? { ...item, ...patch } : item))
   }
   function addReportLine() {
     const productId = newProductId || availableProducts[0]?.id
     if (!productId) return
-    setLines((items) => [...items, { productId, freezerQty: 0, stockRoomQty: 0, orderNeeded: 0, note: '' }])
+    setLines((items) => [...items, { productId, freezerQty: '', stockRoomQty: '', orderNeeded: '', note: '' }])
     setNewProductId('')
   }
   function removeReportLine(productId: string) {
@@ -1369,30 +1565,46 @@ function InventoryReportForm({
   }
 
   async function save() {
+    // "Đã kiểm đếm" = người dùng ĐÃ nhập số (kể cả "0" khi hàng hết sạch).
+    // Ô để trống = chưa kiểm — không được ghi movement count cho dòng đó,
+    // vì count là mốc reset tồn: ghi 0 cho dòng chưa đếm sẽ xoá oan tồn kho.
+    const countedLines = lines.filter(isCountedFormLine)
+    if (!countedLines.length) {
+      onFeedback('Chưa có dòng nào được kiểm đếm. Hãy nhập số thực tế (nhập 0 nếu hàng đã hết) rồi lưu lại.')
+      return
+    }
     setSaving(true)
     const id = createId()
     const now = new Date().toISOString()
     const report: InventoryReport = {
       id, branchId: user.branchId, createdBy: user.id, createdAt: now,
-      ...meta, lines,
+      ...meta,
+      lines: lines.map((line) => ({
+        productId: line.productId,
+        freezerQty: parseCountInput(line.freezerQty),
+        stockRoomQty: parseCountInput(line.stockRoomQty),
+        orderNeeded: parseCountInput(line.orderNeeded),
+        note: line.note,
+        counted: isCountedFormLine(line),
+      })),
     }
     try {
       await ensureOperationDay(user, meta.reportDate)
       await saveInventoryReport(report, user)
-      await addMovements(lines.filter((line) => line.freezerQty + line.stockRoomQty > 0).map((line) => ({
+      await addMovements(countedLines.map((line) => ({
         id: createId(),
         documentId: id,
         branchId: user.branchId,
         productId: line.productId,
         type: 'count' as const,
-        quantity: line.freezerQty + line.stockRoomQty,
+        quantity: parseCountInput(line.freezerQty) + parseCountInput(line.stockRoomQty),
         shiftDate: meta.reportDate,
-        note: `Kho đông ${line.freezerQty}; Kho phòng ${line.stockRoomQty}; Cần đặt ${line.orderNeeded}. ${line.note}`,
+        note: `Kho đông ${parseCountInput(line.freezerQty)}; Kho phòng ${parseCountInput(line.stockRoomQty)}; Cần đặt ${parseCountInput(line.orderNeeded)}. ${line.note}`,
         createdBy: user.id,
         createdAt: now,
       })), user)
       await onChanged()
-      onFeedback('Đã lưu phiếu kiểm kê nhiều sản phẩm theo mẫu nhà hàng.')
+      onFeedback(`Đã lưu phiếu kiểm kê: ${countedLines.length} mặt hàng đã kiểm đếm (bao gồm cả mặt hàng đếm được 0).`)
     } catch (error) {
       onFeedback(error instanceof Error ? error.message : 'Không thể lưu phiếu kiểm kê.')
     } finally {
@@ -1460,9 +1672,11 @@ function InventoryReportForm({
             return <tr key={line.productId}>
               <td>{index + 1}</td><td><strong>{product.name}</strong><small>{product.sku}</small></td><td>{product.unit}</td>
               <td className="inventory-current-stock"><strong>{formatStockQuantity(expected, product.unit)}</strong><small>Dữ liệu hệ thống</small></td>
-              <td><input inputMode="decimal" value={line.freezerQty || ''} onChange={(e) => updateLine(line.productId, { freezerQty: Number(cleanNumber(e.target.value)) })} /></td>
-              <td><input inputMode="decimal" value={line.stockRoomQty || ''} onChange={(e) => updateLine(line.productId, { stockRoomQty: Number(cleanNumber(e.target.value)) })} /></td>
-              <td><input inputMode="decimal" value={line.orderNeeded || ''} onChange={(e) => updateLine(line.productId, { orderNeeded: Number(cleanNumber(e.target.value)) })} /></td>
+              {/* Giữ nguyên chuỗi người dùng gõ: "0" phải hiện là "0" (hàng đã hết),
+                  ô trống = chưa kiểm. Đừng quay lại pattern `value || ''` — nó nuốt số 0. */}
+              <td><input inputMode="decimal" placeholder="Chưa kiểm" value={line.freezerQty} onChange={(e) => updateLine(line.productId, { freezerQty: cleanNumber(e.target.value) })} /></td>
+              <td><input inputMode="decimal" placeholder="Chưa kiểm" value={line.stockRoomQty} onChange={(e) => updateLine(line.productId, { stockRoomQty: cleanNumber(e.target.value) })} /></td>
+              <td><input inputMode="decimal" value={line.orderNeeded} onChange={(e) => updateLine(line.productId, { orderNeeded: cleanNumber(e.target.value) })} /></td>
               <td><input value={line.note} onChange={(e) => updateLine(line.productId, { note: e.target.value })} /><button type="button" className="row-remove no-print" data-html2canvas-ignore="true" onClick={() => removeReportLine(line.productId)}>×</button></td>
             </tr>
           })}
@@ -1513,7 +1727,7 @@ function InventoryCountPoster({
     shift: string
     reporter: string
   }
-  lines: InventoryCountLine[]
+  lines: InventoryCountFormLine[]
   stock: ReturnType<typeof calculateStock>
 }) {
   const visibleLines = lines.flatMap((line) => {
@@ -1521,7 +1735,7 @@ function InventoryCountPoster({
     const product = productById(line.productId) || stockLine?.product
     return product ? [{ line, product, expected: stockLine?.expected || 0 }] : []
   })
-  const countedLines = visibleLines.filter(({ line }) => line.freezerQty > 0 || line.stockRoomQty > 0)
+  const countedLines = visibleLines.filter(({ line }) => isCountedFormLine(line))
   const branchLabel = configuredBranchName(user.branchId) || user.branchId
   return (
     <div className={`inventory-count-poster${visibleLines.length > 14 ? ' dense' : ''}`} ref={posterRef}>
@@ -1552,9 +1766,10 @@ function InventoryCountPoster({
           <div className="inventory-count-poster-row" key={line.productId}>
             <span><i>{index + 1}</i><b>{product.name}</b><small>{product.sku} · {product.unit}</small></span>
             <strong>{formatStockQuantity(expected, product.unit)}</strong>
-            <strong>{line.freezerQty > 0 ? formatNumber(line.freezerQty) : '—'}</strong>
-            <strong>{line.stockRoomQty > 0 ? formatNumber(line.stockRoomQty) : '—'}</strong>
-            <strong className={line.orderNeeded > 0 ? 'warning' : ''}>{line.orderNeeded > 0 ? `${formatNumber(line.orderNeeded)} ${product.unit}` : '—'}</strong>
+            {/* Ô đã kiểm hiện đúng số đếm được — kể cả 0 (hết hàng). Ô trống = chưa kiểm. */}
+            <strong>{line.freezerQty.trim() !== '' ? formatNumber(parseCountInput(line.freezerQty)) : '—'}</strong>
+            <strong>{line.stockRoomQty.trim() !== '' ? formatNumber(parseCountInput(line.stockRoomQty)) : '—'}</strong>
+            <strong className={parseCountInput(line.orderNeeded) > 0 ? 'warning' : ''}>{parseCountInput(line.orderNeeded) > 0 ? `${formatNumber(parseCountInput(line.orderNeeded))} ${product.unit}` : '—'}</strong>
           </div>
         ))}
       </section>
@@ -1648,8 +1863,8 @@ const INVENTORY_TEXT = {
     stockHint: 'SKU đang có số dư',
     inbound: 'Nhập hàng',
     inboundHint: 'Nguyên liệu · Chế biến',
-    outbound: 'Xuất bán',
-    outboundHint: 'Phiếu lấy ra bán',
+    outbound: 'Xuất kho',
+    outboundHint: 'Lấy hàng ra · Sửa tồn',
     loss: 'Hao hụt',
     count: 'Kiểm kê',
     countHint: 'Ghi nhận tồn thực tế',
@@ -1716,25 +1931,34 @@ const INVENTORY_TEXT = {
   },
 } as const
 
-function cleanNumber(value: string) { return value.replace(/[^0-9.,]/g, '').replace(',', '.') }
-function normalizeDisplayQuantity(value: number) { return Math.abs(value) < .00005 ? 0 : value }
-function formatNumber(value: number) {
-  const normalized = normalizeDisplayQuantity(value)
-  return Number.isInteger(normalized) ? String(normalized) : normalized.toFixed(2)
-}
-function quantityInProductUnit(product: Product, line: Pick<VoucherLine, 'quantity' | 'entryWeightUnit'>) {
-  const quantity = Number(line.quantity)
-  if (product.unit === 'kg' && line.entryWeightUnit === 'g') return quantity / 1000
-  return quantity
+/** Nhãn nhận diện phiếu sửa tồn trong `note` (movement `count` cũng dùng cho kiểm kê thường). */
+const STOCK_RESET_TAG = '[SỬA TỒN]'
+
+/** Cập nhật ô nhập của MỘT sku, giữ nguyên đơn vị/ghi chú đã chọn trước đó. */
+function entryUpdater(setEntries: React.Dispatch<React.SetStateAction<EntryMap>>) {
+  return (productId: string, patch: Partial<QuantityEntry>) => {
+    setEntries((current) => ({
+      ...current,
+      [productId]: { ...(current[productId] ?? { quantity: '' }), ...patch },
+    }))
+  }
 }
 
-function preferredOutboundWeightUnit(product: Product | undefined, available: number | undefined): 'kg' | 'g' | undefined {
-  if (product?.unit !== 'kg') return undefined
-  return Number(available) > 0 && Number(available) < 1 ? 'g' : 'kg'
+const cleanNumber = sanitizeQuantityInput
+/**
+ * Số lượng hiển thị ĐỦ 3 chữ số thập phân đúng như `stock_movements.quantity`
+ * numeric(14,3). Bản cũ `toFixed(2)` giấu mất phần lẻ thứ ba: tồn 5.123 kg hiện
+ * "5.12 kg", ca trưởng xuất theo số nhìn thấy thì kho còn dư 0.003 kg (BUG kho
+ * "xuất mãi không hết"). Đừng quay lại làm tròn 2 số ở lớp hiển thị kho.
+ */
+const formatNumber = formatQuantity
+
+function formatDeltaAmount(value: number, unit: string) {
+  return `${value > 0 ? '+' : ''}${formatStockAmount(value, unit)}`
 }
 
 function stockAvailability(line: ReturnType<typeof calculateStock>[number]): 'out' | 'packing-residue' | 'low' | 'good' {
-  if (line.expected <= 0.0001) return 'out'
+  if (line.expected <= STOCK_EPSILON) return 'out'
   const packingOptions = PACKING_OPTIONS_BY_OUTPUT[line.product.id] || []
   const minimumPackingQuantity = packingOptions.length
     ? Math.min(...packingOptions.map((option) => option.sourceQuantity))
@@ -1748,15 +1972,7 @@ function stockNeedsAttention(line: ReturnType<typeof calculateStock>[number]) {
   return stockAvailability(line) !== 'good'
 }
 
-function formatStockQuantity(value: number, unit: string) {
-  const normalized = normalizeDisplayQuantity(value)
-  if (unit === 'kg') {
-    const grams = Math.round(normalized * 100000) / 100
-    if (normalized !== 0 && Math.abs(normalized) < 1) return `${formatNumber(grams)} g`
-    return `${formatNumber(normalized)} kg`
-  }
-  return `${formatNumber(normalized)} ${unit}`.trim()
-}
+const formatStockQuantity = formatStockAmount
 function formatDate(value: string) {
   const [year, month, day] = value.split('-')
   return day && month && year ? `${day}/${month}/${year}` : value
@@ -1770,19 +1986,41 @@ function periodLabel(period: InventoryPeriod, date: string, month: string, year:
   }
   return `Ngày ${formatDate(date)}`
 }
-function isInventoryReportProduct(product: Product) {
+// Phiếu kiểm kê đếm hàng thật trong kho: nguyên vật liệu + thành phẩm chế biến (hàng bàn giao).
+// Bao bì đếm riêng, món trong menu bán không thuộc kho.
+function isInventoryReportProduct(product: Product & { price?: number }) {
   if (product.category === 'packaging') return false
-  if (product.id.endsWith('-kg') || product.id.includes('-finished')) return false
-  return true
+  return isWarehouseProduct(product)
 }
-function defaultInventoryLines(stock: ReturnType<typeof calculateStock>): InventoryCountLine[] {
+/**
+ * Dòng nhập liệu của phiếu kiểm kê giữ CHUỖI người dùng gõ, không phải số:
+ * chuỗi rỗng = "chưa kiểm", còn "0" = "đã kiểm, hàng hết sạch". Nếu lưu number
+ * thì hai trạng thái này dính làm một và số 0 bị nuốt (BUG kiểm kê không nhập được 0).
+ */
+type InventoryCountFormLine = {
+  productId: string
+  freezerQty: string
+  stockRoomQty: string
+  orderNeeded: string
+  note: string
+}
+/** Chuỗi nhập → số lượng: rỗng/không hợp lệ = 0, không bao giờ âm (cleanNumber đã chặn dấu trừ). */
+function parseCountInput(value: string) {
+  const parsed = Number(value.trim())
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0
+}
+/** Dòng ĐÃ được kiểm đếm = có nhập ít nhất một ô số lượng (kể cả nhập "0"). */
+function isCountedFormLine(line: Pick<InventoryCountFormLine, 'freezerQty' | 'stockRoomQty'>) {
+  return line.freezerQty.trim() !== '' || line.stockRoomQty.trim() !== ''
+}
+function defaultInventoryLines(stock: ReturnType<typeof calculateStock>): InventoryCountFormLine[] {
   return stock
     .filter((line) => isInventoryReportProduct(line.product) && line.expected > 0.0001)
     .map((line) => ({
       productId: line.product.id,
-      freezerQty: 0,
-      stockRoomQty: 0,
-      orderNeeded: 0,
+      freezerQty: '',
+      stockRoomQty: '',
+      orderNeeded: '',
       note: '',
     }))
 }

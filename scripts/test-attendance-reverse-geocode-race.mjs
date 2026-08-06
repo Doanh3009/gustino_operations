@@ -57,6 +57,57 @@ try {
   assert.equal(fallback.payload.source, 'bigdatacloud')
   assert.equal(fetchCount, 2)
 
+  // Địa chỉ tới số nhà là mức duy nhất được cache lâu: cache một ngày cho bản thô
+  // sẽ khiến mọi lần chấm công sau tại đúng toạ độ đó cũng chỉ còn tên thành phố.
+  fetchCount = 0
+  globalThis.fetch = async (input) => {
+    fetchCount += 1
+    const url = String(input)
+    if (url.includes('nominatim')) {
+      await delay(5)
+      return {
+        ok: true,
+        json: async () => ({
+          display_name: 'Phường 8, Vũng Tàu',
+          address: { suburb: 'Phường 8', city: 'Vũng Tàu' },
+        }),
+      }
+    }
+    await delay(5)
+    return {
+      ok: true,
+      json: async () => ({ locality: 'Vũng Tàu', principalSubdivision: 'Bà Rịa - Vũng Tàu', countryName: 'Việt Nam' }),
+    }
+  }
+  const areaOnly = responseRecorder()
+  await handler({ query: { lat: '10.346', lng: '107.084' } }, areaOnly)
+  assert.equal(areaOnly.statusCode, 200)
+  assert.equal(areaOnly.payload.precision, 'area', 'Thiếu số nhà/tên đường phải bị đánh dấu là địa chỉ mức khu vực.')
+  assert.equal(areaOnly.headers['Cache-Control'], 's-maxage=60', 'Địa chỉ thô không được cache một ngày.')
+
+  // Toà nhà/cửa hàng (Lotte Mart, Gold Coast…) là mốc dễ đối chiếu quầy nhất.
+  fetchCount = 0
+  globalThis.fetch = async (input) => {
+    fetchCount += 1
+    if (String(input).includes('nominatim')) {
+      await delay(5)
+      return {
+        ok: true,
+        json: async () => ({
+          display_name: 'Lotte Mart, 6 Đường 3 Tháng 2, Phường 8, Vũng Tàu',
+          address: { building: 'Lotte Mart', house_number: '6', road: 'Đường 3 Tháng 2', suburb: 'Phường 8', city: 'Vũng Tàu' },
+        }),
+      }
+    }
+    await delay(5)
+    return { ok: true, json: async () => ({ locality: 'Vũng Tàu', countryName: 'Việt Nam' }) }
+  }
+  const building = responseRecorder()
+  await handler({ query: { lat: '10.346', lng: '107.084' } }, building)
+  assert.equal(building.payload.precision, 'street')
+  assert.match(building.payload.address, /^Lotte Mart, 6 Đường 3 Tháng 2/)
+  assert.equal(building.headers['Cache-Control'], 's-maxage=86400, stale-while-revalidate=604800')
+
   const invalid = responseRecorder()
   await handler({ query: { lat: '999', lng: '107.084' } }, invalid)
   assert.equal(invalid.statusCode, 400)

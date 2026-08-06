@@ -2,6 +2,53 @@
 
 Status: in progress; direct iPhone verification pending.
 
+## 2026-08-03 — Admin correction filter context
+
+- `MOD06-TC-FILTER-CONTEXT-01` Reproduced: clicking `Chỉnh công` in a day-filtered row unconditionally switches to employee mode and clears search context. Pre-fix `test-admin-attendance-filter-context.mjs` exits 1 and prints the forced mode change.
+- Expected/Passed: editing a visible row opens inline without changing mode, day, local branch, employee or search. A correction opened from the separate auto-close error table reveals its exact day/branch. Branch has its own selector in both modes; moving month retains employee/search; “Xem các ca của nhân viên” is an explicit opt-in action.
+- Evidence: six focused attendance/Admin/UI regressions, TypeScript, 253-button/247-reachable contract, diff check and 723-module production build/bundle guard Passed. Production `dpl_CuLBRp2irftLEya4r2c8jt6Rgj1v` is READY/aliased with live markers; exact pre/post SELECT-only counts show no data decrease. Browser discovery returned `[]`, so signed-in visual QA remains. No attendance RPC/record/payroll/audit/permission changed.
+
+## 2026-08-03 — mistaken supplement deletion
+
+- `MOD06-TC-SUPPLEMENT-DELETE-01` Reproduced: deleting only the attendance record leaves an exact system-created supplement registration, which renders as absent/no record. Existing delete migration intentionally preserves registrations.
+- Expected: one delete removes record + registration only when the registration is marker-owned Admin supplement; an already orphaned supplement has a separate audited cleanup action; all normal registrations remain untouched. Pre-fix delete regression is red. Production migration requires explicit approval.
+- Attendance future-date subcase Passed locally; no deploy yet. Conditional delete remains blocked before migration creation pending direct owner approval.
+
+## 2026-08-03 — older-month Admin correction navigation
+
+- `MOD06-TC-HISTORY-MONTH-01` Reproduced: correction `type=date` is constrained to the current global range and its panel has no month selector. Pre-fix `ADMIN_ATTENDANCE_HISTORY_MONTH` exits 1 at the missing month input.
+- Expected: Admin can choose any past month directly beside the correction list, move previous/next one month, load exactly that month's attendance and retain audited correction behavior. Future months remain disabled.
+- Post-fix automation Passed: `ADMIN_ATTENDANCE_HISTORY_MONTH_OK`, Admin 24h/report/resilience/error-list checks, 252-button contract and TypeScript. Production build/live verification remain.
+- `MOD06-TC-SUPPLEMENT-TIME-ROW-01` Reproduced from owner screenshot: `Giờ vào` and `Giờ ra` occupy different desktop rows. Extended 24h regression fails before the layout fix; expected is a two-column paired-time group on desktop and a one-column stack only on phone.
+- `MOD06-TC-SUPPLEMENT-TIME-ROW-01` Passed after implementation together with historical-month, button and TypeScript checks. The same Time24 controls/RPC payload are retained; only responsive grouping changed.
+- Production verification Passed on deployment `dpl_5ey5DqMEitLPwswkMFzqL2rKUSHg`: live Admin/Archive/CSS expose both month navigation and paired-time rules. Signed-in visual confirmation remains with the owner; Browser discovery is unavailable.
+
+## 2026-08-03 — automatic stale close, Admin correction UX and request notes
+
+- `MOD06-TC-AUTOCLOSE-01` Passed: an open prior-day shift closes only after its registered Vietnam-time scheduled end; overnight shifts wait for the real end, current-day rows remain open, PATCH is guarded by `check_out_time=is.null`, and cloud pagination covers more than 200 employees. Eligible rows run at bounded concurrency 12; a deliberately failed row is counted/isolated while later rows still close. LAN reconciles the same stale state before attendance reads/new Check-in.
+- `MOD06-TC-EMPLOYEE-NOBU-01` Passed: Employee Attendance has no `Check-out bù`, no self-declared `missing_checkout` option and no legacy action call. The overdue card is read-only and explains automatic close plus Admin review; LAN rejects the retired request.
+- `MOD06-TC-ADMIN-ERROR-01` Passed: each system-closed forgotten checkout has a machine marker, appears in the Admin unresolved-error list and deep-links to the existing audited correction form. Correcting it replaces the marker, so it leaves the unresolved list without a schema/status change.
+- `MOD06-TC-ADMIN-24H-01` Passed: correction and supplement entry use explicit 00–23/00–59 controls independent of desktop AM/PM; correction can fill registered shift times in one click and supplement entry supports accent-insensitive employee/branch search.
+- `MOD06-TC-REQUEST-NOTE-01` Passed: early-leave/late-arrival requests are paginated and joined by exact employee ID + branch ID + work date. Admin table and attendance Excel Notes show request type, requester, Vietnam submission datetime, scheduled→requested time, reason and evidence note.
+- Evidence: focused integration Passed, the broader attendance/load batch is 22/22 green, and the final 723-module production build/bundle guard Passed. Deployment `dpl_2FJLJyP4RqkmpxEzGv2vXHchkv6S` is READY/aliased; live Admin/Attendance/AdjustmentArchive markers and protected API behavior are verified. No production row or schema was touched.
+
+## 2026-08-03 — next-day state and many-employee realtime
+
+- `MOD06-TC-NEXTDAY-01` Reproduced pre-fix: at 00:30 Vietnam time a UTC device computes the prior date in `AttendancePage`; the page also renders Check-in without considering another own-open record or a pending check-in outbox op.
+- `MOD06-TC-REMINDER-RACE-01` Reproduced pre-fix: overlapping AppShell reminder reads have no request version/deadline; an older response can restore Check-in after a newer post-write read.
+- `MOD06-TC-REALTIME-SCOPE-01` Reproduced pre-fix: every client subscribes to all registration/attendance events and each event starts a full refresh. Expected: user/authorized-branch filter, burst coalescing, cleanup and fallback reconciliation.
+- `MOD06-TC-OUTBOX-STATE-01` Reproduced pre-fix: pending check-in is only a note/banner and does not suppress a second Check-in action. Expected: pending evidence is an authoritative in-progress state until server confirmation or an explicit persistence error.
+- Evidence: `scripts/test-attendance-realtime-next-day.mjs` fails before implementation with `ATTENDANCE_REALTIME_NEXT_DAY_FAIL`. Multi-context Browser QA remains blocked because discovery returned `[]`.
+- Post-fix focused status: all four cases above Passed via `ATTENDANCE_REALTIME_NEXT_DAY_OK`; outbox and single-open regressions also Passed. Broader regression and final build Passed; physical/multi-context QA remains pending.
+- Hardening assertions now also cover: non-authoritative IndexedDB reads fail closed, RAM durability is explicit, evidence never expires before server confirmation, single-open `23505` requires exact-registration read-back, and conflict evidence is retained without automatic stale replay. Passed after implementation.
+- `MOD06-TC-LAN-REPLAY-01` Passed: an explicitly marked offline replay retains the valid original check-in/check-out timestamp on the registered UTC+7 date, including outside nominal shift hours as the current UI permits; ordinary LAN requests remain server-timestamped, a future replay timestamp is rejected, and permanent rejection evidence becomes `needs-review` (`LAN_ATTENDANCE_API_INTEGRATION_OK`, next-day contract).
+- Final regression status after the LAN replay correction: 15/15 focused MOD-06-related commands plus LAN integration, performance/sync, pagination and shift realtime reminder checks Passed (19/19 total pre-build commands).
+- Final build status: Passed after all source/test changes, 719 modules with bundle guard green; attendance asset `AttendancePage-Cs_zPtp1.js`. No deploy or production mutation followed.
+- Final-review pre-fix reproduction added: transaction abort after IDB request success, orphaned checkout evidence, permanent-op queue blocking, LAN forged identity/path, and unbounded Board-week read/subscription assertions all fail before the hardening patch. Status: Reproduced; implementation/verification in progress.
+- Post-hardening status: the new IDB abort behavior test, next-day/integrity/load contract, isolated LAN integration and TypeScript all Passed. Orphaned/permanent evidence is retained `needs-review`; Board data is bounded to the viewed week.
+- Full post-hardening regression: 19/19 attendance/load commands Passed. Final build also Passed with 719 modules/bundle guard, attendance asset `AttendancePage-Cs_zPtp1.js`.
+- Final scoped diff/syntax/source-pattern review Passed. Local automation is complete; physical multi-device/HTTPS camera-GPS and production catalog verification remain pending.
+
 ## 2026-07-20 — intermittent saved-write confirmation
 
 - `MOD06-TC-SAVED-UI-01` Passed (source/type/build): a successful check-in record is merged into the visible schedule immediately; a refresh failure cannot restore the stale Check-in action or overwrite final success feedback.

@@ -8,7 +8,7 @@ import { chromium } from 'playwright-core'
 const baseUrl = process.env.QA_BASE_URL || 'http://127.0.0.1:5173'
 
 const canUseAdmin = (r) => r === 'admin'
-const canUseSales = (r) => ['shift_leader', 'staff'].includes(r)
+const canUseSales = (r) => ['shift_leader', 'staff', 'cashier'].includes(r)
 const canUseOperations = (r) => r === 'shift_leader'
 const canUseManagement = (r) => ['admin', 'manager'].includes(r)
 const canUseKitchen = (r) => ['admin', 'kitchen'].includes(r)
@@ -16,15 +16,19 @@ const managerSections = ['manager-revenue', 'manager-business', 'manager-invento
 
 function canAccess(role, page) {
   if (page === 'launcher') return true
-  if (page === 'attendance') return role !== 'kitchen' && role !== 'manager'
+  if (page === 'attendance') return role !== 'kitchen' && role !== 'manager' && role !== 'cashier'
   if (page === 'dashboard') return role === 'manager'
   if (page === 'sales') return canUseSales(role)
   if (page === 'my-records') return role === 'staff' || role === 'shift_leader'
+  // Xem công (thay trang Bảng lương đã gỡ): nhân viên/ca trưởng + giám sát SUP MT.
+  if (page === 'my-timesheet') return ['staff', 'shift_leader', 'supmt'].includes(role)
   if (page === 'report-archive') return canUseManagement(role)
   if (page === 'inventory') return canUseOperations(role)
+  // Admin theo dõi đơn ở trang Quản trị, không lập phiếu đặt hàng của chi nhánh.
+  if (page === 'orders') return role !== 'admin' && (canUseManagement(role) || canUseOperations(role))
   if (page === 'management') return role === 'admin'
-  // Đồng bộ App.tsx/AppShell: ba route vận hành nhân sự/đơn hàng này hiện chỉ admin.
-  if (page === 'manager-attendance' || page === 'manager-payroll' || page === 'manager-requests') return canUseAdmin(role)
+  // Đồng bộ App.tsx/AppShell: hai route vận hành nhân sự/đơn hàng này chỉ admin.
+  if (page === 'manager-attendance' || page === 'manager-requests') return canUseAdmin(role)
   if (managerSections.includes(page)) return role === 'manager'
   if (page === 'admin-accounts') return canUseAdmin(role)
   if (page === 'control') return canUseAdmin(role)
@@ -34,22 +38,30 @@ function canAccess(role, page) {
 
 function defaultPage(role) {
   if (role === 'kitchen') return 'kitchen'
-  if (role === 'staff') return 'sales'
+  if (role === 'staff' || role === 'cashier') return 'sales'
   if (role === 'admin') return 'management'
   if (role === 'manager') return 'dashboard'
+  if (role === 'supmt') return 'attendance'
   if (canUseOperations(role)) return 'today'
   return 'attendance'
 }
 
+// Khi app tự ĐIỀU HƯỚNG tới trang Quản trị, navigate() ghi hash CRM
+// (routeMap.adminRouteForSection → "/admin/dashboard"). Còn khi mở thẳng
+// "#management" và quyền hợp lệ thì hash giữ nguyên — không quy đổi.
+function redirectHash(page) {
+  return page === 'management' ? '/admin/dashboard' : page
+}
+
 function expectedFinal(role, page) {
-  if (page === 'launcher') return defaultPage(role)
-  return canAccess(role, page) ? page : defaultPage(role)
+  if (page === 'launcher') return redirectHash(defaultPage(role))
+  return canAccess(role, page) ? page : redirectHash(defaultPage(role))
 }
 
 const allPages = [
-  'launcher', 'dashboard', 'today', 'sales', 'my-records', 'report-archive', 'restaurant',
+  'launcher', 'dashboard', 'today', 'sales', 'my-records', 'my-timesheet', 'report-archive', 'restaurant',
   'report', 'inventory', 'handover', 'orders', 'attendance', 'management',
-  ...managerSections, 'manager-attendance', 'manager-payroll', 'manager-requests',
+  ...managerSections, 'manager-attendance', 'manager-requests',
   'admin-accounts', 'control', 'kitchen',
 ]
 

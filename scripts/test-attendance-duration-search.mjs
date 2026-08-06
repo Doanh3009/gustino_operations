@@ -12,7 +12,7 @@ const checkIn = new Date('2026-07-04T13:55:00+07:00')
 const checkOut = new Date('2026-07-04T22:20:00+07:00')
 const elapsedMinutes = Math.round((checkOut.getTime() - checkIn.getTime()) / 60000)
 assert.equal(elapsedMinutes, 505)
-assert.equal(Number((elapsedMinutes / 60).toFixed(2)), 8.42, '8.42 là giờ thập phân đúng cho công thức lương.')
+assert.equal(Number((elapsedMinutes / 60).toFixed(2)), 8.42, '8.42 là giờ thập phân đúng khi xuất Excel bảng công.')
 
 let durationModule
 try {
@@ -28,7 +28,9 @@ assert.equal(durationModule.formatDecimalHoursAsDuration(8.42), '8 giờ 25 phú
 assert.ok(admin.includes('formatWorkDurationBetween(row.checkInTime, row.checkOutTime)'), 'Danh sách công phải hiển thị từ timestamp chính xác.')
 assert.ok(admin.includes('formatDecimalHoursAsDuration(row.totalHours)'), 'Các tổng giờ trên Admin phải hiển thị dạng giờ–phút.')
 assert.doesNotMatch(admin, /formatNumber\(row\.totalHours\)\} giờ/, 'Không được tiếp tục ghi giờ thập phân như thể phần lẻ là phút.')
-assert.ok(admin.includes('giờ thập phân'), 'Công thức lương phải nói rõ giá trị dùng nhân lương là giờ thập phân.')
+// Màn hình hiển thị giờ–phút; cột Excel phải nói rõ là giờ THẬP PHÂN để kế toán
+// không nhân nhầm 8 giờ 25 phút thành 8,25 (tính năng lương trong app đã gỡ).
+assert.ok(admin.includes('(thập phân)'), 'Cột giờ trong Excel phải ghi rõ là giờ thập phân.')
 assert.ok(attendancePage.includes('formatWorkDurationBetween(record.checkInTime, record.checkOutTime)'), 'Màn chấm công nhân viên phải dùng cùng định dạng giờ–phút.')
 assert.ok(attendanceLib.includes('formatWorkDurationBetween(record.checkInTime, checkOutTime)'), 'Ảnh check-out phải đóng dấu thời lượng giờ–phút rõ ràng.')
 

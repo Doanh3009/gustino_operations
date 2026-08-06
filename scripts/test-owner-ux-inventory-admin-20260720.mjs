@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 
 const inventory = fs.readFileSync('src/pages/InventoryPage.tsx', 'utf8')
+// 05/08/2026: phần tính toán nhập/xuất/sửa tồn tách sang lib để test được số học.
+const entryLib = fs.readFileSync('src/lib/inventoryEntry.ts', 'utf8')
 const store = fs.readFileSync('src/lib/store.ts', 'utf8')
 const shell = fs.readFileSync('src/components/AppShell.tsx', 'utf8')
 const admin = fs.readFileSync('src/pages/AdminPage.tsx', 'utf8')
@@ -9,9 +11,12 @@ const styles = fs.readFileSync('src/styles.css', 'utf8')
 const checks = [
   ['manual warehouse issue remains confirmable when it exceeds displayed stock', inventory.includes('Tồn kho chưa đủ cho phiếu xuất:') && inventory.includes('Vẫn tiếp tục lập phiếu?') && inventory.includes('{ allowInsufficientStock }')],
   ['known approved inventory override avoids a failing RPC request', store.includes('if (options?.allowInsufficientStock)') && store.includes('await insertStockRowsDirect(rows)')],
-  ['sub-kilogram stock defaults outbound entry to grams', inventory.includes('preferredOutboundWeightUnit') && inventory.includes("Number(available) < 1 ? 'g' : 'kg'")],
+  ['sub-kilogram stock defaults outbound entry to grams', entryLib.includes('export function defaultEntryUnit') && entryLib.includes("Number(available) > 0 && Number(available) < 1 ? 'g' : 'kg'")],
   ['packing residue is not labelled ready to sell', inventory.includes("'packing-residue'") && inventory.includes('Còn dư, chưa đủ đóng gói') && inventory.includes('PACKING_OPTIONS_BY_OUTPUT')],
-  ['stock screen separates POS menu items from bulk finished goods', inventory.includes("type StockDisplayCategory = 'all' | 'raw' | 'packaging' | 'finished' | 'sale'") && inventory.includes("value === 'sale' ? 'Món trong menu bán'")],
+  // 05/08/2026: món trong menu bán không còn là một NHÓM của bảng tồn — POS ghi
+  // hóa đơn chứ không ghi movement, nên `calculateStock` loại hẳn chúng ra thay
+  // vì hiển thị một nhóm luôn rỗng. Bảng tồn chỉ còn 3 nhóm hàng thật.
+  ['stock screen shows warehouse goods only, POS menu items filtered out', inventory.includes("type StockDisplayCategory = 'all' | 'raw' | 'packaging' | 'finished'") && !inventory.includes("| 'sale'") && store.includes('isWarehouseProduct(product) || byProduct.has(product.id)')],
   ['mobile header no longer renders Gustino logo', !shell.includes('<span className="mh-logo"><img src="/gustino-logo.jpg" alt="GUSTINO" /></span>')],
   ['employee sales uses daily revenue aggregation', admin.includes('const employeeDailyRevenue = buildEmployeeDailyRevenueRows(employeeReceipts)') && admin.includes('Doanh thu theo ngày')],
   ['employee daily revenue has an informative chart and table', admin.includes('admin-employee-daily-revenue-chart') && admin.includes('admin-employee-daily-revenue-table')],

@@ -1,12 +1,17 @@
-import { Suspense, useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { AppShell, type InventoryTab, type Page } from './components/AppShell'
-import { fetchMovements, loadLocalUser, saveLocalUser } from './lib/store'
+import { fetchMovements, fetchMovementsDelta, loadLocalUser, saveLocalUser } from './lib/store'
+import { reconcileOperationalShift } from './lib/shiftAutoOpen'
+import { flushAttendanceOutbox } from './lib/attendance'
+import { attendanceOutboxSendableFastCount } from './lib/attendanceOutbox'
 import { shouldUseLanApi, supabase, uniqueChannelName } from './lib/supabase'
+import { burstGuard } from './lib/browser'
 import { LauncherPage } from './pages/LauncherPage'
 import { LoginPage } from './pages/LoginPage'
 import type { AdminSection } from './pages/AdminPage'
 import { adminRouteForSection, adminSectionForRoute } from './pages/admin/routeMap'
 import { canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseSales, normalizeRole } from './lib/access'
+import { clearSessionStart, markSessionStart, sessionOverdueMs, setSessionExpiredNotice } from './lib/sessionExpiry'
 import { fetchConfiguredProducts, subscribeConfiguredProducts } from './lib/products'
 import type { AppUser, StockMovement } from './types'
 import { applyLanguageToDocument, useLang } from './lib/i18n'
@@ -28,6 +33,7 @@ const KitchenPage = lazyWithReload(() => import('./pages/KitchenPage').then((mod
 const OrdersPage = lazyWithReload(() => import('./pages/OrdersPage').then((module) => ({ default: module.OrdersPage })))
 const ManagerDashboardPage = lazyWithReload(() => import('./pages/ManagerDashboardPage').then((module) => ({ default: module.ManagerDashboardPage })))
 const ControlCenterPage = lazyWithReload(() => import('./pages/ControlCenterPage').then((module) => ({ default: module.ControlCenterPage })))
+const MyTimesheetPage = lazyWithReload(() => import('./pages/MyTimesheetPage').then((module) => ({ default: module.MyTimesheetPage })))
 
 function App() {
   const lang = useLang()
@@ -43,11 +49,48 @@ function App() {
   const [mgmtSection, setMgmtSection] = useState<AdminSection | undefined>(() => managementSectionFromHash())
   const needsMovements = ['today', 'restaurant', 'report', 'inventory', 'handover', 'orders'].includes(page)
 
+  // Mốc đồng bộ sổ kho: dòng mới nhất đã có + tổng số dòng của chi nhánh.
+  const movementSyncRef = useRef<{ branchId: string; latestCreatedAt: string; total: number } | null>(null)
+
   const refreshMovements = useCallback(async () => {
     if (!user) return
     const data = await fetchMovements(user.branchId, user)
-    setMovements((current) => movementSignature(current) === movementSignature(data) ? current : data)
+    movementSyncRef.current = {
+      branchId: user.branchId,
+      latestCreatedAt: latestMovementStamp(data, ''),
+      total: data.length,
+    }
+    setMovements((current) => movementFingerprint(current) === movementFingerprint(data) ? current : data)
   }, [user])
+
+  /**
+   * Nhịp nền chỉ kéo phần MỚI của sổ kho. Tải lại toàn bộ lịch sử mỗi 15 giây là
+   * lý do app ngày càng ì (mỗi chi nhánh đã ~1.700 dòng và mỗi ngày thêm ~90).
+   * `fetchMovementsDelta` kèm tổng số dòng nên vẫn phát hiện được xoá/sửa quá
+   * khứ — lúc đó mới tải đầy đủ lại.
+   */
+  const syncMovements = useCallback(async () => {
+    if (!user) return
+    const state = movementSyncRef.current
+    if (!state || state.branchId !== user.branchId || !state.latestCreatedAt) return refreshMovements()
+    // Lỗi ở nhịp gia số (mạng rớt, timeout đếm dòng) không được làm chết việc
+    // đồng bộ: nuốt lỗi rồi thôi thì máy đứng ở số cũ cho tới lần tải đầy đủ kế
+    // tiếp mà không ai biết. Hỏng nhịp nhẹ thì quay về đường tải đầy đủ.
+    const delta = await fetchMovementsDelta(user.branchId, state.latestCreatedAt, user).catch(() => null)
+    if (!delta || delta.total !== state.total + delta.rows.length) return refreshMovements()
+    if (!delta.rows.length) return
+    movementSyncRef.current = {
+      branchId: user.branchId,
+      latestCreatedAt: latestMovementStamp(delta.rows, state.latestCreatedAt),
+      total: delta.total,
+    }
+    setMovements((current) => {
+      const known = new Set(current.map((item) => item.id))
+      const fresh = delta.rows.filter((item) => !known.has(item.id))
+      // Cả hai danh sách đều sắp xếp mới → cũ nên ghép đầu là giữ đúng thứ tự.
+      return fresh.length ? [...fresh, ...current] : current
+    })
+  }, [user, refreshMovements])
 
   useEffect(() => {
     if (!supabase) return
@@ -90,30 +133,149 @@ function App() {
   }, [needsMovements, refreshMovements])
   useEffect(() => {
     if (!user || !needsMovements) return
-    const timer = window.setInterval(() => void refreshMovements(), 15000)
-    return () => window.clearInterval(timer)
-  }, [refreshMovements, needsMovements, user])
+    let ticks = 0
+    const timer = window.setInterval(() => {
+      // Máy đang trong túi/khoá màn hình thì không kéo dữ liệu về làm gì.
+      if (document.hidden) return
+      ticks += 1
+      // Khoảng 2,5 phút tải đầy đủ một lần để bắt cả sửa/xoá ở quá khứ.
+      void (ticks % 10 === 0 ? refreshMovements() : syncMovements())
+    }, 15000)
+    const resume = () => {
+      if (!document.hidden) void syncMovements()
+    }
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('focus', resume)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('focus', resume)
+    }
+  }, [refreshMovements, syncMovements, needsMovements, user])
+  // Bộ dò ca: mở ca vận hành còn thiếu từ BẤT KỲ trang nào, không chỉ Chấm công
+  // và Bàn giao. Ca trưởng check-in lỗi mạng vẫn được mở ca ngay khi còn dùng app.
+  // Idempotent + tự bỏ qua rất sớm nếu ca đã mở, nên chạy lặp không tốn gì.
+  useEffect(() => {
+    if (!user || user.role !== 'shift_leader') return
+    let active = true
+    const state = { busy: false }
+    const attempt = async () => {
+      if (!active || state.busy) return
+      state.busy = true
+      try {
+        await reconcileOperationalShift(user)
+      } catch {
+        // Im lặng: đây là lưới an toàn chạy nền, lần sau thử lại.
+      } finally {
+        state.busy = false
+      }
+    }
+    void attempt()
+    const timer = window.setInterval(() => void attempt(), 60000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [user?.id, user?.branchId, user?.role])
+  // Hộp thư đi chấm công (BUG-118): lượt check-in/check-out chưa lên được máy chủ
+  // được gửi lại nền từ BẤT KỲ trang nào (staff mở app là vào Bán hàng, không phải
+  // Chấm công). Mỗi nhịp đọc IndexedDB cục bộ làm nguồn authoritative; localStorage
+  // chỉ là hint và không được phép làm bỏ quên bằng chứng.
+  useEffect(() => {
+    if (!user) return
+    let active = true
+    const attempt = () => {
+      if (!active || document.hidden) return
+      void flushAttendanceOutbox(user).catch(() => undefined)
+    }
+    attempt()
+    const timer = window.setInterval(attempt, 45000)
+    window.addEventListener('online', attempt)
+    window.addEventListener('focus', attempt)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      window.removeEventListener('online', attempt)
+      window.removeEventListener('focus', attempt)
+    }
+  }, [user?.id])
+  // Phiên đăng nhập tự hết hạn sau 24 giờ: token + hồ sơ để lâu ngày là nguồn của
+  // lớp lỗi "treo đăng nhập" (quyền/chi nhánh cũ, phiên hỏng giữa chừng). Kiểm tra
+  // lúc mở app, khi quay lại tab và mỗi 5 phút; hết hạn thì đăng xuất kèm lời giải thích.
+  useEffect(() => {
+    if (!user) return
+    let active = true
+    // Hết hạn đúng lúc hộp thư chấm công còn bằng chứng CHƯA GỬI ĐƯỢC thì hoãn:
+    // đăng xuất lúc đó buộc bằng chứng nằm chờ tới lần đăng nhập sau. Nhịp flush 45s
+    // thường dọn sạch trong vài phút; quá SESSION_OUTBOX_GRACE_MS vẫn đăng xuất.
+    // Ân hạn tính theo mốc ĐĂNG NHẬP (sessionOverdueMs) chứ không theo lần đầu phát
+    // hiện quá hạn, nếu không mỗi lần mở lại app là được cộng thêm một khoảng ân hạn.
+    // Op needs-review đã bị cách ly (chỉ quản lý xử lý được) nên KHÔNG tính vào đây.
+    const check = () => {
+      if (!active) return
+      const overdueMs = sessionOverdueMs()
+      if (!overdueMs) return
+      const waitingEvidence = attendanceOutboxSendableFastCount(user.id) > 0
+      if (waitingEvidence && overdueMs < SESSION_OUTBOX_GRACE_MS) return
+      setSessionExpiredNotice()
+      void logout()
+    }
+    check()
+    const timer = window.setInterval(check, 5 * 60 * 1000)
+    const resume = () => {
+      if (!document.hidden) check()
+    }
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('focus', resume)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('focus', resume)
+    }
+  }, [user?.id])
   useEffect(() => {
     if (!user || !needsMovements || !supabase || user.authToken) return
     const client = supabase
+    // KHÔNG lọc `branch_id` ở phía Supabase cho bảng này.
+    //
+    // Realtime so khớp `filter` với chính DÒNG vừa đổi. Với DELETE, dòng cũ chỉ
+    // còn các cột thuộc REPLICA IDENTITY — `stock_movements` đang để mặc định
+    // (`relreplident = 'd'`) nên payload chỉ có `id`, KHÔNG có `branch_id`. Điều
+    // kiện `branch_id=eq...` vì thế không bao giờ khớp và event xoá bị bỏ rơi:
+    // máy khác không hề biết phiếu đã bị xoá, chỉ tình cờ phát hiện ở nhịp đếm
+    // 15 giây. Bỏ filter thì event xoá về được (đây cũng là cách ManagerDashboard
+    // và AdminPage đang nghe và chúng vẫn nhận đúng).
+    //
+    // Đổi lại, máy nhận cả event của chi nhánh khác nên phải tự lọc: INSERT/UPDATE
+    // biết `branch_id` thì bỏ qua chi nhánh lạ; DELETE không biết chi nhánh nên
+    // đành tải đầy đủ — xoá phiếu là việc hiếm, còn bỏ sót thì sai số kho.
+    const bumpDelta = burstGuard(() => void syncMovements(), 600)
+    const bumpFull = burstGuard(() => void refreshMovements(), 600)
     const channel = client.channel(uniqueChannelName(`app-stock:${user.branchId}`))
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'stock_movements',
-        filter: `branch_id=eq.${user.branchId}`,
-      }, () => void refreshMovements())
+      }, (payload) => {
+        if (payload.eventType === 'DELETE') return bumpFull()
+        const branchId = (payload.new as { branch_id?: string } | null)?.branch_id
+        if (branchId && branchId !== user.branchId) return
+        bumpDelta()
+      })
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'operation_days',
         filter: `branch_id=eq.${user.branchId}`,
-      }, () => void refreshMovements())
+      }, () => void syncMovements())
       .subscribe()
     return () => {
+      bumpDelta.cancel()
+      bumpFull.cancel()
       void client.removeChannel(channel)
     }
-  }, [refreshMovements, needsMovements, user])
+  }, [refreshMovements, syncMovements, needsMovements, user])
   useEffect(() => {
     // Menu/SKU dùng chung toàn hệ thống: kéo từ Supabase về và nghe realtime
     // để mọi thiết bị (ca trưởng, POS, kho, admin) nhìn cùng một danh mục.
@@ -156,11 +318,12 @@ function App() {
     }
   }, [user?.id, user?.branchId, user?.role, user?.authToken])
   useEffect(() => {
-    if (!user || !supabase || user.authToken || !canUseManagement(user.role)) return
+    if (!user || !supabase || user.authToken || !(canUseManagement(user.role) || user.role === 'supmt')) return
     let active = true
     void (async () => {
       let nextBranchIds: string[] = []
-      if (user.role === 'admin') {
+      // SUP MT đối chiếu toàn hệ thống nên nhận mọi chi nhánh active như admin.
+      if (user.role === 'admin' || user.role === 'supmt') {
         const { data } = await supabase
           .from('branches')
           .select('id')
@@ -238,6 +401,7 @@ function App() {
     const normalizedUser = { ...nextUser, role: normalizeRole(nextUser.role) }
     setMovements([])
     saveLocalUser(normalizedUser)
+    markSessionStart()
     setUser(normalizedUser)
     navigate(defaultPageForRole(normalizedUser))
   }
@@ -250,6 +414,7 @@ function App() {
   async function logout() {
     if (supabase) await supabase.auth.signOut({ scope: 'local' }).catch(() => null)
     saveLocalUser(null)
+    clearSessionStart()
     setUser(null)
     navigate('launcher')
   }
@@ -280,6 +445,7 @@ function App() {
         {page === 'dashboard' && user.role === 'manager' && <ManagerDashboardPage user={user} onNavigate={navigate} />}
         {page === 'sales' && <SalesPage user={user} onNavigate={navigate} />}
         {page === 'my-records' && <MyRecordsPage user={user} onNavigate={navigate} />}
+        {page === 'my-timesheet' && <MyTimesheetPage user={user} />}
         {page === 'report-archive' && <ReportArchivePage user={user} />}
         {page === 'restaurant' && <RestaurantPage user={user} movements={movements} />}
         {page === 'report' && <ReportPage user={user} movements={movements} onNavigate={navigate} onOpenInventory={openInventory} onRefresh={refreshMovements} />}
@@ -307,7 +473,6 @@ function App() {
         {page === 'manager-business' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="commission" focused />}
         {page === 'manager-inventory' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="inventory" focused />}
         {page === 'manager-attendance' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="attendance" focused />}
-        {page === 'manager-payroll' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="payroll" focused />}
         {page === 'manager-requests' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="requests" focused />}
         {page === 'admin-accounts' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="accounts" focused />}
         {page === 'control' && canUseAdmin(user.role) && <ControlCenterPage user={user} />}
@@ -338,6 +503,9 @@ function PageLoadFallback({ label = 'Đang mở màn hình…' }: { label?: stri
 
 const ROUTE_LOAD_WATCHDOG_KEY = 'gustino:route-load-watchdog'
 
+/** Trần thời gian hoãn đăng xuất 24h khi hộp thư chấm công còn hàng chờ. */
+const SESSION_OUTBOX_GRACE_MS = 2 * 60 * 60 * 1000
+
 function RouteLoadSettled() {
   useEffect(() => {
     try {
@@ -361,6 +529,7 @@ function pageFromHash(): Page {
     'today',
     'sales',
     'my-records',
+    'my-timesheet',
     'report-archive',
     'restaurant',
     'report',
@@ -373,7 +542,6 @@ function pageFromHash(): Page {
     'manager-business',
     'manager-inventory',
     'manager-attendance',
-    'manager-payroll',
     'manager-requests',
     'admin-accounts',
     'control',
@@ -388,15 +556,29 @@ function managementSectionFromHash(): AdminSection | undefined {
   if (path.startsWith('/admin/')) return adminSectionForRoute(path)
   const [page, section] = path.split('/')
   if (page !== 'management') return undefined
-  return ['overview', 'revenue', 'attendance', 'commission', 'payroll', 'inventory', 'requests', 'accounts'].includes(section)
+  return ['overview', 'revenue', 'attendance', 'commission', 'inventory', 'requests', 'accounts'].includes(section)
     ? section as AdminSection
     : 'overview'
 }
 
 export default App
 
-function movementSignature(items: StockMovement[]) {
-  return items.map((item) => `${item.id}:${item.createdAt}:${item.quantity}`).join('|')
+/**
+ * Dấu vân tay rẻ để bỏ qua setState khi dữ liệu không đổi. Bản cũ nối chuỗi qua
+ * TOÀN BỘ mảng hai lần mỗi nhịp 15 giây — vài nghìn dòng là thấy giật ngay.
+ */
+function movementFingerprint(items: StockMovement[]) {
+  let quantitySum = 0
+  for (const item of items) quantitySum += item.quantity
+  const first = items[0]
+  const last = items[items.length - 1]
+  return `${items.length}:${quantitySum}:${first?.id || ''}:${first?.createdAt || ''}:${last?.id || ''}`
+}
+
+function latestMovementStamp(items: StockMovement[], fallback: string) {
+  let latest = fallback
+  for (const item of items) if (item.createdAt > latest) latest = item.createdAt
+  return latest
 }
 
 function canAccessPage(user: AppUser, page: Page) {
@@ -405,12 +587,16 @@ function canAccessPage(user: AppUser, page: Page) {
   if (page === 'dashboard') return user.role === 'manager'
   if (page === 'sales') return canUseSales(user.role)
   if (page === 'my-records') return user.role === 'staff' || user.role === 'shift_leader'
+  // Xem công: nhân viên/ca trưởng xem lịch công của chính mình (SUP MT xem được nếu tồn tại).
+  if (page === 'my-timesheet') return user.role === 'staff' || user.role === 'shift_leader' || user.role === 'supmt'
   if (page === 'report-archive') return canUseManagement(user.role)
   if (page === 'report') return canUseOperations(user.role)
   if (page === 'inventory') return canUseOperations(user.role)
-  if (page === 'orders') return canUseManagement(user.role) || canUseOperations(user.role)
+  // Admin không phải người đặt hàng: admin theo dõi/lọc/xuất đơn ở mục Đặt hàng trong trang
+  // Quản trị (#/management/requests), nên không vào trang lập phiếu đặt hàng của chi nhánh.
+  if (page === 'orders') return user.role !== 'admin' && (canUseManagement(user.role) || canUseOperations(user.role))
   if (page === 'management') return user.role === 'admin'
-  if (page === 'manager-attendance' || page === 'manager-payroll') return canUseAdmin(user.role)
+  if (page === 'manager-attendance') return canUseAdmin(user.role)
   if (page === 'manager-requests') return canUseAdmin(user.role)
   if (['manager-revenue', 'manager-business', 'manager-inventory'].includes(page)) return user.role === 'manager'
   if (page === 'admin-accounts') return canUseAdmin(user.role)
@@ -424,6 +610,7 @@ function defaultPageForRole(user: AppUser): Page {
   if (user.role === 'staff' || user.role === 'cashier') return 'sales'
   if (user.role === 'admin') return 'management'
   if (user.role === 'manager') return 'dashboard'
+  if (user.role === 'supmt') return 'attendance'
   if (canUseOperations(user.role)) return 'today'
   return 'attendance'
 }

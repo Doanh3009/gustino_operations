@@ -1,15 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { getSaleProducts, productById } from '../lib/constants'
 import { productSaleValues } from '../lib/commission'
 import { fetchAttendanceRecords, fetchEmployees, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
-import { createId } from '../lib/browser'
+import { burstGuard, createId } from '../lib/browser'
 import {
   deleteSalesReceipt,
   fetchSalesReceipts,
   saveSalesReceipt,
   type SalesReceipt,
   type SalesReceiptLine,
-  type PaymentMethod,
 } from '../lib/salesReceipts'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { localDateKey } from '../lib/dates'
@@ -36,12 +35,20 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   const [lastReceipt, setLastReceipt] = useState<SalesReceipt | null>(null)
   const [loading, setLoading] = useState(true)
   const [checkoutBusy, setCheckoutBusy] = useState(false)
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash')
-  const [customerPaid, setCustomerPaid] = useState('')
+  // Id hóa đơn được giữ ổn định cho MỘT lần bấm thanh toán (kể cả khi retry sau
+  // lỗi mạng): server nhận trùng id sẽ trả lại hóa đơn cũ thay vì tạo đơn mới
+  // và trừ kho lần hai. Chỉ đổi id khi đơn đã lưu thành công hoặc giỏ thay đổi.
+  const pendingReceiptIdRef = useRef('')
   const [feedback, setFeedback] = useState('')
   const [feedbackType, setFeedbackType] = useState<'ok' | 'err'>('ok')
   const canManageSales = user.role === 'shift_leader' || user.role === 'manager' || user.role === 'admin'
-  const today = localDateKey()
+  // `today` bám đồng hồ để POS mở qua nửa đêm không ghi hóa đơn vào ngày cũ.
+  const [clockTick, setClockTick] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockTick(Date.now()), 30000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const today = localDateKey(new Date(clockTick))
   const [selectedDate, setSelectedDate] = useState(today)
 
   useEffect(() => {
@@ -99,18 +106,45 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   useEffect(() => { void refresh(true) }, [user.id, user.branchId, selectedDate])
 
   useEffect(() => {
+    const reload = () => void refresh()
+    const reloadWhenVisible = () => {
+      if (document.visibilityState === 'visible') reload()
+    }
+    // POS là màn doanh thu: mất mạng/máy ngủ xong PHẢI tự tải lại, không được
+    // đứng im chờ realtime event không bao giờ tới.
+    window.addEventListener('focus', reload)
+    window.addEventListener('online', reload)
+    document.addEventListener('visibilitychange', reloadWhenVisible)
+    const removeWindowListeners = () => {
+      window.removeEventListener('focus', reload)
+      window.removeEventListener('online', reload)
+      document.removeEventListener('visibilitychange', reloadWhenVisible)
+    }
     const client = supabase
     if (!client) {
       const timer = window.setInterval(() => void refresh(), 5000)
-      return () => window.clearInterval(timer)
+      return () => {
+        window.clearInterval(timer)
+        removeWindowListeners()
+      }
     }
+    // Bán một hoá đơn là 1 event hoá đơn + n event dòng hàng; bảng dòng hàng
+    // không có `branch_id` nên máy chi nhánh khác cũng nhận. Gộp lại một lượt.
+    const reloadSoon = burstGuard(reload)
     const channel = client.channel(uniqueChannelName(`sales-pos:${user.branchId}`))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, () => void refresh())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_registrations', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
-      .subscribe()
-    return () => { void client.removeChannel(channel) }
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts', filter: `branch_id=eq.${user.branchId}` }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_registrations', filter: `branch_id=eq.${user.branchId}` }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'attendance_records', filter: `branch_id=eq.${user.branchId}` }, reloadSoon)
+      // SUBSCRIBED bắn cả khi rejoin sau rớt mạng → refetch bù event đã lỡ.
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') reload()
+      })
+    return () => {
+      removeWindowListeners()
+      reloadSoon.cancel()
+      void client.removeChannel(channel)
+    }
   }, [user.branchId, user.id, selectedDate])
 
   function showFeedback(msg: string, type: 'ok' | 'err' = 'ok') {
@@ -184,6 +218,9 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   ).sort((a, b) => b[0].localeCompare(a[0]))
 
   function addProductToCart(productId: string, quantity = 1) {
+    // Giỏ đổi nội dung = ý định mua mới → id idempotency cũ không còn đại diện
+    // cho giỏ này nữa, phải cấp id mới ở lần thanh toán kế tiếp.
+    pendingReceiptIdRef.current = ''
     setCart((current) => ({
       ...current,
       [productId]: Math.max(0, (current[productId] || 0) + quantity),
@@ -191,6 +228,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   }
 
   function setLineQuantity(productId: string, quantity: number) {
+    pendingReceiptIdRef.current = ''
     setCart((current) => {
       const next = { ...current }
       if (quantity <= 0) delete next[productId]
@@ -201,7 +239,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
 
   function clearCart() {
     setCart({})
-    setCustomerPaid('')
+    pendingReceiptIdRef.current = ''
   }
 
   // NV xóa hóa đơn của mình trong ngày; ca trưởng/quản lý/admin xóa mọi hóa đơn.
@@ -234,24 +272,20 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
       showFeedback('Chỉ tạo hóa đơn cho ngày hôm nay. Ngày cũ dùng để xem lại dữ liệu đã lưu.', 'err')
       return
     }
-    const paid = paymentMethod === 'cash' ? Number(customerPaid || 0) : bill.amount
-    if (paymentMethod === 'cash' && paid < bill.amount) {
-      showFeedback('Số tiền khách đưa chưa đủ.', 'err')
-      return
-    }
     setCheckoutBusy(true)
     try {
+      // Nhân viên KHÔNG thu tiền: hóa đơn chỉ gồm món + số lượng. Thành tiền hiển
+      // thị tính từ giá cấu hình; server tự tra lại giá trong database khi lưu
+      // (không tin giá client) nên đây chỉ là số tham khảo cho nhân viên soát.
+      if (!pendingReceiptIdRef.current) pendingReceiptIdRef.current = createId()
       const receipt: SalesReceipt = {
-        id: createId(),
+        id: pendingReceiptIdRef.current,
         code: buildReceiptCode(selectedDate, todayReceipts.length + 1),
         branchId: user.branchId,
         businessDate: selectedDate,
         sellerKey: selectedSeller.key,
         sellerId: selectedSeller.employeeId,
         sellerName: selectedSeller.employeeName,
-        paymentMethod,
-        customerPaid: paid,
-        changeAmount: Math.max(paid - bill.amount, 0),
         totalQuantity: bill.quantity,
         totalAmount: bill.amount,
         lines: cartLines,
@@ -260,11 +294,11 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
         createdByName: user.name,
       }
       const savedReceipt = await saveSalesReceipt(user, receipt)
+      pendingReceiptIdRef.current = ''
       setReceipts((items) => dedupeReceipts([savedReceipt, ...items]).slice(0, 200))
       setLastReceipt(savedReceipt)
       setCart({})
-      setCustomerPaid('')
-      showFeedback(`Đã thanh toán ${savedReceipt.code} - ${formatMoney(savedReceipt.totalAmount)}.`, 'ok')
+      showFeedback(`Đã ghi nhận bán hàng ${savedReceipt.code} - ${formatMoney(savedReceipt.totalAmount)}.`, 'ok')
       await refresh()
     } catch (error) {
       showFeedback(error instanceof Error ? error.message : 'Không thể tạo hóa đơn.', 'err')
@@ -414,25 +448,11 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
             <small>{bill.quantity} sản phẩm - tạo mã đối soát</small>
           </div>
 
-          <div className="pos-payment-panel">
-            <label>Thanh toán
-              <select value={paymentMethod} onChange={(event) => {
-                setPaymentMethod(event.target.value as PaymentMethod)
-                setCustomerPaid('')
-              }}>
-                <option value="cash">Tiền mặt</option>
-                <option value="qr">Chuyển khoản QR</option>
-                <option value="card">Thẻ</option>
-              </select>
-            </label>
-            {paymentMethod === 'cash' && <label>Khách đưa
-              <input type="number" min={bill.amount} step="1000" value={customerPaid} onChange={(event) => setCustomerPaid(event.target.value)} placeholder={String(bill.amount)} />
-            </label>}
-            <div><span>Tiền thừa</span><strong>{formatMoney(Math.max(Number(customerPaid || 0) - bill.amount, 0))}</strong></div>
-          </div>
-
+          {/* Nhân viên KHÔNG thu tiền: đã bỏ hẳn ô nhập tiền + chọn phương thức
+              thanh toán. Chỉ xác nhận món + số lượng, hệ thống tự tính doanh thu
+              theo giá cấu hình trong database. */}
           <button className="checkout-button" disabled={!cartLines.length || checkoutBusy} onClick={() => void checkout()}>
-            {checkoutBusy ? 'Đang thanh toán...' : 'Thanh toán'}
+            {checkoutBusy ? 'Đang lưu...' : 'Xác nhận bán hàng'}
           </button>
 
           <div className="receipt-history">
@@ -477,9 +497,6 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
                 <div><dt>Thời gian</dt><dd>{new Date(lastReceipt.createdAt).toLocaleString('vi-VN', { hour12: false })}</dd></div>
                 <div><dt>Nhân viên</dt><dd>{lastReceipt.sellerName}</dd></div>
                 <div><dt>Chi nhánh</dt><dd>{branchName(lastReceipt.branchId)}</dd></div>
-                <div><dt>Thanh toán</dt><dd>{paymentMethodLabel(lastReceipt.paymentMethod)}</dd></div>
-                {lastReceipt.paymentMethod === 'cash' && <div><dt>Khách đưa</dt><dd>{formatMoney(lastReceipt.customerPaid || lastReceipt.totalAmount)}</dd></div>}
-                {lastReceipt.paymentMethod === 'cash' && <div><dt>Tiền thừa</dt><dd>{formatMoney(lastReceipt.changeAmount || 0)}</dd></div>}
               </dl>
               <section>
                 {lastReceipt.lines.map((line) => (
@@ -547,10 +564,6 @@ function formatMoney(value: number) {
 function formatDate(value: string) {
   const [year, month, day] = value.split('-')
   return day && month && year ? `${day}/${month}/${year}` : value
-}
-
-function paymentMethodLabel(value: PaymentMethod) {
-  return value === 'cash' ? 'Tiền mặt' : value === 'qr' ? 'Chuyển khoản QR' : 'Thẻ'
 }
 
 function printPosReceipt() {

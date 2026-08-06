@@ -1,7 +1,8 @@
-import { getProducts } from './constants'
+import { getProducts, isWarehouseProduct } from './constants'
 import { createId, readLocalJson } from './browser'
 import { isDuplicateKey, isMissingRpc, isMissingUniqueConstraint, userHeaders } from './core'
 import { localDateKey, localDayBoundsIso } from './dates'
+import { roundQuantity } from './inventoryEntry'
 import { shouldUseLanApi, supabase } from './supabase'
 import type { AppUser, InventoryReport, OperationDay, ReportSnapshot, StockLine, StockMovement } from '../types'
 
@@ -70,18 +71,8 @@ async function fetchAllMovementRows(
   }
 }
 
-export async function fetchMovements(branchId: string, user?: AppUser): Promise<StockMovement[]> {
-  if (shouldUseLanApi(user)) {
-    return lanApi<StockMovement[]>(`/movements?branchId=${encodeURIComponent(branchId)}`)
-  }
-  const rows = await fetchAllMovementRows((from, to) => supabase!
-    .from('stock_movements')
-    .select('*')
-    .eq('branch_id', branchId)
-    .order('created_at', { ascending: false })
-    .order('id', { ascending: false })
-    .range(from, to))
-  return rows.map((row) => ({
+function mapMovementRow(row: any): StockMovement {
+  return {
     id: row.id,
     branchId: row.branch_id,
     productId: row.product_id,
@@ -95,7 +86,87 @@ export async function fetchMovements(branchId: string, user?: AppUser): Promise<
     sourceQuantity: row.source_quantity ? Number(row.source_quantity) : undefined,
     documentId: row.document_id ?? undefined,
     measuredWeightKg: row.measured_weight_kg ? Number(row.measured_weight_kg) : undefined,
-  }))
+  }
+}
+
+export async function fetchMovements(branchId: string, user?: AppUser): Promise<StockMovement[]> {
+  if (shouldUseLanApi(user)) {
+    return lanApi<StockMovement[]>(`/movements?branchId=${encodeURIComponent(branchId)}`)
+  }
+  const branchPage = (from: number, to: number) => supabase!
+    .from('stock_movements')
+    .select('*')
+    .eq('branch_id', branchId)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, to)
+
+  // Biết trước tổng số dòng thì tải các trang SONG SONG. Vòng lặp nối tiếp cũ
+  // tốn 4 lượt đi-về mạng liên tiếp ngay khi mở trang — trên 4G là hơn một giây
+  // chỉ để dựng bảng tồn.
+  const { count, error: countError } = await supabase!
+    .from('stock_movements')
+    .select('id', { count: 'exact', head: true })
+    .eq('branch_id', branchId)
+  if (countError) throw countError
+  const total = count || 0
+  if (total <= STOCK_MOVEMENT_PAGE_SIZE) {
+    const { data, error } = await branchPage(0, STOCK_MOVEMENT_PAGE_SIZE - 1)
+    if (error) throw error
+    return (data || []).map(mapMovementRow)
+  }
+  const pages = await Promise.all(
+    Array.from({ length: Math.ceil(total / STOCK_MOVEMENT_PAGE_SIZE) }, (_, index) => {
+      const from = index * STOCK_MOVEMENT_PAGE_SIZE
+      return branchPage(from, from + STOCK_MOVEMENT_PAGE_SIZE - 1)
+    }),
+  )
+  const rows: any[] = []
+  for (const page of pages) {
+    if (page.error) throw page.error
+    rows.push(...(page.data || []))
+  }
+  // Có phiếu kho được ghi ngay giữa lúc phân trang thì các trang sẽ trượt một
+  // nhịp và trả trùng dòng; lọc theo id để bảng tồn không cộng đôi.
+  const seen = new Set<string>()
+  const unique: any[] = []
+  for (const row of rows) {
+    if (seen.has(row.id)) continue
+    seen.add(row.id)
+    unique.push(row)
+  }
+  return unique.map(mapMovementRow)
+}
+
+/**
+ * Sổ kho là event sourcing nên chỉ có thêm, gần như không sửa. Tải lại TOÀN BỘ
+ * lịch sử mỗi 15 giây (đầu tháng 7 đã ~1.700 dòng/chi nhánh, mỗi ngày thêm ~90)
+ * là lý do app ngày càng ì: 4 lượt gọi mạng mỗi nhịp, mỗi lượt vài trăm KB JSON
+ * phải parse lại trên điện thoại.
+ *
+ * Nhịp nền chỉ lấy phần MỚI kể từ `sinceCreatedAt`, kèm `total` (count exact,
+ * gần như không tốn gì) để phát hiện xoá: `total` khác `đã có + mới` nghĩa là có
+ * dòng bị xoá/sửa ở quá khứ → phía gọi tải đầy đủ lại.
+ */
+export async function fetchMovementsDelta(
+  branchId: string,
+  sinceCreatedAt: string,
+  user?: AppUser,
+): Promise<{ rows: StockMovement[]; total: number } | null> {
+  if (shouldUseLanApi(user) || !supabase) return null
+  const [inserted, counted] = await Promise.all([
+    fetchAllMovementRows((from, to) => supabase!
+      .from('stock_movements')
+      .select('*')
+      .eq('branch_id', branchId)
+      .gt('created_at', sinceCreatedAt)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(from, to)),
+    supabase.from('stock_movements').select('id', { count: 'exact', head: true }).eq('branch_id', branchId),
+  ])
+  if (counted.error) throw counted.error
+  return { rows: inserted.map(mapMovementRow), total: counted.count || 0 }
 }
 
 export async function addMovement(item: StockMovement, user?: AppUser): Promise<void> {
@@ -125,6 +196,11 @@ export async function addMovements(
   user?: AppUser,
   options?: { allowInsufficientStock?: boolean },
 ): Promise<void> {
+  // Phiếu rỗng không được đi tới RPC: create_stock_movements_checked raise
+  // 'Phiếu không có dòng dữ liệu' — thông báo khó hiểu cho người dùng cuối.
+  if (!items.length) return
+  const invalid = items.find((item) => !Number.isFinite(item.quantity) || item.quantity < 0)
+  if (invalid) throw new Error('Số lượng trên phiếu không hợp lệ (phải là số ≥ 0).')
   if (shouldUseLanApi(user)) {
     await lanApi('/movements', { method: 'POST', body: JSON.stringify(items) })
     return
@@ -160,6 +236,28 @@ export async function addMovements(
       || String((error as any).code || '') === 'P0001'
     if (!canBypassStockCheck || !isStockCheckConflict) throw error
     await insertStockRowsDirect(rows)
+    return
+  }
+  // RPC trả `void`: gọi xong không có gì chứng minh dòng đã nằm trong bảng. Một
+  // phiếu "lưu thành công" nhưng máy chủ trống là nguyên nhân kinh điển của báo
+  // lỗi "kho không đồng bộ" — máy vừa ghi hiện số mới (nó tự tính lại tại chỗ),
+  // mọi máy khác đọc từ DB nên vẫn hiện số cũ, và không ai thấy thông báo lỗi.
+  // Một lượt đếm cho cả phiếu là đủ rẻ để đổi lấy việc lỗi hiện ra ngay.
+  await assertMovementsPersisted(rows.map((row) => row.id))
+}
+
+/** Xác nhận các dòng vừa ghi đã thực sự có trên máy chủ. Ném lỗi nếu thiếu. */
+async function assertMovementsPersisted(ids: string[]): Promise<void> {
+  if (!supabase || !ids.length) return
+  const { count, error } = await supabase
+    .from('stock_movements')
+    .select('id', { count: 'exact', head: true })
+    .in('id', ids)
+  // Không đọc kiểm tra được (mạng chập chờn) thì im lặng: ghi có thể đã thành
+  // công, báo lỗi sai còn tệ hơn. Chỉ báo khi chắc chắn máy chủ thiếu dòng.
+  if (error) return
+  if ((count ?? ids.length) < ids.length) {
+    throw new Error('Phiếu chưa được lưu lên máy chủ (máy chủ không có đủ số dòng vừa ghi). Kiểm tra kết nối/quyền rồi lưu lại.')
   }
 }
 
@@ -178,8 +276,14 @@ async function insertStockRowsDirect(rows: Array<{
   measured_weight_kg: number | null
 }>) {
   if (!supabase || !rows.length) return
-  const { error } = await supabase!.from('stock_movements').insert(rows)
+  // Cùng lý do như `deleteMovements`: insert bị RLS chặn có thể về `error = null`
+  // với 0 dòng. Phiếu "lưu xong" mà máy chủ không có dòng nào là kiểu lỗi tệ nhất
+  // của sổ kho — máy ghi thấy số mới, mọi máy khác vẫn thấy số cũ.
+  const { data, error } = await supabase!.from('stock_movements').insert(rows).select('id')
   if (error) throw error
+  if ((data?.length ?? 0) < rows.length) {
+    throw new Error('Máy chủ không nhận đủ số dòng của phiếu (thiếu quyền ghi). Phiếu CHƯA được lưu — kiểm tra lại quyền tài khoản.')
+  }
 }
 
 export async function deleteMovements(branchId: string, movementIds: string[], user?: AppUser): Promise<void> {
@@ -191,61 +295,163 @@ export async function deleteMovements(branchId: string, movementIds: string[], u
     })
     return
   }
-  const { error } = await supabase!
+  // `.select()` là BẮT BUỘC, không phải để lấy dữ liệu về.
+  //
+  // PostgREST trả `error = null` cho lệnh xoá không khớp dòng nào — kể cả khi RLS
+  // đã lọc sạch hoặc `branchId` truyền vào không phải chi nhánh của phiếu. Không
+  // có `.select()` thì lớp gọi không phân biệt được "đã xoá" với "không xoá được
+  // dòng nào", màn Kho báo "Đã xóa …" trong khi máy chủ không đổi gì → máy khác
+  // vẫn hiện số cũ và người dùng kết luận app không đồng bộ.
+  const { data, error } = await supabase!
     .from('stock_movements')
     .delete()
     .eq('branch_id', branchId)
     .in('id', movementIds)
+    .select('id')
   if (error) throw error
+  const removed = data?.length ?? 0
+  if (removed < movementIds.length) {
+    throw new Error(
+      removed === 0
+        ? 'Máy chủ không xóa được dòng nào (thiếu quyền hoặc phiếu thuộc chi nhánh khác). Dữ liệu kho chưa thay đổi.'
+        : `Chỉ xóa được ${removed}/${movementIds.length} dòng của chứng từ. Tải lại trang và kiểm tra lại sổ kho.`,
+    )
+  }
+}
+
+/** Dấu của từng loại phiếu khi cộng vào tồn. `count` = 0 vì nó là MỐC RESET, không phải phát sinh. */
+const MOVEMENT_SIGNS: Record<StockMovement['type'], number> = {
+  opening: 1,
+  inbound: 1,
+  processing_out: -1,
+  processing_in: 1,
+  packing_out: -1,
+  packing_in: 1,
+  sale_out: -1,
+  waste: -1,
+  adjustment: 1,
+  count: 0,
+}
+
+/**
+ * Giá trị một phiếu cộng vào tồn. `waste` có `sourceProductId` là hao hụt chế
+ * biến: chỉ để thông tin, KHÔNG trừ tồn lần hai (phần hụt đã nằm trong chênh
+ * lệch giữa `processing_out` và `processing_in`).
+ */
+function movementStockValue(item: StockMovement): number {
+  const informationalProcessingLoss = item.type === 'waste' && Boolean(item.sourceProductId)
+  return item.quantity * (informationalProcessingLoss ? 0 : MOVEMENT_SIGNS[item.type])
 }
 
 export function calculateStock(movements: StockMovement[]): StockLine[] {
-  const signs: Record<StockMovement['type'], number> = {
-    opening: 1,
-    inbound: 1,
-    processing_out: -1,
-    processing_in: 1,
-    packing_out: -1,
-    packing_in: 1,
-    sale_out: -1,
-    waste: -1,
-    adjustment: 1,
-    count: 0,
+  // Kho = nguyên vật liệu + bao bì + thành phẩm chế biến. Món trong menu bán không đi qua kho
+  // (POS ghi hóa đơn, không ghi movement) nên bị loại khỏi bảng tồn. Ngoại lệ duy nhất: SKU nào
+  // đã từng có phiếu kho thật thì vẫn hiện, để không giấu mất số tồn đang treo trong sổ.
+  // Gom theo sản phẩm MỘT lần. Trước đây mỗi sản phẩm lại `.filter()` + `.sort()`
+  // trên toàn bộ mảng movement (≈60 SKU × vài nghìn dòng mỗi lần gọi) nên bảng
+  // tồn tính lại là giật, mà hàm này chạy ở gần như mọi trang vận hành.
+  const byProduct = new Map<string, StockMovement[]>()
+  for (const item of movements) {
+    const bucket = byProduct.get(item.productId)
+    if (bucket) bucket.push(item)
+    else byProduct.set(item.productId, [item])
   }
-  return getProducts().map((product) => {
-    const productMovements = movements
-      .filter((item) => item.productId === product.id)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    const latestCount = [...productMovements]
-      .filter((item) => item.type === 'count')
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
-    const beforeCount = latestCount
-      ? productMovements.filter((item) => item.createdAt < latestCount.createdAt)
-      : productMovements
-    const expectedAtCount = beforeCount.reduce(
-      (sum, item) => {
-        const informationalProcessingLoss = item.type === 'waste' && Boolean(item.sourceProductId)
-        return sum + item.quantity * (informationalProcessingLoss ? 0 : signs[item.type])
-      },
-      0,
+  return getProducts()
+    .filter((product) => isWarehouseProduct(product) || byProduct.has(product.id))
+    .map((product) => {
+      const productMovements = byProduct.get(product.id) || []
+      // Kiểm kê gần nhất là mốc reset: mọi thứ trước nó chỉ dùng để tính lệch.
+      let latestCount: StockMovement | undefined
+      for (const item of productMovements) {
+        if (item.type !== 'count') continue
+        if (!latestCount || item.createdAt > latestCount.createdAt) latestCount = item
+      }
+      let expectedAtCount = 0
+      let afterCountSum = 0
+      for (const item of productMovements) {
+        const value = movementStockValue(item)
+        if (!latestCount) expectedAtCount += value
+        // Trước đây so sánh bằng `<` và `>` nên dòng ghi ĐÚNG micro-giây của mốc
+        // kiểm kê rơi khỏi cả hai vế và biến mất khỏi bảng tồn. Trùng dấu thời
+        // gian là chuyện thường: một lệnh INSERT nhiều dòng thì Postgres gán
+        // `now()` giống hệt nhau cho mọi dòng. Coi dòng trùng mốc là TRƯỚC kiểm
+        // kê — số đếm thực tế đã bao gồm nó rồi. (Bản thân dòng `count` có dấu 0
+        // nên nằm vế nào cũng không đổi kết quả.)
+        else if (item.createdAt <= latestCount.createdAt) expectedAtCount += value
+        else afterCountSum += value
+      }
+      const expected = latestCount ? latestCount.quantity + afterCountSum : expectedAtCount
+      const actual = latestCount?.quantity
+      return {
+        product,
+        expected,
+        actual,
+        variance: actual === undefined ? undefined : actual - expectedAtCount,
+      }
+    })
+}
+
+export interface StockAdjustment {
+  movement: StockMovement
+  /** Số khai − tồn hệ thống ngay trước phiếu. Dương = sổ đang thiếu so với thực tế. */
+  delta: number
+}
+
+/**
+ * Độ lệch mà mỗi phiếu kiểm kê / SỬA TỒN (`count`) tạo ra.
+ *
+ * Vì sao cần: `count` là mốc reset nên bảng tồn nhảy sang số khai ngay, nhưng nó
+ * KHÔNG thuộc cột Nhập lẫn cột Xuất của bất kỳ bảng sổ kho nào. Sau một phiếu
+ * sửa tồn, "Tồn đầu + Nhập − Xuất − Hao" không còn ra "Tồn cuối" và người xem
+ * kết luận là dữ liệu kho không đồng bộ. Có delta thì mọi bảng thêm được một cột
+ * "Điều chỉnh" và cân trở lại.
+ *
+ * Phải truyền TOÀN BỘ lịch sử của chi nhánh (không lọc theo kỳ) vì delta là hiệu
+ * so với tồn cộng dồn ngay trước phiếu; lọc theo kỳ ở phía gọi, dựa trên
+ * `movement.shiftDate`.
+ */
+export function stockAdjustmentDeltas(movements: StockMovement[]): StockAdjustment[] {
+  const byProduct = new Map<string, StockMovement[]>()
+  for (const item of movements) {
+    const bucket = byProduct.get(item.productId)
+    if (bucket) bucket.push(item)
+    else byProduct.set(item.productId, [item])
+  }
+  const adjustments: StockAdjustment[] = []
+  for (const rows of byProduct.values()) {
+    // Cùng dấu thời gian thì phiếu phát sinh phải chạy TRƯỚC phiếu kiểm kê — đúng
+    // quy ước `<=` của `calculateStock`, nếu không delta sẽ lệch đúng bằng phiếu đó.
+    const ordered = rows.slice().sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt)
+      || Number(a.type === 'count') - Number(b.type === 'count')
+      || a.id.localeCompare(b.id),
     )
-    const afterCount = latestCount
-      ? productMovements.filter((item) => item.createdAt > latestCount.createdAt)
-      : []
-    const expected = latestCount
-      ? afterCount.reduce((sum, item) => {
-          const informationalProcessingLoss = item.type === 'waste' && Boolean(item.sourceProductId)
-          return sum + item.quantity * (informationalProcessingLoss ? 0 : signs[item.type])
-        }, latestCount.quantity)
-      : expectedAtCount
-    const actual = latestCount?.quantity
-    return {
-      product,
-      expected,
-      actual,
-      variance: actual === undefined ? undefined : actual - expectedAtCount,
+    let running = 0
+    for (const item of ordered) {
+      if (item.type !== 'count') {
+        running += movementStockValue(item)
+        continue
+      }
+      adjustments.push({ movement: item, delta: roundQuantity(item.quantity - running) })
+      running = item.quantity
     }
-  })
+  }
+  return adjustments
+}
+
+/** Tổng điều chỉnh của một sản phẩm trong khoảng ngày vận hành (theo `shiftDate`). */
+export function sumStockAdjustments(
+  adjustments: StockAdjustment[],
+  filter: { productId?: string; from?: string; to?: string } = {},
+): number {
+  let total = 0
+  for (const item of adjustments) {
+    if (filter.productId && item.movement.productId !== filter.productId) continue
+    if (filter.from && item.movement.shiftDate < filter.from) continue
+    if (filter.to && item.movement.shiftDate > filter.to) continue
+    total += item.delta
+  }
+  return roundQuantity(total)
 }
 
 export async function saveReportSnapshot(user: AppUser, payload: Record<string, unknown>) {

@@ -16,3 +16,15 @@ supabase/.temp/
 .env*
 
 .npm-cache/
+
+# Rac build cua Python (script dung bao cao).
+__pycache__/
+*.pyc
+
+# Bao cao thuc tap va cong cu dung no: chua ho ten, MSSV, don vi thuc tap va
+# nguoi huong dan. Repo nay dang PUBLIC nen khong day len GitHub.
+# (.vercelignore cung da chan cac file nay khoi ban deploy.)
+*.docx
+*.pdf
+THONG_TIN_CAN_BO_SUNG.md
+scripts/report/

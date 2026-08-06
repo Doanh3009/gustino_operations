@@ -36,14 +36,15 @@ Deno.serve(async (request) => {
       const email = String(payload.email || '').trim().toLowerCase()
       const password = String(payload.password || payload.temporaryPassword || '')
       const role = String(payload.role || 'staff')
-      const branchlessRole = role === 'manager' || role === 'kitchen'
+      // SUP MT giám sát toàn hệ thống nên không bắt buộc gán chi nhánh.
+      const branchlessRole = role === 'manager' || role === 'kitchen' || role === 'supmt'
       const branchId = branchlessRole ? null : String(payload.branchId || '')
       const branchName = String(payload.branchName || branchId || '').trim()
       const employmentType = String(payload.employmentType || (role === 'shift_leader' ? 'leader' : 'part_time'))
       const positionTitle = String(payload.positionTitle || '').trim()
       if (!name || username.length < 3 || !email.includes('@')) return response(400, { error: 'Tên và tên đăng nhập không hợp lệ.' })
       if (password.length < 6) return response(400, { error: 'Mật khẩu cần ít nhất 6 ký tự.' })
-      if (!['manager', 'shift_leader', 'staff', 'cashier', 'kitchen'].includes(role)) return response(400, { error: 'Vai trò không hợp lệ.' })
+      if (!['manager', 'supmt', 'shift_leader', 'staff', 'cashier', 'kitchen'].includes(role)) return response(400, { error: 'Vai trò không hợp lệ.' })
       if (!['leader', 'full_time', 'part_time'].includes(employmentType)) return response(400, { error: 'Nhóm ca không hợp lệ.' })
       if (!branchlessRole && !(await canManageBranch(adminClient, user.id, adminProfile.role, adminProfile.branch_id, branchId))) {
         return response(403, { error: 'Không có quyền tạo tài khoản tại chi nhánh này.' })
@@ -199,9 +200,9 @@ Deno.serve(async (request) => {
       if (payload.role !== undefined) {
         if (employeeId === user.id) return response(400, { error: 'Không thể tự hạ quyền Admin của chính mình.' })
         const role = String(payload.role || '')
-        if (!['manager', 'shift_leader', 'staff', 'cashier', 'kitchen'].includes(role)) return response(400, { error: 'Vai trò không hợp lệ.' })
+        if (!['manager', 'supmt', 'shift_leader', 'staff', 'cashier', 'kitchen'].includes(role)) return response(400, { error: 'Vai trò không hợp lệ.' })
         patch.role = role
-        if (role === 'manager' || role === 'kitchen') patch.branch_id = null
+        if (role === 'manager' || role === 'kitchen' || role === 'supmt') patch.branch_id = null
       }
       if (payload.employmentType !== undefined) {
         const employmentType = String(payload.employmentType || '')

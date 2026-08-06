@@ -1,24 +1,34 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ShiftPhotoButton } from '../components/ShiftPhotoButton'
 import { getFinishedBulkProducts, getSaleProducts, productById, type ConfiguredProduct } from '../lib/constants'
-import { createId, imageFileToDataUrl } from '../lib/browser'
+import { burstGuard, createId, imageFileToDataUrl } from '../lib/browser'
 import { calculateStock, ensureOperationDay, getOperationDay } from '../lib/store'
+import { formatQuantity } from '../lib/inventoryEntry'
 import { fetchAttendanceRecords, fetchShiftRegistrations, fetchWorkShifts, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { formatLocalDate, localDateKey } from '../lib/dates'
 import { fetchConfiguredProducts } from '../lib/products'
 import { branchName as configuredBranchName } from '../lib/branches'
 import { notifyN8nShiftPhoto } from '../lib/n8nShiftPhoto'
-import { canOpenNextScheduledOperationalShift } from '../lib/operationalShiftAssignment'
+import {
+  canOpenNextScheduledOperationalShift,
+  isDeputyShiftLeader,
+  nextOperationalSequence,
+  primaryLeadersScheduledFor,
+  scheduledOperationalSequences,
+} from '../lib/operationalShiftAssignment'
+import { writeHandoverReportRequest, type HandoverReportRequest } from '../lib/handoverReportRequest'
 import type { Page } from '../components/AppShell'
 import {
   closeBagShift,
   fetchBagShiftSessions,
   ownsBagShiftSession,
+  reopenBagShift,
   startBagShift,
   uploadBagShiftPhoto,
 } from '../lib/shiftLedger'
 import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
+import { sessionScopeWindow, timestampInScopeWindow } from '../lib/shiftReportScope'
 import type { AppUser, AttendanceRecord, BagShiftSession, OperationDay, ShiftRegistration, StockMovement, WorkShift } from '../types'
 
 function shiftLabel(sequence: number) {
@@ -38,7 +48,15 @@ export function ShiftHandoverPage({
   onChanged: () => Promise<void>
   onNavigate: (page: Page) => void
 }) {
-  const today = localDateKey()
+  // `today` phải bám đồng hồ: tính một lần lúc mount thì màn Bàn giao mở qua
+  // nửa đêm (ca tối) sẽ giữ closure ngày HÔM QUA cho mọi lượt refresh/realtime
+  // — fetch mãi dữ liệu ngày cũ. Tick 30s + effect phụ thuộc `today` bên dưới.
+  const [clockTick, setClockTick] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockTick(Date.now()), 30000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const today = localDateKey(new Date(clockTick))
   const [sessions, setSessions] = useState<BagShiftSession[]>([])
   const [receipts, setReceipts] = useState<SalesReceipt[]>([])
   const [loading, setLoading] = useState(true)
@@ -53,6 +71,11 @@ export function ShiftHandoverPage({
   const [closingPhoto, setClosingPhoto] = useState('')
   const [operationDay, setOperationDay] = useState<OperationDay | null>(null)
   const [productTick, setProductTick] = useState(0)
+  const [autoStartFailed, setAutoStartFailed] = useState(false)
+  const [takeOverArmed, setTakeOverArmed] = useState(false)
+  const [standInArmed, setStandInArmed] = useState(false)
+  const [coverArmed, setCoverArmed] = useState(false)
+  const [closeArmed, setCloseArmed] = useState(false)
   const autoStartAttemptRef = useRef('')
 
   const saleProducts = useMemo(() => getSaleProducts(), [productTick])
@@ -61,23 +84,89 @@ export function ShiftHandoverPage({
     return finishedProducts.length ? finishedProducts : saleProducts
   }, [productTick, saleProducts])
   const branchOpenSession = sessions.find((item) => item.status === 'open' && item.businessDate === today)
-  const openSession = branchOpenSession && ownsBagShiftSession(branchOpenSession, user) ? branchOpenSession : undefined
-  const anotherLeaderOpenSession = branchOpenSession && !openSession ? branchOpenSession : undefined
   const staleOpenSessions = sessions.filter((item) => item.status === 'open' && item.businessDate < today)
   const todaySessions = sessions.filter((item) => item.businessDate === today)
   const hasClosedShift = todaySessions.some((item) => item.status === 'closed')
   const dayClosed = operationDay?.status === 'closed'
   const dayLocked = dayClosed
-  const maxShiftsReached = !openSession && todaySessions.length >= 2
-  const activeAttendance = myAttendance.find((record) => !record.checkOutTime)
+  const openAttendances = myAttendance.filter((record) => !record.checkOutTime)
+  const activeAttendance = openAttendances[0]
   const myApprovedRegistrations = registrations.filter((item) =>
     item.userId === user.id && item.workDate === today && item.status === 'approved',
   )
-  const activeRegistration = activeAttendance
-    ? myApprovedRegistrations.find((registration) => registration.id === activeAttendance.shiftRegistrationId)
-    : undefined
-  const canAutoStartScheduledShift = Boolean(
-    activeRegistration && canOpenNextScheduledOperationalShift(activeRegistration, todaySessions, workShifts),
+  const ownOpenSession = branchOpenSession && ownsBagShiftSession(branchOpenSession, user) ? branchOpenSession : undefined
+  const foreignOpenSession = branchOpenSession && !ownOpenSession ? branchOpenSession : undefined
+  // Ca trưởng trước về mà không bấm "Chốt & bàn giao ca" là ca vận hành đứng nguyên:
+  // người của ca sau không mở được ca mới (chi nhánh còn ca đang mở) và trước đây cũng
+  // KHÔNG có nút nào để chốt hộ — cả chi nhánh kẹt tới nửa đêm chờ cron. Máy chủ vốn
+  // đã cho ca trưởng cùng chi nhánh chốt (`can_manage_branch`), chỉ giao diện là chặn.
+  // Nay mở đúng một lối: phải bấm + xác nhận, phải đếm tồn thật và phải ghi lý do,
+  // nên không có chuyện ca sau lặng lẽ chiếm ca trước (BUG-100 giữ nguyên).
+  const canCoverForeignShift = Boolean(
+    foreignOpenSession
+    && !dayLocked
+    && (user.role === 'manager' || user.role === 'admin'
+      || (user.role === 'shift_leader' && activeAttendance && myApprovedRegistrations.length > 0)),
+  )
+  const coveringSession = coverArmed && canCoverForeignShift ? foreignOpenSession : undefined
+  const openSession = ownOpenSession || coveringSession
+  const anotherLeaderOpenSession = foreignOpenSession && !coveringSession ? foreignOpenSession : undefined
+  const maxShiftsReached = !openSession && todaySessions.length >= 2
+  // Chi nhánh ít ca trưởng (vd Vũng Tàu chỉ có 2 người) hay xếp CÙNG một ca trưởng
+  // cho cả Ca 1 lẫn Ca 2 trong ngày, tức là 2 đăng ký + 2 bản ghi chấm công.
+  // Trước đây chỉ xét đăng ký gắn với bản ghi chấm công ĐẦU TIÊN còn mở, nên sau khi
+  // chốt Ca 1 hệ thống vẫn đọc ra đăng ký Ca 1 và từ chối mở Ca 2 → "chưa nhận được ca".
+  // Giờ xét MỌI đăng ký đã duyệt mà ca trưởng đang check-in, rồi lấy đăng ký khớp
+  // đúng sequence kế tiếp. Quy tắc BUG-100 giữ nguyên: vẫn phải có lịch + đã check-in.
+  const startableRegistration = myApprovedRegistrations.find((registration) =>
+    openAttendances.some((record) => record.shiftRegistrationId === registration.id)
+    && canOpenNextScheduledOperationalShift(registration, todaySessions, workShifts),
+  )
+  const nextSequence = nextOperationalSequence(todaySessions)
+  // Chủ ca luôn là CA TRƯỞNG. Ca phó dùng chung role `shift_leader` nên trước
+  // đây ai check-in trước thì thành chủ ca — 28/07 tại Gold Coast ca phó bấm
+  // sớm hơn ca trưởng 67 giây và cả Ca 1 mang tên ca phó. Ca phó vẫn chấm công,
+  // nhập kho, chế biến và bán hàng trong ca; chỉ không đứng tên phiên ca.
+  const viewerIsDeputy = isDeputyShiftLeader(user)
+  const primaryLeadersForNextShift = primaryLeadersScheduledFor(nextSequence, today, registrations, workShifts)
+    .filter((registration) => registration.userId !== user.id)
+  const primaryLeaderNames = primaryLeadersForNextShift.map((registration) => registration.userName).join(', ')
+  const deputyMustWaitForPrimary = Boolean(viewerIsDeputy && primaryLeadersForNextShift.length)
+  const canAutoStartScheduledShift = Boolean(startableRegistration) && !deputyMustWaitForPrimary
+  // Có ngày chi nhánh chỉ xếp đúng MỘT ca trưởng cho cả ngày. Khi đó không ai có
+  // lịch cho sequence còn lại nên ca vận hành sẽ không bao giờ mở, kéo theo không
+  // bàn giao và không chốt được ngày. Cho ca trưởng đang trong ca nhận tiếp,
+  // nhưng phải bấm + xác nhận (KHÔNG tự động) nên không tái phát BUG-100.
+  // Nếu có ca trưởng khác được xếp sequence kế tiếp thì vẫn phải chờ đúng người đó.
+  // `employmentType` đến từ join hồ sơ nhân sự nên có thể RỖNG (bản ghi cũ, đường LAN,
+  // hồ sơ chưa khai vị trí). Nếu coi rỗng là "không phải ca trưởng" thì hệ thống sẽ mời
+  // ca trưởng Ca 1 nhận tiếp Ca 2 dù ĐÃ xếp người khác — đúng lỗi BUG-100 cũ. Vì vậy
+  // rỗng phải hiểu là "có thể là ca trưởng" và tiếp tục chờ đúng người; chỉ loại khi
+  // biết chắc đó là ca part-time. Kẹt thì đã có nút "Chốt thay" và quản lý gỡ.
+  const anotherLeaderScheduledForNext = registrations.some((registration) =>
+    registration.userId !== user.id
+    && registration.workDate === today
+    && registration.status === 'approved'
+    && (registration.employmentType === 'leader' || registration.employmentType === undefined)
+    && scheduledOperationalSequences(registration, workShifts).includes(nextSequence),
+  )
+  const canTakeOverNextShift = Boolean(
+    !canAutoStartScheduledShift
+    && !anotherLeaderScheduledForNext
+    && !deputyMustWaitForPrimary
+    && nextSequence <= 2
+    && activeAttendance
+    && myApprovedRegistrations.length,
+  )
+  // Ca trưởng vắng thì chi nhánh vẫn phải bán được. Ca phó mở ca THAY bằng tay
+  // (bấm + xác nhận), phiên ca ghi rõ là mở thay; khi ca trưởng vào app, quyền
+  // chủ ca tự chuyển về đúng người (`reconcileOperationalShift`).
+  const canStandInForPrimary = Boolean(
+    deputyMustWaitForPrimary
+    && startableRegistration
+    && !dayLocked
+    && !branchOpenSession
+    && nextSequence <= 2,
   )
   const stock = useMemo(() => calculateStock(movements), [movements])
   const availableBalances = useMemo(
@@ -88,8 +177,8 @@ export function ShiftHandoverPage({
     [stock, countProducts],
   )
   const exactShiftReceipts = useMemo(
-    () => openSession ? receiptsInSession(receipts, openSession) : [],
-    [receipts, openSession?.id, openSession?.startedAt, openSession?.endedAt],
+    () => openSession ? receiptsInSession(receipts, openSession, sessions) : [],
+    [receipts, sessions, openSession?.id, openSession?.startedAt, openSession?.endedAt],
   )
   const currentShiftReceipts = useMemo(
     () => openSession ? (exactShiftReceipts.length ? exactShiftReceipts : receipts) : [],
@@ -137,26 +226,52 @@ export function ShiftHandoverPage({
     }
   }, [user.id])
 
-  useEffect(() => { void refresh(true) }, [user.id, user.branchId])
+  useEffect(() => { void refresh(true) }, [user.id, user.branchId, today])
   useEffect(() => {
+    const reload = () => void refresh()
+    const reloadWhenVisible = () => {
+      if (document.visibilityState === 'visible') reload()
+    }
+    // Realtime chỉ để đánh thức; mất mạng/máy ngủ xong phải tự tải lại từ DB.
+    window.addEventListener('focus', reload)
+    window.addEventListener('online', reload)
+    document.addEventListener('visibilitychange', reloadWhenVisible)
+    const removeWindowListeners = () => {
+      window.removeEventListener('focus', reload)
+      window.removeEventListener('online', reload)
+      document.removeEventListener('visibilitychange', reloadWhenVisible)
+    }
     const client = supabase
     if (!client) {
       const timer = window.setInterval(() => void refresh(), 5000)
-      return () => window.clearInterval(timer)
+      return () => {
+        window.clearInterval(timer)
+        removeWindowListeners()
+      }
     }
+    // Mỗi hoá đơn POS bắn 1 event hoá đơn + n event dòng hàng, mà màn này tải
+    // lại 5 truy vấn mỗi lượt → phải gộp burst thành một lần.
+    const reloadSoon = burstGuard(reload)
     const channel = client.channel(uniqueChannelName(`shift-handover:${user.branchId}`))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_shift_sessions', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts', filter: `branch_id=eq.${user.branchId}` }, () => void refresh())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, () => void refresh())
-      .subscribe()
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_shift_sessions', filter: `branch_id=eq.${user.branchId}` }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts', filter: `branch_id=eq.${user.branchId}` }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, reloadSoon)
+      // SUBSCRIBED bắn cả khi rejoin sau rớt mạng → refetch bù các event đã lỡ.
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') reload()
+      })
     return () => {
+      removeWindowListeners()
+      reloadSoon.cancel()
       void client.removeChannel(channel)
     }
-  }, [user.branchId, user.id])
+  }, [user.branchId, user.id, today])
 
   useEffect(() => {
     setOpeningPhoto(openSession?.openingPhotoUrl || '')
     setClosingPhoto(openSession?.closingPhotoUrl || '')
+    // Đổi ca thì bỏ trạng thái "đã bấm bàn giao, chờ xác nhận" để không lỡ chốt nhầm ca khác.
+    setCloseArmed(false)
   }, [today, user.branchId, openSession?.id, openSession?.openingPhotoUrl, openSession?.closingPhotoUrl])
 
   useEffect(() => {
@@ -167,7 +282,7 @@ export function ShiftHandoverPage({
     ))
   }, [openSession?.id, JSON.stringify(availableBalances), countProducts])
 
-  async function handleStartShift() {
+  async function handleStartShift(options: { takeOver?: boolean; standIn?: boolean } = {}) {
     if (dayLocked) {
       setFeedback('Ngày vận hành đã kết thúc sau đủ 2 ca. Sang ngày mới hệ thống sẽ cho nhận ca mới.')
       return
@@ -192,11 +307,17 @@ export function ShiftHandoverPage({
         : 'Bạn chưa chấm công hôm nay. Hãy check-in trong Chấm công rồi quay lại nhận ca.')
       return
     }
-    if (!canAutoStartScheduledShift) {
-      const nextSequence = todaySessions.length ? Math.max(...todaySessions.map((session) => session.sequence)) + 1 : 1
-      setFeedback(nextSequence === 2
-        ? 'Ca 2 chỉ tự nhận cho ca trưởng có lịch Ca 2 đã check-in. Ca trưởng Ca 1 không thể tự mở Ca 2.'
-        : 'Ca vận hành chỉ tự mở cho ca trưởng có lịch Ca 1 đã check-in.')
+    // Nhận tiếp có xác nhận: bỏ qua ràng buộc lịch, nhưng vẫn phải đã check-in và
+    // có lịch làm hôm nay (2 điều kiện ở trên) — và chỉ khi không ai khác được xếp.
+    if (!canAutoStartScheduledShift
+      && !(options.takeOver && canTakeOverNextShift)
+      && !(options.standIn && canStandInForPrimary)) {
+      setFeedback(deputyMustWaitForPrimary
+        ? `Bạn là ca phó nên không đứng tên chủ ca. ${primaryLeaderNames} (ca trưởng) là chủ ${shiftLabel(nextSequence)}.`
+          + ' Bạn vẫn nhập kho, chế biến và bán hàng bình thường. Nếu ca trưởng vắng, bấm "Mở ca thay ca trưởng" bên dưới.'
+        : nextSequence === 2
+          ? 'Ca 2 chỉ tự nhận cho ca trưởng có lịch Ca 2 đã check-in. Ca trưởng Ca 1 không thể tự mở Ca 2.'
+          : 'Ca vận hành chỉ tự mở cho ca trưởng có lịch Ca 1 đã check-in.')
       return
     }
     setBusy(true)
@@ -207,14 +328,29 @@ export function ShiftHandoverPage({
         product.id,
         Math.max(0, availableBalances[product.id] || 0),
       ]))
-      let session = await startBagShift(user, today, openingBalances)
+      // Ca phó mở thay phải để lại dấu vết trong sổ ca cho quản lý rà soát.
+      const standInNote = options.standIn
+        ? `[CA PHÓ ĐỨNG THAY] ${user.name} (ca phó) mở ${shiftLabel(nextSequence)} lúc `
+          + `${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} `
+          + `vì ${primaryLeaderNames || 'ca trưởng được xếp ca này'} chưa mở ca.`
+        : undefined
+      let session = await startBagShift(user, today, openingBalances, { note: standInNote })
       if (openingPhoto && !session.openingPhotoUrl) {
         session = await uploadBagShiftPhoto(user, session, 'opening', openingPhoto).catch(() => session)
       }
-      setFeedback(`Đã nhận ${shiftLabel(session.sequence)}. Tồn đầu ca đã lấy từ kho thành phẩm hiện tại.`)
+      setAutoStartFailed(false)
+      setStandInArmed(false)
+      setTakeOverArmed(false)
+      setFeedback(options.standIn
+        ? `Đã mở ${shiftLabel(session.sequence)} thay ca trưởng. Sổ ca ghi rõ bạn là ca phó mở thay;`
+          + ' khi ca trưởng vào ứng dụng, quyền chủ ca sẽ tự chuyển về ca trưởng.'
+        : `Đã nhận ${shiftLabel(session.sequence)}. Tồn đầu ca đã lấy từ kho thành phẩm hiện tại.`)
       await refresh()
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : 'Không thể nhận ca.')
+      // Mở ca tự động có thể hỏng vì mạng chập chờn (điện thoại ngoài quầy).
+      // Bật cờ để hiện nút nhận ca thủ công thay vì để ca trưởng kẹt vô hạn.
+      setAutoStartFailed(true)
+      setFeedback(`${error instanceof Error ? error.message : 'Không thể nhận ca.'} Hãy bấm "Nhận ca ngay" để thử lại.`)
     } finally {
       setBusy(false)
     }
@@ -222,11 +358,13 @@ export function ShiftHandoverPage({
 
   useEffect(() => {
     if (loading || dayLocked || branchOpenSession || maxShiftsReached || !canAutoStartScheduledShift) return
-    const key = `${today}:scheduled:${activeAttendance?.id}:${todaySessions.length}`
+    // Đã thử tự mở và lỗi: dừng vòng tự động, chờ ca trưởng bấm nút thủ công.
+    if (autoStartFailed) return
+    const key = `${today}:scheduled:${activeAttendance?.id}:${startableRegistration?.id}:${todaySessions.length}`
     if (autoStartAttemptRef.current === key) return
     autoStartAttemptRef.current = key
     void handleStartShift()
-  }, [loading, dayLocked, branchOpenSession?.id, maxShiftsReached, activeAttendance?.id, canAutoStartScheduledShift, todaySessions.length, user.id])
+  }, [loading, dayLocked, branchOpenSession?.id, maxShiftsReached, activeAttendance?.id, startableRegistration?.id, canAutoStartScheduledShift, autoStartFailed, todaySessions.length, user.id])
 
   async function saveShiftPhoto(kind: 'opening' | 'closing', file: File | undefined, targetSession = openSession) {
     if (!file) return
@@ -288,12 +426,27 @@ export function ShiftHandoverPage({
       setFeedback('Có lệch tồn thành phẩm. Hãy nhập lý do ngắn trước khi bàn giao.')
       return
     }
+    // Chốt thay người khác thì lý do là bắt buộc: đây là bằng chứng duy nhất cho biết
+    // ai đếm tồn và vì sao ca trưởng của ca đó không tự chốt.
+    if (coveringSession && !discrepancyNote.trim()) {
+      setFeedback(`Bạn đang chốt thay ${coveringSession.leaderName}. Hãy ghi lý do (ví dụ: ca trưởng đã về, mình đếm tồn thay).`)
+      return
+    }
+    const noteForClose = coveringSession
+      ? `[CHỐT THAY ${coveringSession.leaderName} bởi ${user.name}] ${discrepancyNote.trim()}`
+      : discrepancyNote
     setBusy(true)
     try {
       const openingPhotoSynced = Boolean(openSession.openingPhotoUrl || !openingPhoto)
       const closingPhotoSynced = Boolean(openSession.closingPhotoUrl || !closingPhoto)
-      const now = new Date()
-      const movementRows: StockMovement[] = productsToCount.map((product, index) => ({
+      // KHÔNG đóng dấu `createdAt` bằng đồng hồ máy: phiếu kiểm kê là MỐC RESET
+      // của `calculateStock`, đặt sai vị trí trên trục thời gian là tồn tính sai.
+      // Mọi phiếu kho khác đều để máy chủ đóng dấu; điện thoại ca trưởng lệch giờ
+      // (chuyện thường ở quầy) sẽ khiến mốc này nhảy trước/sau các phiếu bán,
+      // nhập của chính ca đó, thậm chí nuốt luôn phiếu sửa tồn ghi sau nó.
+      // `close_bag_shift_safe` dùng `coalesce(x.created_at, now())` nên bỏ trống
+      // là server tự đóng dấu; đường ghi thẳng cũng để DB dùng `default now()`.
+      const movementRows: StockMovement[] = productsToCount.map((product) => ({
         id: createId(),
         documentId: openSession.id,
         branchId: user.branchId,
@@ -303,13 +456,13 @@ export function ShiftHandoverPage({
         shiftDate: today,
         note: `[${shiftLabel(openSession.sequence)}] Kiểm đếm tồn thành phẩm cuối ca: ${formatNumber(actual[product.id] || 0)} ${product.unit}`,
         createdBy: user.id,
-        createdAt: new Date(now.getTime() + index + 1).toISOString(),
+        createdAt: '',
       }))
       await closeBagShift(
         user,
         openSession,
         actual,
-        discrepancyNote,
+        noteForClose,
         [],
         movementRows.map((row) => ({
           id: row.id,
@@ -322,10 +475,19 @@ export function ShiftHandoverPage({
           source_product_id: row.sourceProductId || null,
           source_quantity: row.sourceQuantity || null,
           measured_weight_kg: row.measuredWeightKg || null,
-          created_at: row.createdAt,
         })),
       )
+      // Ghi yêu cầu chốt báo cáo NGAY sau khi đóng ca, trước refresh(): nếu ca
+      // trưởng có lịch xuyên ca thì refresh() sẽ tự mở ca kế tiếp, màn Báo cáo
+      // phải biết chốt ca VỪA đóng chứ không phải ca mới mở.
+      const reportRequest: HandoverReportRequest = {
+        shiftId: openSession.id,
+        sequence: openSession.sequence,
+        businessDate: today,
+      }
+      writeHandoverReportRequest(reportRequest)
       setDiscrepancyNote('')
+      setCoverArmed(false)
       if (openingPhotoSynced) setOpeningPhoto('')
       if (closingPhotoSynced) setClosingPhoto('')
       setFeedback(openSession.sequence >= 2
@@ -352,6 +514,24 @@ export function ShiftHandoverPage({
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Không thể chốt bàn giao ca.'
       setFeedback(message.includes('Không thể chốt bàn giao ca') ? message : `Không thể chốt bàn giao ca: ${message}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleReopenShift(session: BagShiftSession) {
+    const reason = window.prompt(
+      `Mở lại ${shiftLabel(session.sequence)}?\n\nSố liệu kho mà lệnh chốt đã ghi sẽ được gỡ ra và ghi lại khi bạn chốt lần nữa.\nNhập lý do để quản lý biết:`,
+      'Bấm nhầm nút chốt ca',
+    )
+    if (reason === null) return
+    setBusy(true)
+    try {
+      await reopenBagShift(user, session, reason)
+      await Promise.all([refresh(), onChanged()])
+      setFeedback(`Đã mở lại ${shiftLabel(session.sequence)}. Bán tiếp bình thường, xong nhớ chốt lại ca.`)
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : 'Không thể mở lại ca.')
     } finally {
       setBusy(false)
     }
@@ -398,8 +578,25 @@ export function ShiftHandoverPage({
             <small>{shiftLabel(anotherLeaderOpenSession.sequence).toUpperCase()}</small>
             <h2>Đang chờ ca trưởng trước bàn giao</h2>
             <p>{anotherLeaderOpenSession.leaderName} đang phụ trách ca này. Nút chốt tồn chỉ hiện cho đúng ca trưởng đã mở ca; Ca 2 sẽ tự mở sau khi ca trước bàn giao xong.</p>
+            {canCoverForeignShift && (
+              <div className="handover-takeover-confirm">
+                <p>
+                  {`Nếu ${anotherLeaderOpenSession.leaderName} đã về mà chưa chốt, bạn đếm tồn thật rồi chốt thay để ca sau nhận được ca. `}
+                  Ca vẫn ghi tên người mở, phần chốt ghi rõ tên bạn và lý do.
+                </p>
+                <button className="secondary-button wide" disabled={busy} onClick={() => setCoverArmed(true)}>
+                  {`Chốt thay ${anotherLeaderOpenSession.leaderName}`}
+                </button>
+              </div>
+            )}
           </div>
         </section>
+      )}
+      {coveringSession && (
+        <div className="feedback-bar">
+          {`Bạn đang chốt thay ${coveringSession.leaderName}. Hãy đếm tồn thành phẩm thực tế, ghi lý do rồi bấm "Chốt & bàn giao ca".`}
+          <button type="button" onClick={() => setCoverArmed(false)}>×</button>
+        </div>
       )}
 
       {!openSession && !anotherLeaderOpenSession && !maxShiftsReached && (
@@ -407,14 +604,61 @@ export function ShiftHandoverPage({
           <span>1</span>
           <div>
             <small>{todaySessions.length === 0 ? 'CA SÁNG' : 'CA TỐI'}</small>
-            <h2>{canAutoStartScheduledShift && todaySessions.length === 1 ? 'Đang tự nhận Ca tối theo lịch' : canAutoStartScheduledShift ? 'Đang tự mở ca sau check-in' : activeAttendance ? 'Đang chờ đúng ca trưởng theo lịch' : 'Check-in để ca tự mở'}</h2>
-            <p>{canAutoStartScheduledShift && todaySessions.length === 1
+            <h2>{autoStartFailed && canAutoStartScheduledShift ? 'Ca chưa mở được - hãy nhận ca thủ công' : deputyMustWaitForPrimary ? `Ca trưởng đứng ${shiftLabel(nextSequence)}` : canAutoStartScheduledShift && todaySessions.length === 1 ? 'Đang tự nhận Ca tối theo lịch' : canAutoStartScheduledShift ? 'Đang tự mở ca sau check-in' : canTakeOverNextShift ? `Hôm nay chưa xếp ca trưởng cho ${shiftLabel(nextSequence)}` : activeAttendance ? 'Đang chờ đúng ca trưởng theo lịch' : 'Check-in để ca tự mở'}</h2>
+            <p>{autoStartFailed && canAutoStartScheduledShift
+              ? 'Bạn có đủ lịch và đã check-in, nhưng lần mở ca tự động vừa rồi không thành công (thường do mạng chập chờn). Bấm nút bên dưới để nhận ca ngay.'
+              : deputyMustWaitForPrimary
+              ? `Bạn là ca phó nên không đứng tên chủ ca. ${primaryLeaderNames} sẽ là chủ ${shiftLabel(nextSequence)}. `
+                + 'Bạn vẫn chấm công, nhập kho, chế biến và bán hàng bình thường trong ca này.'
+              : canTakeOverNextShift
+              ? 'Không có ca trưởng nào khác được xếp ca này nên hệ thống không tự mở. Bạn đang trong ca và có thể nhận tiếp để kịp bàn giao và chốt ngày.'
+              : canAutoStartScheduledShift && todaySessions.length === 1
               ? 'Ca sáng đã bàn giao. Ca trưởng có lịch Ca 2 và đã check-in sẽ tự nhận Ca tối, không cần bấm nhận ca.'
               : canAutoStartScheduledShift
               ? 'Hệ thống đang đồng bộ tồn thành phẩm hiện tại làm tồn đầu ca; bạn không cần bấm nút nhận ca.'
               : activeAttendance
                 ? 'Phiên tiếp theo chỉ tự mở cho ca trưởng được xếp đúng Ca 1 hoặc Ca 2. Hệ thống không dùng ca trưởng trước để gán ca mới.'
                 : 'Ca vận hành sẽ tự mở ngay khi ca trưởng check-in thành công. Phần Bàn giao vẫn giữ để kiểm tồn và chốt ca.'}</p>
+            {canAutoStartScheduledShift && (
+              <button className="primary-button wide" disabled={busy} onClick={() => void handleStartShift()}>
+                {busy ? 'Đang nhận ca…' : 'Nhận ca ngay'}
+              </button>
+            )}
+            {canStandInForPrimary && !standInArmed && (
+              <button className="secondary-button wide" disabled={busy} onClick={() => setStandInArmed(true)}>
+                Mở ca thay ca trưởng
+              </button>
+            )}
+            {canStandInForPrimary && standInArmed && (
+              <div className="handover-takeover-confirm">
+                <p>
+                  {`${primaryLeaderNames} (ca trưởng) chưa mở ${shiftLabel(nextSequence)}. `}
+                  {'Bạn mở ca thay để chi nhánh bán được? Sổ ca sẽ ghi rõ ca phó mở thay, '}
+                  {'và quyền chủ ca tự chuyển về ca trưởng ngay khi ca trưởng vào ứng dụng.'}
+                </p>
+                <button className="primary-button wide" disabled={busy} onClick={() => void handleStartShift({ standIn: true })}>
+                  {busy ? 'Đang mở ca…' : `Xác nhận mở ${shiftLabel(nextSequence)} thay ca trưởng`}
+                </button>
+                <button className="secondary-button wide" disabled={busy} onClick={() => setStandInArmed(false)}>Huỷ</button>
+              </div>
+            )}
+            {canTakeOverNextShift && !takeOverArmed && (
+              <button className="secondary-button wide" disabled={busy} onClick={() => setTakeOverArmed(true)}>
+                {`Nhận tiếp ${shiftLabel(nextSequence)}`}
+              </button>
+            )}
+            {canTakeOverNextShift && takeOverArmed && (
+              <div className="handover-takeover-confirm">
+                <p>
+                  {`Hôm nay không có ca trưởng nào khác được xếp ${shiftLabel(nextSequence)}. `}
+                  {`Bạn nhận ${shiftLabel(nextSequence)} và chịu trách nhiệm chốt tồn, bàn giao ca này?`}
+                </p>
+                <button className="primary-button wide" disabled={busy} onClick={() => void handleStartShift({ takeOver: true })}>
+                  {busy ? 'Đang nhận ca…' : `Xác nhận nhận ${shiftLabel(nextSequence)}`}
+                </button>
+                <button className="secondary-button wide" disabled={busy} onClick={() => setTakeOverArmed(false)}>Huỷ</button>
+              </div>
+            )}
           </div>
           {busy && <small className="attendance-busy-hint">Đang đồng bộ ca…</small>}
         </section>
@@ -508,22 +752,40 @@ export function ShiftHandoverPage({
                 />
                 {closingPhoto && <img className="shift-photo-preview" src={closingPhoto} alt="Ảnh quầy cuối ca" />}
               </div>
-              <button
-                className="primary-button wide"
-                disabled={busy}
-                onClick={() => void handleCloseShift({
-                  afterClose: () => {
-                    window.sessionStorage.setItem('gustino:handover-report', JSON.stringify({
-                      shiftId: openSession.id,
-                      sequence: openSession.sequence,
-                      businessDate: today,
-                    }))
-                    onNavigate('report')
-                  },
-                })}
-              >
-                {busy ? 'Đang chốt bàn giao…' : 'Chốt & bàn giao ca'}
-              </button>
+              {!closeArmed && (
+                <button
+                  className="primary-button wide"
+                  disabled={busy}
+                  onClick={() => setCloseArmed(true)}
+                >
+                  {busy ? 'Đang chốt bàn giao…' : 'Chốt & bàn giao ca'}
+                </button>
+              )}
+              {closeArmed && (
+                <div className="handover-close-confirm">
+                  <img src="/mascots/capy-attendance-camera.png" alt="" width="72" height="72" decoding="async" aria-hidden="true" />
+                  <div>
+                    <strong>Capy hỏi lại: chắc chắn bàn giao chưa?</strong>
+                    <p>
+                      {openSession.sequence >= 2
+                        ? 'Đây là CA TỐI. Bàn giao xong hệ thống sẽ CHỐT NGÀY và tự gửi báo cáo Ca tối + Tổng ngày lên Zalo. Chỉ bàn giao khi ca đã bán xong và đã đếm đúng tồn.'
+                        : 'Bàn giao Ca sáng để Ca tối nhận ca. Kiểm tra lại tồn thành phẩm đã đếm đúng chưa trước khi chốt.'}
+                    </p>
+                  </div>
+                  <div className="handover-close-confirm-actions">
+                    <button
+                      className="primary-button wide"
+                      disabled={busy}
+                      onClick={() => void handleCloseShift({ afterClose: () => onNavigate('report') })}
+                    >
+                      {busy ? 'Đang chốt bàn giao…' : openSession.sequence >= 2 ? 'Đồng ý, chốt ngày & gửi báo cáo' : 'Đồng ý, bàn giao ca'}
+                    </button>
+                    <button className="secondary-button wide" disabled={busy} onClick={() => setCloseArmed(false)}>
+                      Chưa, để tôi kiểm tra lại
+                    </button>
+                  </div>
+                </div>
+              )}
             </section>
           </div>
         </>
@@ -542,7 +804,20 @@ export function ShiftHandoverPage({
                   {session.closingPhotoUrl ? <img src={session.closingPhotoUrl} alt={`${shiftLabel(session.sequence)} cuối ca`} /> : <em>Thiếu cuối ca</em>}
                 </span>
               </span>
-              <b>Đã bàn giao</b>
+              <span className="handover-history-actions">
+                <b>Đã bàn giao</b>
+                {/* Bấm nhầm "Chốt & bàn giao ca" là chuyện thường ngày; trước đây
+                    ca đóng nhầm là kẹt cứng, phải sửa tay dưới DB (BUG-114). */}
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={busy || dayClosed}
+                  title={dayClosed ? 'Ngày vận hành đã chốt. Hãy mở lại ngày trước.' : 'Mở lại ca nếu vừa bấm chốt nhầm'}
+                  onClick={() => void handleReopenShift(session)}
+                >
+                  Mở lại ca
+                </button>
+              </span>
             </div>
           ))}
         </section>
@@ -565,12 +840,14 @@ function PhotoPickers({
   return <ShiftPhotoButton prefix={prefix} compact={compact} onPick={onPick} />
 }
 
-function receiptsInSession(receipts: SalesReceipt[], session: BagShiftSession) {
+function receiptsInSession(receipts: SalesReceipt[], session: BagShiftSession, sessions: BagShiftSession[]) {
+  // Vùng doanh thu không hở (BUG-117): hóa đơn bán trước giờ mở ca này (kể cả
+  // trong khoảng trống sau khi ca trước đã đóng) vẫn phải hiện trong ca đang mở,
+  // để số "doanh thu trong ca" khớp với ảnh báo cáo và Tổng ngày.
+  const scopeWindow = sessionScopeWindow(session, sessions)
   return receipts.filter((receipt) => {
     if (receipt.branchId !== session.branchId || receipt.businessDate !== session.businessDate) return false
-    if (receipt.createdAt < session.startedAt) return false
-    if (session.endedAt && receipt.createdAt > session.endedAt) return false
-    return true
+    return timestampInScopeWindow(receipt.createdAt, scopeWindow)
   })
 }
 
@@ -636,7 +913,9 @@ function visibleProducts(
 }
 
 // Thành phẩm bàn giao theo kg, cho tới 4 số lẻ; số nguyên (vd số lượng bán) vẫn hiển thị nguyên.
-function formatNumber(value: number) { return Number(value.toFixed(4)).toLocaleString('vi-VN', { maximumFractionDigits: 4 }) }
+// Tồn bàn giao phải đọc y hệt màn Kho: cùng 3 chữ số lẻ như DB, cùng cách viết
+// số tiếng Việt. Bản cũ để 4 số lẻ nên lòi cả rác dấu phẩy động khi cộng dồn.
+function formatNumber(value: number) { return formatQuantity(value) }
 function formatMoney(value: number) { return `${Math.round(value).toLocaleString('vi-VN')}d` }
 function formatTime(value: string) { return new Date(value).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) }
 function normalizeName(value: string) {

@@ -27,7 +27,15 @@ if (!attendanceLib.includes('details.address')) failures.push('Dấu ảnh chấ
 if (!attendanceLib.includes('`GPS ${details.latitude.toFixed(6)}, ${details.longitude.toFixed(6)} · sai số ±${Math.round(details.accuracy)}m`')) {
   failures.push('Dấu ảnh chấm công chưa in tọa độ GPS và sai số theo kiểu ghi nhận cũ được chủ hệ thống yêu cầu khôi phục.')
 }
-if (!attendanceLib.includes('requireConcreteAttendanceAddress')) failures.push('Luồng chấm công chưa từ chối giá trị tọa độ khi dịch vụ không trả địa chỉ cụ thể.')
+// BUG-120: cả hai nguồn dịch địa chỉ cùng hỏng thì KHÔNG được chặn chấm công —
+// dùng địa chỉ tự khai có tiền tố rõ ràng kèm toạ độ GPS thật (bằng chứng gốc),
+// tuyệt đối không trả tọa độ trần giả làm địa chỉ bình thường.
+if (!attendanceLib.includes('resolveAttendanceAddress') || !attendanceLib.includes('UNRESOLVED_ADDRESS_PREFIX')) {
+  failures.push('Luồng chấm công phải dùng địa chỉ tự khai có tiền tố khi dịch vụ bản đồ hỏng, không được chặn chấm công.')
+}
+if (attendanceLib.includes('requireConcreteAttendanceAddress')) {
+  failures.push('Chốt chặn địa chỉ cụ thể cũ vẫn còn — nó chặn đứng chấm công khi nhà cung cấp bản đồ sập (BUG-120).')
+}
 if (reverseApi.includes('coordinateLabel(') || reverseApi.includes("source: 'coordinates'")) failures.push('API địa chỉ vẫn trả tọa độ giả làm địa chỉ khi reverse geocode thất bại.')
 if (lanServer.includes('Vị trí GPS ${latitude.toFixed(6)}')) failures.push('Máy chủ LAN vẫn trả tọa độ thay vì reverse geocode địa chỉ.')
 if (!supabaseSource.includes('persistSession: true')) failures.push('Supabase chưa khai báo lưu phiên đăng nhập rõ ràng.')

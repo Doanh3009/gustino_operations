@@ -73,7 +73,25 @@ assert.equal(shifts.latestOwnedBagShiftSession([
 assert.match(reportSource, /readHandoverReportRequest/, 'The handover close request must be consumed by Report.')
 assert.match(reportSource, /automaticFinalizeAttemptRef/, 'Automatic report finalization must be idempotent per shift.')
 assert.match(reportSource, /session\.sequence === 2 \? \['day'/, 'Only Ca 2 may render/send the total-day n8n poster.')
-assert.match(reportSource, /latestOwnedBagShiftSession\(freshLedger\.sessions, user\)/, 'Finalization must re-read the exact persisted owner session.')
+// Chốt báo cáo phải đọc LẠI sổ ca từ máy chủ, và phải chốt đúng ca vừa bàn giao
+// (yêu cầu do màn Bàn giao ghi lại) chứ không phải "ca có sequence lớn nhất mình sở
+// hữu" — một ca trưởng xuyên ca có thể sở hữu cả hai ca trong ngày (BUG-109).
+assert.match(reportSource, /const freshLedger = /, 'Finalization must re-read the ledger from the server.')
+assert.match(
+  reportSource,
+  /resolveLeaderShiftSession\(freshLedger\.sessions, handoverReportRequest\)/,
+  'Finalization must re-read the exact persisted session named by the handover request.',
+)
+assert.match(
+  reportSource,
+  /item\.id === request\.shiftId[\s\S]{0,160}ownsBagShiftSession\(item, user\)/,
+  'The requested shift must still be checked for ownership before it is finalized.',
+)
+assert.match(
+  reportSource,
+  /latestOwnedBagShiftSession\(sessions, user\)/,
+  'Without a handover request the finalization must fall back to the own latest session.',
+)
 assert.match(handoverSource, /ownsBagShiftSession\(branchOpenSession, user\)/, 'Only the leader who opened a shift may receive its handover controls.')
 assert.match(attendanceSource, /await invokeManageEmployee\(\{ action: 'hard_delete', employeeId \}\)/, 'Normal employee removal must delete the account rather than leave it inactive.')
 assert.match(reportSource, /queueCurrentReportImages\(freshLeaderShiftSession, true\)/, 'Closing a shift must ask n8n to send immediately, even after its scheduled clock time has passed.')

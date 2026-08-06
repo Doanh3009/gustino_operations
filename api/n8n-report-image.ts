@@ -1,5 +1,13 @@
 declare const process: { env: Record<string, string | undefined> }
 
+/**
+ * Gọi webhook n8n có thể mất tới 20s (upload Drive + ghi Sheet, Respond = When
+ * Last Node Finishes) cộng 4 lượt xác thực Supabase. Không khai báo maxDuration
+ * thì function bị Vercel cắt ở mặc định 10-15s → trình duyệt nhận 504 và ảnh
+ * thứ hai (Tổng ngày) không bao giờ được gửi.
+ */
+export const config = { maxDuration: 60 }
+
 type ReportKind = 'shift-1' | 'shift-2' | 'day'
 
 const REPORT_SEND_TIMES: Record<ReportKind, string> = {
@@ -128,7 +136,12 @@ export default async function handler(request: any, response: any) {
   const previousDelivery = verified.previousDelivery || {}
   const previousJob = previousDelivery.jobs?.[report.kind]
   const sendNow = input.sendNow === true
-  if (previousJob?.queued === true && !sendNow) {
+  // Idempotency thật: ảnh đã vào hàng đợi thành công thì KHÔNG gửi lại, kể cả
+  // khi client retry với sendNow=true (trước đây `!sendNow` làm chống-trùng vô
+  // hiệu vì client luôn gửi sendNow=true). Chỉ nút "Gửi Zalo" thủ công — nơi
+  // người dùng đã xác nhận gửi trùng — mới truyền force=true để vượt qua.
+  const force = input.force === true
+  if (previousJob?.queued === true && !force) {
     return response.status(200).json({ mode: 'n8n', idempotent: true, job: previousJob })
   }
 

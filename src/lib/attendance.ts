@@ -1,12 +1,25 @@
 import { createId, decodeImageForCanvas } from './browser'
+import {
+  attendanceOutboxFastCount,
+  deleteAttendanceOutboxOp,
+  inspectAttendanceOutbox,
+  saveAttendanceOutboxOp,
+  type AttendanceOutboxDurability,
+  type AttendanceOutboxOp,
+} from './attendanceOutbox'
 import { detectDeviceEnvironment } from './deviceReadiness'
 import { branchIds, branchName } from './branches'
-import { localDateKey, localDayBoundsIso } from './dates'
+import { localDateKey } from './dates'
 import { shouldUseLanApi, supabase } from './supabase'
 import { usernameToEmail, validateUsername } from './authIdentity'
 import { formatWorkDurationBetween } from './workDuration'
+import { resolveLateCheckOutAt } from './lateCheckOut'
+import { isAttendanceAutoClosedError } from './attendanceErrors'
+import { buildAttendanceAdjustmentNoteMap } from './attendanceNotes'
+export { ATTENDANCE_AUTO_CLOSE_ADDRESS_PREFIX, isAttendanceAutoClosedError } from './attendanceErrors'
 import type {
   AppUser,
+  AttendanceAdjustmentRequest,
   AttendanceRecord,
   AttendanceReportRow,
   Branch,
@@ -26,6 +39,9 @@ interface AttendanceFilters {
   from?: string
   to?: string
 }
+
+/** Nhỏ hơn giới hạn mặc định PostgREST; lặp tới hết để không mất dòng âm thầm. */
+const ATTENDANCE_PAGE_SIZE = 500
 
 export const DEFAULT_WORK_SHIFT_TEMPLATES: Array<Pick<WorkShift, 'name' | 'startTime' | 'endTime' | 'employmentTypes'>> = [
   { name: 'Ca 1', startTime: '07:15', endTime: '15:15', employmentTypes: ['leader', 'full_time'] },
@@ -85,7 +101,8 @@ function queryString(filters: AttendanceFilters) {
 }
 
 export function permittedBranchIds(user: AppUser) {
-  if (user.role === 'admin') return branchIds()
+  // SUP MT là vai trò giám sát/đối chiếu toàn hệ thống — xem được mọi chi nhánh như admin.
+  if (user.role === 'admin' || user.role === 'supmt') return branchIds()
   if (user.role === 'manager' || user.role === 'kitchen') {
     const scopedIds = Array.from(new Set([user.branchId, ...(user.branchIds || [])].filter(Boolean)))
     return scopedIds.length ? scopedIds : branchIds()
@@ -544,20 +561,33 @@ export async function updateEmployeeDetails(
 
 export async function fetchShiftRegistrations(user: AppUser, filters: AttendanceFilters = {}): Promise<ShiftRegistration[]> {
   if (shouldUseAttendanceApi(user)) return attendanceApi(user, `/registrations?${queryString(filters)}`)
-  const activeBranches = await activeBranchIdSet()
-  let query = supabase!
-    .from('shift_registrations')
-    .select('*, profiles!shift_registrations_user_id_fkey(full_name, active, employment_type, position_title)')
-    .order('work_date', { ascending: false })
-    .order('start_time')
-  if (filters.branchId) query = query.eq('branch_id', filters.branchId)
-  if (filters.userId) query = query.eq('user_id', filters.userId)
-  if (filters.from) query = query.gte('work_date', filters.from)
-  if (filters.to) query = query.lte('work_date', filters.to)
-  const { data, error } = await query
-  if (error) throw error
-  return (data || [])
-    .filter((row) => row.profiles?.active !== false && isActiveBranch(row.branch_id, activeBranches))
+  // Khi query đã khóa đúng chính user, mọi row đều đi nhánh "own" bên dưới;
+  // không gọi thêm bảng branches ở mỗi event realtime.
+  const onlyOwn = filters.userId === user.id
+  const activeBranches = onlyOwn ? new Set<string>() : await activeBranchIdSet()
+  const rows: any[] = []
+  for (let offset = 0; ; offset += ATTENDANCE_PAGE_SIZE) {
+    let query = supabase!
+      .from('shift_registrations')
+      .select('*, profiles!shift_registrations_user_id_fkey(full_name, active, employment_type, position_title)')
+      .order('work_date', { ascending: false })
+      .order('start_time')
+      .order('id')
+    if (filters.branchId) query = query.eq('branch_id', filters.branchId)
+    if (filters.userId) query = query.eq('user_id', filters.userId)
+    if (filters.from) query = query.gte('work_date', filters.from)
+    if (filters.to) query = query.lte('work_date', filters.to)
+    const { data, error } = await query.range(offset, offset + ATTENDANCE_PAGE_SIZE - 1)
+    if (error) throw error
+    const page = data || []
+    rows.push(...page)
+    if (page.length < ATTENDANCE_PAGE_SIZE) break
+  }
+  return rows
+    // Ca của CHÍNH MÌNH không bao giờ bị lọc: bộ lọc active-branch chỉ để giấu dữ
+    // liệu chi nhánh đã xóa khỏi màn quản lý, không được làm người dùng "mất ca".
+    .filter((row) => row.user_id === user.id
+      || (row.profiles?.active !== false && isActiveBranch(row.branch_id, activeBranches)))
     .map(mapRegistration)
 }
 
@@ -823,6 +853,33 @@ export async function deleteAttendanceRecordByAdmin(
   return data
 }
 
+export async function deleteEmptyShiftRegistrationByAdmin(
+  actor: AppUser,
+  input: {
+    registrationId: string
+    reason: string
+  },
+) {
+  if (actor.role !== 'admin') throw new Error('Chỉ Admin hệ thống được xóa dòng đăng ký ca.')
+  if (!input.registrationId) throw new Error('Thiếu dòng đăng ký ca cần xóa.')
+  if (input.reason.trim().length < 3) throw new Error('Hãy nhập lý do xóa ít nhất 3 ký tự.')
+  if (shouldUseAttendanceApi(actor)) {
+    throw new Error('Xóa dòng đăng ký ca chỉ thực hiện trên hệ thống online để giữ dữ liệu đồng bộ.')
+  }
+  const { data, error } = await supabase!.rpc('admin_delete_empty_shift_registration', {
+    p_registration_id: input.registrationId,
+    p_reason: input.reason.trim(),
+  })
+  if (error) {
+    if (isMissingRpcError(error)) {
+      throw new Error('Chưa cập nhật chức năng xóa dòng đăng ký ca trên Supabase. Cần chạy migration mới rồi thử lại.')
+    }
+    throw new Error(error.message || 'Không thể xóa dòng đăng ký ca.')
+  }
+  window.dispatchEvent(new CustomEvent('gustino-attendance-updated'))
+  return data
+}
+
 export async function setScheduleRegistration(
   user: AppUser,
   input: {
@@ -932,24 +989,67 @@ export async function setScheduleRegistration(
 
 export async function fetchAttendanceRecords(user: AppUser, filters: AttendanceFilters = {}): Promise<AttendanceRecord[]> {
   if (shouldUseAttendanceApi(user)) return attendanceApi(user, `/records?${queryString(filters)}`)
-  const activeBranches = await activeBranchIdSet()
-  let query = supabase!
-    .from('attendance_records')
-    .select('*, profiles!attendance_records_user_id_fkey(full_name, active)')
-    .order('check_in_time', { ascending: false })
-  if (user.role === 'staff') query = query.eq('user_id', user.id)
-  if (filters.branchId) query = query.eq('branch_id', filters.branchId)
-  if (filters.userId) query = query.eq('user_id', filters.userId)
-  if (filters.from) query = query.gte('check_in_time', localDayBoundsIso(filters.from).startIso)
-  if (filters.to) query = query.lte('check_in_time', localDayBoundsIso(filters.to).endIso)
-  const { data, error } = await query
-  if (error) throw error
-  return (data || [])
-    .filter((row) => row.profiles?.active !== false && isActiveBranch(row.branch_id, activeBranches))
+  const onlyOwn = user.role === 'staff' || filters.userId === user.id
+  const activeBranches = onlyOwn ? new Set<string>() : await activeBranchIdSet()
+  const rows: any[] = []
+  for (let offset = 0; ; offset += ATTENDANCE_PAGE_SIZE) {
+    let query = supabase!
+      .from('attendance_records')
+      // Bảng công thuộc ngày của registration, không thuộc ngày thiết bị gửi
+      // check-in. !inner cho phép lọc đúng work_date cả với ca qua đêm/outbox.
+      .select('*, profiles!attendance_records_user_id_fkey(full_name, active), shift_registrations!inner(work_date)')
+      .order('check_in_time', { ascending: false })
+      .order('id')
+    if (user.role === 'staff') query = query.eq('user_id', user.id)
+    if (filters.branchId) query = query.eq('branch_id', filters.branchId)
+    if (filters.userId) query = query.eq('user_id', filters.userId)
+    if (filters.from) query = query.gte('shift_registrations.work_date', filters.from)
+    if (filters.to) query = query.lte('shift_registrations.work_date', filters.to)
+    const { data, error } = await query.range(offset, offset + ATTENDANCE_PAGE_SIZE - 1)
+    if (error) throw error
+    const page = data || []
+    rows.push(...page)
+    if (page.length < ATTENDANCE_PAGE_SIZE) break
+  }
+  return rows
+    // Bản ghi chấm công của CHÍNH MÌNH không bao giờ bị lọc — nếu bộ lọc
+    // active-branch trục trặc mà giấu mất bản ghi, màn chấm công sẽ hiện nút
+    // Check-in lần nữa dù đã chấm rồi (một gốc của "bị bắt chấm công lại").
+    .filter((row) => row.user_id === user.id
+      || (row.profiles?.active !== false && isActiveBranch(row.branch_id, activeBranches)))
     .map(mapAttendance)
 }
 
+/** Query nhỏ cho AppShell: phát hiện mọi phiên của chính user còn mở mà không tải lịch sử. */
+export async function fetchOwnOpenAttendanceRecords(user: AppUser): Promise<AttendanceRecord[]> {
+  if (shouldUseAttendanceApi(user)) {
+    const records = await attendanceApi<AttendanceRecord[]>(user, `/records?userId=${encodeURIComponent(user.id)}`)
+    return records.filter((record) => record.userId === user.id && !record.checkOutTime)
+  }
+  const { data, error } = await supabase!
+    .from('attendance_records')
+    .select('*, profiles!attendance_records_user_id_fkey(full_name, active)')
+    .eq('user_id', user.id)
+    .is('check_out_time', null)
+    .order('check_in_time', { ascending: false })
+    .limit(20)
+  if (error) throw error
+  return (data || []).map(mapAttendance)
+}
+
 export type AttendancePhase = 'locating' | 'saving'
+
+function notifyAttendanceUpdated() {
+  try {
+    if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('gustino-attendance-updated'))
+  } catch {
+    // Test/node hoặc tab đang đóng: realtime/polling vẫn là lưới hòa giải.
+  }
+}
+
+function attendanceSelfiePath(userId: string, branchId: string, registrationId: string, operationId: string) {
+  return `${userId}/${branchId}/${registrationId}-${operationId}.jpg`
+}
 
 const ATTENDANCE_WRITE_MAX_ATTEMPTS = 2
 const ATTENDANCE_GEOCODE_MAX_ATTEMPTS = 2
@@ -1037,11 +1137,39 @@ function isDuplicateAttendanceWrite(error: unknown) {
   return String(candidate?.code || '') === '23505' || /duplicate|already exists|đã check-in/i.test(candidate?.message || '')
 }
 
+/**
+ * Vi phạm ràng buộc DB "một người chỉ được một phiên chấm công đang mở"
+ * (unique partial index attendance_records_one_open_per_user, migration 20260727).
+ * Đây là lớp chặn cuối cùng cho đa thiết bị/bấm nhiều lần — guard UI có thể bị
+ * vượt qua nhưng DB thì không.
+ */
+function isSingleOpenSessionViolation(error: unknown) {
+  const candidate = error as { message?: string; details?: string }
+  return /attendance_records_one_open_per_user|một phiên chấm công đang mở|một ca chưa check-out/i.test(
+    `${candidate?.message || ''} ${candidate?.details || ''}`,
+  )
+}
+
 function isRetryableAttendanceWriteError(error: unknown) {
   const candidate = error as { status?: number; statusCode?: number; message?: string }
   const status = Number(candidate?.status || candidate?.statusCode || 0)
   return status === 408 || status === 425 || status === 429 || status >= 500
     || /fetch|network|timeout|timed out|connection|gateway|temporar|chưa xác nhận/i.test(candidate?.message || '')
+}
+
+function isPermanentAttendanceReplayRejection(error: unknown) {
+  const candidate = error as { status?: number; statusCode?: number; code?: string }
+  const status = Number(candidate?.status || candidate?.statusCode || 0)
+  const code = String(candidate?.code || '')
+  return ['22P02', '23503', '23505', '42501'].includes(code)
+    || (status >= 400 && status < 500 && ![401, 408, 425, 429].includes(status))
+}
+
+class AttendanceReplayNeedsReviewError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'AttendanceReplayNeedsReviewError'
+  }
 }
 
 export async function checkIn(user: AppUser, registration: ShiftRegistration, selfie: Blob, onPhase?: (phase: AttendancePhase) => void) {
@@ -1052,6 +1180,10 @@ export async function checkIn(user: AppUser, registration: ShiftRegistration, se
   const location = await getAttendanceLocation()
   const now = await getTrustedTimestamp()
   onPhase?.('saving')
+  // BUG-131 (quyết định chủ quán 04/08): lượt chấm công ghi THẲNG máy chủ, không
+  // phụ thuộc bất kỳ bộ nhớ tạm nào trên máy. Đóng dấu ảnh là best-effort — máy
+  // không xử lý được ảnh (WebView/thiếu RAM) thì dùng ảnh gốc, không chặn lượt chấm;
+  // giờ/GPS/địa chỉ vẫn nằm đầy đủ trong bản ghi DB.
   const stampedSelfie = await stampAttendancePhoto(selfie, {
     actionLabel: 'CHECK-IN',
     employeeName: user.name,
@@ -1061,7 +1193,7 @@ export async function checkIn(user: AppUser, registration: ShiftRegistration, se
     latitude: location.latitude,
     longitude: location.longitude,
     accuracy: location.accuracy,
-  })
+  }).catch(() => selfie)
   // Ảnh xem trước chỉ để hiển thị, KHÔNG phải bằng chứng chấm công: nếu máy đọc
   // chậm/thiếu bộ nhớ thì bỏ qua preview chứ không được treo cả lượt check-in.
   const selfiePreviewUrl = await withAttendanceDeadline(
@@ -1069,7 +1201,12 @@ export async function checkIn(user: AppUser, registration: ShiftRegistration, se
     ATTENDANCE_PHOTO_DEADLINE_MS,
     'preview-timeout',
   ).catch(() => '')
-  const selfieUrl = await uploadSelfie(user, registration, stampedSelfie)
+  const selfieUrl = await uploadSelfie(
+    user,
+    registration,
+    stampedSelfie,
+    attendanceSelfiePath(user.id, registration.branchId, registration.id, createId()),
+  )
   const record: AttendanceRecord = {
     id: createId(),
     userId: user.id,
@@ -1079,9 +1216,9 @@ export async function checkIn(user: AppUser, registration: ShiftRegistration, se
     checkInTime: now,
     selfieUrl,
     selfiePreviewUrl,
-    checkInLatitude: location.latitude,
-    checkInLongitude: location.longitude,
-    checkInAccuracy: location.accuracy,
+    checkInLatitude: location.latitude ?? undefined,
+    checkInLongitude: location.longitude ?? undefined,
+    checkInAccuracy: location.accuracy ?? undefined,
     checkInAddress: location.address,
     createdAt: now,
     updatedAt: now,
@@ -1092,12 +1229,19 @@ export async function checkIn(user: AppUser, registration: ShiftRegistration, se
         method: 'POST',
         body: JSON.stringify(record),
       }))
+      notifyAttendanceUpdated()
       return { ...saved, selfiePreviewUrl }
     } catch (error) {
       const existing = await attendanceApi<AttendanceRecord[]>(user, `/records?userId=${encodeURIComponent(user.id)}`)
         .then((rows) => rows.find((item) => item.shiftRegistrationId === registration.id))
         .catch(() => undefined)
-      if (existing && (isDuplicateAttendanceWrite(error) || isRetryableAttendanceWriteError(error))) return existing
+      if (existing && (isDuplicateAttendanceWrite(error) || isRetryableAttendanceWriteError(error))) {
+        notifyAttendanceUpdated()
+        return existing
+      }
+      if (isSingleOpenSessionViolation(error)) {
+        throw new Error('Bạn còn một ca chưa check-out nên chưa thể check-in ca mới. Hãy đóng ca cũ rồi check-in lại.')
+      }
       throw error
     }
   }
@@ -1124,10 +1268,39 @@ export async function checkIn(user: AppUser, registration: ShiftRegistration, se
     })
   } catch (error) {
     const existing = await verifyExistingCheckIn(user.id, registration.id).catch(() => undefined)
-    if (existing && (isDuplicateAttendanceWrite(error) || isRetryableAttendanceWriteError(error))) return existing
+    if (existing && (isDuplicateAttendanceWrite(error) || isRetryableAttendanceWriteError(error))) {
+      notifyAttendanceUpdated()
+      return existing
+    }
+    if (isSingleOpenSessionViolation(error)) {
+      throw new Error('Bạn còn một ca chưa check-out nên chưa thể check-in ca mới. Hãy đóng ca cũ rồi check-in lại.')
+    }
     throw error
   }
+  notifyAttendanceUpdated()
   return record
+}
+
+/**
+ * Ghi chú thêm vào lỗi chấm công theo đúng độ bền của hộp thư đi: IndexedDB có
+ * thể tự phục hồi sau reload; fallback RAM phải nói rõ chỉ sống trong tab này.
+ */
+function withOutboxRetryNote(error: unknown, durability: AttendanceOutboxDurability = 'persistent') {
+  const base = error instanceof Error ? error.message : 'Không thể lưu lượt chấm công.'
+  if (/hộp thư đi|tự gửi lại/.test(base)) return error instanceof Error ? error : new Error(base)
+  if (durability === 'memory') {
+    return new Error(`${base} Ảnh và giờ chấm hiện chỉ được GIỮ TẠM trong tab này vì máy không mở được kho lưu bền. Giữ app mở và bấm "Gửi lại ngay" khi có mạng; đóng/reload tab có thể làm mất bằng chứng tạm.`)
+  }
+  return new Error(`${base} Bằng chứng (ảnh + giờ chấm) đã được lưu trên máy — app sẽ TỰ GỬI LẠI khi có mạng, giữ nguyên giờ chấm công gốc.`)
+}
+
+async function markAttendanceOutboxNeedsReview(op: AttendanceOutboxOp, deliveryNote: string) {
+  await saveAttendanceOutboxOp({ ...op, deliveryState: 'needs-review', deliveryNote })
+}
+
+async function quarantineAttendanceOutboxOp(op: AttendanceOutboxOp, deliveryNote: string): Promise<never> {
+  await markAttendanceOutboxNeedsReview(op, deliveryNote)
+  throw new AttendanceReplayNeedsReviewError(deliveryNote)
 }
 
 export async function checkOut(user: AppUser, record: AttendanceRecord, registration: ShiftRegistration, selfie: Blob, onPhase?: (phase: AttendancePhase) => void) {
@@ -1136,6 +1309,8 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
   const location = await getAttendanceLocation()
   const checkOutTime = await getTrustedTimestamp()
   onPhase?.('saving')
+  // BUG-131 (quyết định chủ quán 04/08): check-out cũng ghi THẲNG máy chủ, không
+  // qua bộ nhớ tạm; đóng dấu ảnh best-effort như check-in.
   const stampedSelfie = await stampAttendancePhoto(selfie, {
     actionLabel: 'CHECK-OUT',
     employeeName: user.name,
@@ -1146,8 +1321,13 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
     longitude: location.longitude,
     accuracy: location.accuracy,
     totalHoursLabel: record.checkInTime ? `Tổng giờ làm: ${formatWorkDurationBetween(record.checkInTime, checkOutTime)}` : undefined,
-  })
-  const checkOutSelfieUrl = await uploadSelfie(user, registration, stampedSelfie)
+  }).catch(() => selfie)
+  const checkOutSelfieUrl = await uploadSelfie(
+    user,
+    registration,
+    stampedSelfie,
+    attendanceSelfiePath(user.id, registration.branchId, registration.id, createId()),
+  )
   if (shouldUseAttendanceApi(user)) {
     try {
       const saved = await withAttendanceWriteRetry(() => attendanceApi<AttendanceRecord>(user, `/records/${record.id}`, {
@@ -1162,13 +1342,14 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
             checkOutAddress: location.address,
           }),
         }))
+      notifyAttendanceUpdated()
       return saved?.id ? saved : {
         ...record,
         checkOutTime,
         checkOutSelfieUrl,
-        checkOutLatitude: location.latitude,
-        checkOutLongitude: location.longitude,
-        checkOutAccuracy: location.accuracy,
+        checkOutLatitude: location.latitude ?? undefined,
+        checkOutLongitude: location.longitude ?? undefined,
+        checkOutAccuracy: location.accuracy ?? undefined,
         checkOutAddress: location.address,
         updatedAt: checkOutTime,
       }
@@ -1176,7 +1357,10 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
       const existing = await attendanceApi<AttendanceRecord[]>(user, `/records?userId=${encodeURIComponent(user.id)}`)
         .then((rows) => rows.find((item) => item.id === record.id))
         .catch(() => undefined)
-      if (existing?.checkOutTime && isRetryableAttendanceWriteError(error)) return existing
+      if (existing?.checkOutTime && isRetryableAttendanceWriteError(error)) {
+        notifyAttendanceUpdated()
+        return existing
+      }
       throw error
     }
   }
@@ -1208,51 +1392,167 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
   } catch (error) {
     if (!await verifyCompletedCheckout(user.id, record.id).catch(() => false)) throw error
   }
+  notifyAttendanceUpdated()
   return {
     ...record,
     checkOutTime,
     checkOutSelfieUrl,
-    checkOutLatitude: location.latitude,
-    checkOutLongitude: location.longitude,
-    checkOutAccuracy: location.accuracy,
+    checkOutLatitude: location.latitude ?? undefined,
+    checkOutLongitude: location.longitude ?? undefined,
+    checkOutAccuracy: location.accuracy ?? undefined,
     checkOutAddress: location.address,
     updatedAt: checkOutTime,
   }
 }
 
+/**
+ * Check-out BÙ cho ca đã quá hạn (BUG-113). Bấm nút lúc này sẽ đóng dấu giờ HIỆN
+ * TẠI — sai sự thật và đẻ ra ca 24h/96h/238h trên bảng công — nhưng chặn cứng thì
+ * nhân viên kẹt luôn, phải chờ Admin mới đóng được ca. Lối thoát: cho nhân viên tự
+ * khai giờ đã về, chặn ở mức KHÔNG BAO GIỜ vượt quá giờ tan ca theo lịch, nên họ
+ * chỉ có thể khai bằng hoặc ít hơn lịch chứ không tự cộng giờ cho mình.
+ *
+ * Bản ghi đóng theo diện HÀNH CHÍNH: không ảnh, không GPS, địa chỉ mở đầu bằng
+ * '[CHỐT HÀNH CHÍNH]' đúng như nhánh 2 của ràng buộc
+ * `attendance_records_checkout_evidence_required`, để mọi báo cáo nhìn là biết ca
+ * này không được xác minh vị trí. Muốn tính giờ về SAU lịch (tăng ca) thì vẫn phải
+ * đi đường đơn chỉnh công để Admin duyệt.
+ */
+export async function lateCheckOut(
+  user: AppUser,
+  record: AttendanceRecord,
+  registration: ShiftRegistration,
+  declaredTime: string,
+) {
+  if (record.userId !== user.id || record.checkOutTime) throw new Error('Bản ghi này không thể check-out.')
+  const declaredAt = resolveLateCheckOutAt(registration, record.checkInTime, declaredTime)
+  const checkOutTime = declaredAt.toISOString()
+  const checkOutAddress = `[CHỐT HÀNH CHÍNH] ${user.name} khai bù giờ về ca ${registration.startTime}–${registration.endTime} ngày ${registration.workDate}; không có ảnh và GPS lúc ra.`
+  if (shouldUseAttendanceApi(user)) {
+    // Máy chủ LAN tự kẹp lại giờ khai một lần nữa: client không được là nơi duy
+    // nhất quyết định số giờ vào bảng công.
+    const saved = await withAttendanceWriteRetry(() => attendanceApi<AttendanceRecord>(user, `/records/${record.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        lateCheckOutTime: checkOutTime,
+        checkOutSelfieUrl: null,
+        checkOutLatitude: null,
+        checkOutLongitude: null,
+        checkOutAccuracy: null,
+        checkOutAddress,
+      }),
+    }))
+    window.dispatchEvent(new CustomEvent('gustino-attendance-updated'))
+    return saved?.id ? saved : { ...record, checkOutTime, checkOutAddress, updatedAt: new Date().toISOString() }
+  }
+  try {
+    await withAttendanceWriteRetry(async () => {
+      const { data, error } = await withAttendanceDeadline(
+        async () => await supabase!.from('attendance_records').update({
+          check_out_time: checkOutTime,
+          check_out_selfie_url: null,
+          check_out_latitude: null,
+          check_out_longitude: null,
+          check_out_accuracy: null,
+          check_out_address: checkOutAddress,
+          updated_at: new Date().toISOString(),
+        })
+          .eq('id', record.id)
+          .eq('user_id', user.id)
+          .is('check_out_time', null)
+          .select('id, check_out_time')
+          .maybeSingle(),
+        ATTENDANCE_DB_DEADLINE_MS,
+        'Máy chủ chưa phản hồi lệnh khai bù. Hệ thống sẽ kiểm tra lại; nếu vẫn lỗi hãy kiểm tra mạng rồi bấm lại.',
+        408,
+      )
+      if (error) throw error
+      if (data?.check_out_time || await verifyCompletedCheckout(user.id, record.id)) return
+      throw new Error('Supabase chưa xác nhận khai bù. Hệ thống sẽ kiểm tra và thử lại một lần.')
+    })
+  } catch (error) {
+    if (!await verifyCompletedCheckout(user.id, record.id).catch(() => false)) throw error
+  }
+  window.dispatchEvent(new CustomEvent('gustino-attendance-updated'))
+  return {
+    ...record,
+    checkOutTime,
+    checkOutSelfieUrl: undefined,
+    checkOutLatitude: undefined,
+    checkOutLongitude: undefined,
+    checkOutAccuracy: undefined,
+    checkOutAddress,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
 async function verifyExistingCheckIn(userId: string, registrationId: string) {
-  const { data, error } = await supabase!
-    .from('attendance_records')
-    .select('*, profiles!attendance_records_user_id_fkey(full_name, active)')
-    .eq('shift_registration_id', registrationId)
-    .eq('user_id', userId)
-    .maybeSingle()
+  // BUG-131: lệnh đọc xác minh cũng phải có hạn chót — một request treo ở đây
+  // giữ nút "Đang xử lý" vô hạn dù bản ghi đã/chưa lưu xong.
+  const { data, error } = await withAttendanceDeadline(
+    async () => await supabase!
+      .from('attendance_records')
+      .select('*, profiles!attendance_records_user_id_fkey(full_name, active)')
+      .eq('shift_registration_id', registrationId)
+      .eq('user_id', userId)
+      .maybeSingle(),
+    ATTENDANCE_DB_DEADLINE_MS,
+    'Máy chủ chưa phản hồi khi xác minh chấm công.',
+    408,
+  )
   if (error) throw error
   return data ? mapAttendance(data) : undefined
 }
 
 async function verifyCompletedCheckout(userId: string, recordId: string) {
-  const { data, error } = await supabase!
-    .from('attendance_records')
-    .select('id, check_out_time')
-    .eq('id', recordId)
-    .eq('user_id', userId)
-    .maybeSingle()
+  const { data, error } = await withAttendanceDeadline(
+    async () => await supabase!
+      .from('attendance_records')
+      .select('id, check_out_time')
+      .eq('id', recordId)
+      .eq('user_id', userId)
+      .maybeSingle(),
+    ATTENDANCE_DB_DEADLINE_MS,
+    'Máy chủ chưa phản hồi khi xác minh check-out.',
+    408,
+  )
   if (error) throw error
   return Boolean(data?.check_out_time)
 }
 
-async function uploadSelfie(user: AppUser, registration: ShiftRegistration, selfie: Blob) {
+function hasNewerAttendanceRecord(records: AttendanceRecord[], op: AttendanceOutboxOp) {
+  const capturedAt = Date.parse(op.capturedAt)
+  if (!Number.isFinite(capturedAt)) return true
+  return records.some((record) =>
+    record.shiftRegistrationId !== op.registrationId
+    && Number.isFinite(Date.parse(record.checkInTime))
+    && Date.parse(record.checkInTime) >= capturedAt,
+  )
+}
+
+async function hasNewerOwnAttendanceRecord(userId: string, op: AttendanceOutboxOp) {
+  const { data, error } = await supabase!
+    .from('attendance_records')
+    .select('id')
+    .eq('user_id', userId)
+    .neq('shift_registration_id', op.registrationId)
+    .gte('check_in_time', op.capturedAt)
+    .limit(1)
+  if (error) throw error
+  return Boolean(data?.length)
+}
+
+async function uploadSelfie(user: AppUser, registration: ShiftRegistration, selfie: Blob, stablePath?: string) {
   if (!selfie.size) throw new Error('Ảnh selfie là bắt buộc.')
   if (shouldUseAttendanceApi(user)) {
     const dataUrl = await blobToDataUrl(selfie)
     const result = await withAttendanceWriteRetry(() => attendanceApi<{ url: string }>(user, '/selfies', {
         method: 'POST',
-        body: JSON.stringify({ registrationId: registration.id, branchId: registration.branchId, dataUrl }),
+        body: JSON.stringify({ registrationId: registration.id, branchId: registration.branchId, dataUrl, selfiePath: stablePath }),
       }))
     return result.url
   }
-  const path = `${user.id}/${registration.branchId}/${registration.id}-${Date.now()}.jpg`
+  const path = stablePath || attendanceSelfiePath(user.id, registration.branchId, registration.id, createId())
   await uploadAttendanceSelfieWithRetry(path, selfie)
   return path
 }
@@ -1273,6 +1573,230 @@ async function uploadAttendanceSelfieWithRetry(path: string, selfie: Blob) {
     if (!error || /duplicate|already exists/i.test(error.message || '')) return
     throw error
   })
+}
+
+let attendanceOutboxFlushBusy = false
+
+/**
+ * Gửi lại các lượt chấm công còn nằm trong hộp thư đi (BUG-118). Idempotent:
+ * máy chủ đã có bản ghi tương ứng thì op bị xóa, không ghi đôi. Giờ chấm công
+ * dùng đúng `capturedAt` lúc bấm nút, không phải giờ gửi lại.
+ * Trả về số op còn lại (0 = sạch).
+ */
+export async function flushAttendanceOutbox(user: AppUser): Promise<number> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    const offlineSnapshot = await inspectAttendanceOutbox(user.id)
+    if (!offlineSnapshot.authoritative) throw offlineSnapshot.error
+    return offlineSnapshot.ops.length
+  }
+  if (attendanceOutboxFlushBusy) return attendanceOutboxFastCount(user.id)
+  attendanceOutboxFlushBusy = true
+  try {
+    const snapshot = await inspectAttendanceOutbox(user.id)
+    if (!snapshot.authoritative && !snapshot.ops.length) throw snapshot.error
+    let confirmed = 0
+    for (const op of snapshot.ops) {
+      // Bằng chứng xung đột được giữ cho quản lý rà soát nhưng tuyệt đối không tự
+      // replay một timestamp cũ sau khi ca khác đã diễn ra.
+      if (op.deliveryState === 'needs-review') continue
+      try {
+        await flushSingleAttendanceOutboxOp(user, op)
+        confirmed += 1
+      } catch (error) {
+        // Op lỗi vĩnh viễn đã được giữ `needs-review`; tiếp tục các op độc lập
+        // phía sau thay vì để một bằng chứng hỏng chặn cả hàng đợi mãi mãi.
+        if (error instanceof AttendanceReplayNeedsReviewError) continue
+        if (isPermanentAttendanceReplayRejection(error)) {
+          try {
+            await markAttendanceOutboxNeedsReview(
+              op,
+              `Máy chủ từ chối lượt gửi lại: ${error instanceof Error ? error.message : 'dữ liệu không hợp lệ.'}`,
+            )
+            continue
+          } catch {
+            // Không ghi được trạng thái quarantine thì dừng, giữ nguyên op pending.
+          }
+        }
+        // Giữ op lại, nhịp sau thử tiếp — tuyệt đối không xóa bằng chứng khi chưa
+        // xác nhận được với máy chủ. Dừng tại op đầu lỗi để không gửi đảo thứ tự
+        // check-in/check-out giữa hai ngày.
+        break
+      }
+    }
+    if (confirmed > 0) notifyAttendanceUpdated()
+    const finalSnapshot = await inspectAttendanceOutbox(user.id)
+    if (!finalSnapshot.authoritative) throw finalSnapshot.error
+    return finalSnapshot.ops.length
+  } finally {
+    attendanceOutboxFlushBusy = false
+  }
+}
+
+async function flushSingleAttendanceOutboxOp(user: AppUser, op: AttendanceOutboxOp) {
+  // uploadSelfie chỉ dùng id + branchId của đăng ký ca.
+  const registrationRef = { id: op.registrationId, branchId: op.branchId } as ShiftRegistration
+  const drop = () => deleteAttendanceOutboxOp(op.id, user.id)
+  if (op.kind === 'check-in') {
+    if (shouldUseAttendanceApi(user)) {
+      const rows = await attendanceApi<AttendanceRecord[]>(user, `/records?userId=${encodeURIComponent(user.id)}`)
+      if (rows.some((item) => item.shiftRegistrationId === op.registrationId)) return drop()
+      if (hasNewerAttendanceRecord(rows, op)) {
+        return quarantineAttendanceOutboxOp(op, 'Đã có một ca chấm công mới hơn; lượt cũ không được tự gửi lại vì sẽ mở phiên sai thứ tự.')
+      }
+      const selfieUrl = await uploadSelfie(user, registrationRef, op.selfie, op.selfiePath || attendanceSelfiePath(user.id, op.branchId, op.registrationId, op.id))
+      try {
+        await attendanceApi(user, '/records', {
+          method: 'POST',
+          body: JSON.stringify({
+            id: createId(),
+            userId: user.id,
+            userName: user.name,
+            branchId: op.branchId,
+            shiftRegistrationId: op.registrationId,
+            replayedFromOutbox: true,
+            checkInTime: op.capturedAt,
+            selfieUrl,
+            checkInLatitude: op.latitude,
+            checkInLongitude: op.longitude,
+            checkInAccuracy: op.accuracy,
+            checkInAddress: op.address,
+            createdAt: op.capturedAt,
+            updatedAt: op.capturedAt,
+          }),
+        })
+      } catch (error) {
+        const latestRows = await attendanceApi<AttendanceRecord[]>(user, `/records?userId=${encodeURIComponent(user.id)}`).catch(() => [])
+        if (latestRows.some((item) => item.shiftRegistrationId === op.registrationId)) return drop()
+        if (isSingleOpenSessionViolation(error)) {
+          return quarantineAttendanceOutboxOp(op, 'Lượt check-in gửi lại bị từ chối vì còn một ca mở; không tự replay giờ cũ.')
+        }
+        if (isPermanentAttendanceReplayRejection(error)) {
+          return quarantineAttendanceOutboxOp(op, `Máy chủ từ chối check-in đã lưu: ${error instanceof Error ? error.message : 'dữ liệu không hợp lệ.'}`)
+        }
+        throw error
+      }
+      return drop()
+    }
+    const existing = await verifyExistingCheckIn(user.id, op.registrationId)
+    if (existing) return drop()
+    if (await hasNewerOwnAttendanceRecord(user.id, op)) {
+      return quarantineAttendanceOutboxOp(op, 'Đã có một ca chấm công mới hơn; lượt cũ không được tự gửi lại vì sẽ mở phiên sai thứ tự.')
+    }
+    const selfieUrl = await uploadSelfie(user, registrationRef, op.selfie, op.selfiePath || attendanceSelfiePath(user.id, op.branchId, op.registrationId, op.id))
+    const { error } = await withAttendanceDeadline(
+      async () => await supabase!.from('attendance_records').insert({
+        id: createId(),
+        user_id: user.id,
+        branch_id: op.branchId,
+        shift_registration_id: op.registrationId,
+        check_in_time: op.capturedAt,
+        selfie_url: selfieUrl,
+        check_in_latitude: op.latitude,
+        check_in_longitude: op.longitude,
+        check_in_accuracy: op.accuracy,
+        check_in_address: op.address,
+      }),
+      ATTENDANCE_DB_DEADLINE_MS,
+      'Máy chủ chưa phản hồi khi gửi lại check-in.',
+      408,
+    )
+    if (error) {
+      if (isSingleOpenSessionViolation(error)) {
+        return quarantineAttendanceOutboxOp(op, 'Lượt check-in gửi lại bị từ chối vì còn một ca mở; không tự replay giờ cũ.')
+      }
+      if (isDuplicateAttendanceWrite(error)) {
+        // 23505 chỉ là idempotent khi read-back xác nhận ĐÚNG registration.
+        // Không được xóa op chỉ vì một unique constraint bất kỳ bị vi phạm.
+        const confirmed = await verifyExistingCheckIn(user.id, op.registrationId).catch(() => undefined)
+        if (confirmed) return drop()
+      }
+      if (isPermanentAttendanceReplayRejection(error)) {
+        return quarantineAttendanceOutboxOp(op, `Máy chủ từ chối check-in đã lưu: ${error.message || error.code || 'dữ liệu không hợp lệ.'}`)
+      }
+      throw error
+    }
+    return drop()
+  }
+  // check-out
+  if (!op.recordId) {
+    return quarantineAttendanceOutboxOp(op, 'Lượt check-out thiếu mã bản ghi cần đóng; giữ bằng chứng để quản lý rà soát.')
+  }
+  if (shouldUseAttendanceApi(user)) {
+    const rows = await attendanceApi<AttendanceRecord[]>(user, `/records?userId=${encodeURIComponent(user.id)}`)
+    const existing = rows.find((item) => item.id === op.recordId)
+    if (!existing) {
+      return quarantineAttendanceOutboxOp(op, 'Không còn tìm thấy bản ghi check-in cần đóng; giữ bằng chứng check-out để quản lý rà soát.')
+    }
+    if (existing.checkOutTime) return drop()
+    const selfieUrl = await uploadSelfie(user, registrationRef, op.selfie, op.selfiePath || attendanceSelfiePath(user.id, op.branchId, op.registrationId, op.id))
+    try {
+      await attendanceApi(user, `/records/${op.recordId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          replayedFromOutbox: true,
+          checkOutTime: op.capturedAt,
+          updatedAt: op.capturedAt,
+          checkOutSelfieUrl: selfieUrl,
+          checkOutLatitude: op.latitude,
+          checkOutLongitude: op.longitude,
+          checkOutAccuracy: op.accuracy,
+          checkOutAddress: op.address,
+        }),
+      })
+    } catch (error) {
+      if (isPermanentAttendanceReplayRejection(error)) {
+        return quarantineAttendanceOutboxOp(op, `Máy chủ từ chối check-out đã lưu: ${error instanceof Error ? error.message : 'dữ liệu không hợp lệ.'}`)
+      }
+      throw error
+    }
+    return drop()
+  }
+  const row = await fetchOwnAttendanceRow(user.id, op.recordId)
+  if (!row) {
+    return quarantineAttendanceOutboxOp(op, 'Không còn tìm thấy bản ghi check-in cần đóng; giữ bằng chứng check-out để quản lý rà soát.')
+  }
+  if (row.check_out_time) return drop()
+  const selfieUrl = await uploadSelfie(user, registrationRef, op.selfie, op.selfiePath || attendanceSelfiePath(user.id, op.branchId, op.registrationId, op.id))
+  const { data, error } = await withAttendanceDeadline(
+    async () => await supabase!.from('attendance_records').update({
+      check_out_time: op.capturedAt,
+      check_out_selfie_url: selfieUrl,
+      check_out_latitude: op.latitude,
+      check_out_longitude: op.longitude,
+      check_out_accuracy: op.accuracy,
+      check_out_address: op.address,
+      updated_at: op.capturedAt,
+    })
+      .eq('id', op.recordId)
+      .eq('user_id', user.id)
+      .is('check_out_time', null)
+      .select('id, check_out_time')
+      .maybeSingle(),
+    ATTENDANCE_DB_DEADLINE_MS,
+    'Máy chủ chưa phản hồi khi gửi lại check-out.',
+    408,
+  )
+  if (error) {
+    if (isPermanentAttendanceReplayRejection(error)) {
+      return quarantineAttendanceOutboxOp(op, `Máy chủ từ chối check-out đã lưu: ${error.message || error.code || 'dữ liệu không hợp lệ.'}`)
+    }
+    throw error
+  }
+  if (!data?.check_out_time && !(await verifyCompletedCheckout(user.id, op.recordId))) {
+    throw new Error('Máy chủ chưa xác nhận check-out gửi lại — sẽ thử tiếp ở nhịp sau.')
+  }
+  return drop()
+}
+
+async function fetchOwnAttendanceRow(userId: string, recordId: string) {
+  const { data, error } = await supabase!
+    .from('attendance_records')
+    .select('id, check_out_time')
+    .eq('id', recordId)
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) throw error
+  return data as { id: string; check_out_time: string | null } | null
 }
 
 export function buildAttendanceReport(
@@ -1453,9 +1977,14 @@ function mapAttendance(row: any): AttendanceRecord {
   }
 }
 
+/**
+ * Giờ ca làm là giờ TẠI CHI NHÁNH (Việt Nam, +07:00 quanh năm), không phải giờ
+ * thiết bị. Neo offset cố định để máy đặt sai múi giờ vẫn tính đúng cửa sổ
+ * check-in/check-out. VN không có DST nên cộng thẳng 24h cho ca qua đêm.
+ */
 function localDateTime(date: string, time: string, nextDay = false) {
-  const value = new Date(`${date}T${time}:00`)
-  if (nextDay) value.setDate(value.getDate() + 1)
+  const value = new Date(`${date}T${time}:00+07:00`)
+  if (nextDay) return new Date(value.getTime() + 24 * 60 * 60 * 1000)
   return value
 }
 
@@ -1474,6 +2003,46 @@ export function findAttendanceRecordForRegistration(records: AttendanceRecord[],
     const checkedAt = new Date(item.checkInTime)
     return checkedAt >= opensAt && checkedAt <= closesAt
   })
+}
+
+type ShiftWindowInput = Pick<ShiftRegistration, 'workDate' | 'startTime' | 'endTime'>
+
+/**
+ * Check-out đóng dấu giờ MÁY CHỦ LÚC BẤM, nên một bản ghi bỏ quên vẫn có thể bị
+ * đóng nhiều ngày sau và ghi vào bảng công những ca 24h/96h/238h (BUG-113).
+ * Sau khi ca kết thúc, check-out bằng giờ hiện tại chỉ còn hợp lệ trong 6 tiếng —
+ * đủ cho ca kéo dài, dọn quầy hay điện thoại hết pin, nhưng không đủ để "sáng
+ * hôm sau bấm bù". Quá hạn thì phải đi đường đơn chỉnh công có ghi lý do.
+ */
+export const CHECK_OUT_GRACE_MS = 6 * 60 * 60 * 1000
+/** Chỉ nhắc check-out từ 15 phút trước giờ tan ca, không nhắc ngay sau khi check-in. */
+export const CHECK_OUT_REMINDER_LEAD_MS = 15 * 60 * 1000
+
+export function registrationEndAt(registration: ShiftWindowInput) {
+  return localDateTime(registration.workDate, registration.endTime, registration.endTime <= registration.startTime)
+}
+
+export function checkOutDeadlineAt(registration: ShiftWindowInput) {
+  return new Date(registrationEndAt(registration).getTime() + CHECK_OUT_GRACE_MS)
+}
+
+/** Đã quá hạn tự check-out: chỉ còn xử lý được bằng đơn chỉnh công. */
+export function isCheckOutOverdue(registration: ShiftWindowInput, now = new Date()) {
+  return now.getTime() > checkOutDeadlineAt(registration).getTime()
+}
+
+/** Đang trong khoảng đáng nhắc check-out (gần tan ca → trước khi quá hạn). */
+export function isCheckOutDue(registration: ShiftWindowInput, now = new Date()) {
+  const current = now.getTime()
+  return current >= registrationEndAt(registration).getTime() - CHECK_OUT_REMINDER_LEAD_MS
+    && current <= checkOutDeadlineAt(registration).getTime()
+}
+
+/** Đang trong khoảng đáng nhắc check-in (mở trước giờ vào 30 phút, hết khi tan ca). */
+export function isCheckInDue(registration: ShiftWindowInput, now = new Date()) {
+  const current = now.getTime()
+  const startsAt = localDateTime(registration.workDate, registration.startTime).getTime()
+  return current >= startsAt - 30 * 60000 && current <= registrationEndAt(registration).getTime()
 }
 
 export function isOvertimeRegistration(registration: Pick<ShiftRegistration, 'note'>) {
@@ -1524,8 +2093,10 @@ export function buildAttendanceDetailRows(
   registrations: ShiftRegistration[],
   records: AttendanceRecord[],
   graceMinutesByShift: Map<string, number>,
+  adjustmentRequests: AttendanceAdjustmentRequest[] = [],
   now = new Date(),
 ): AttendanceDetailRow[] {
+  const adjustmentNotes = buildAttendanceAdjustmentNoteMap(adjustmentRequests)
   const matchedRecordIds = new Set<string>()
   const rows = registrations.filter((item) => item.status !== 'rejected').map((registration) => {
     const record = findAttendanceRecordForRegistration(records, registration)
@@ -1567,7 +2138,11 @@ export function buildAttendanceDetailRows(
       checkOutLatitude: record?.checkOutLatitude,
       checkOutLongitude: record?.checkOutLongitude,
       selfieUrl: record?.selfieUrl,
-      note: registration.note,
+      note: attendanceRowNote(
+        registration.note,
+        record?.checkOutAddress,
+        adjustmentNotes.get(`${registration.userId}|${registration.branchId}|${registration.workDate}`),
+      ),
     }
   })
   for (const record of records) {
@@ -1599,10 +2174,36 @@ export function buildAttendanceDetailRows(
       checkOutLatitude: record.checkOutLatitude,
       checkOutLongitude: record.checkOutLongitude,
       selfieUrl: record.selfieUrl,
-      note: 'Ca chấm công đã ghi nhận, chưa khớp lịch',
+      note: attendanceRowNote(
+        'Ca chấm công đã ghi nhận, chưa khớp lịch',
+        record.checkOutAddress,
+        adjustmentNotes.get(`${record.userId}|${record.branchId}|${localDateKey(checkIn)}`),
+      ),
     })
   }
   return rows.sort((a, b) => b.workDate.localeCompare(a.workDate) || a.scheduledStart.localeCompare(b.scheduledStart))
+}
+
+/** Địa chỉ check-out mở đầu bằng tiền tố này = ca được đóng KHÔNG có ảnh/GPS. */
+export const ADMIN_CLOSE_ADDRESS_PREFIX = '[CHỐT HÀNH CHÍNH]'
+
+/**
+ * Cột "Ghi chú" của Excel bảng công phải nói thẳng cho admin biết ca nào bị
+ * quên check-out và được hệ thống/quản trị tự chốt — không bắt admin tự suy
+ * từ cột địa chỉ.
+ */
+function attendanceRowNote(
+  baseNote: string | undefined,
+  checkOutAddress: string | undefined,
+  adjustmentNote?: string,
+) {
+  const parts: string[] = []
+  if (isAttendanceAutoClosedError(checkOutAddress)) {
+    parts.push('QUÊN CHECK-OUT — hệ thống tự chốt theo giờ tan ca (không có ảnh/GPS lúc ra)')
+  }
+  if (baseNote) parts.push(baseNote)
+  if (adjustmentNote) parts.push(adjustmentNote)
+  return parts.join(' · ')
 }
 
 function scheduledHours(start: Date, end: Date) {
@@ -1626,15 +2227,67 @@ function orphanWorkDayCredit(workedHours: number) {
 /** Lỗi định vị có thông điệp thân thiện để UI hiển thị trực tiếp. */
 export class AttendanceLocationError extends Error {}
 
-async function getAttendanceLocation() {
+/** Tiền tố tự khai khi máy không lấy được GPS — chấm công vẫn thành công, báo cáo thấy rõ. */
+export const NO_GPS_ADDRESS_PREFIX = '[KHÔNG CÓ GPS]'
+/** Tiền tố tự khai khi GPS có nhưng sai số vượt 150m (trong nhà/trung tâm thương mại). */
+export const LOW_ACCURACY_ADDRESS_PREFIX = '[GPS SAI SỐ LỚN]'
+const ATTENDANCE_TARGET_ACCURACY_METRES = 150
+
+export interface AttendanceLocationEvidence {
+  latitude: number | null
+  longitude: number | null
+  accuracy: number | null
+  address: string
+}
+
+/**
+ * BUG-121 — "chấm công không thành công": KHÔNG một tầng vị trí nào được phép
+ * chặn chấm công nữa. Ảnh selfie đóng dấu là bằng chứng gốc; GPS/địa chỉ là bằng
+ * chứng bổ sung, thiếu thì HẠ CẤP CÓ ĐÓNG DẤU (pattern "[CHỐT HÀNH CHÍNH]"):
+ * - GPS tốt (≤150m): như cũ.
+ * - GPS sai số lớn (>150m — đứng trong Lotte Mart rất hay gặp): vẫn ghi toạ độ,
+ *   địa chỉ mang tiền tố "[GPS SAI SỐ LỚN] ±Xm" để quản lý biết độ tin cậy.
+ * - Không lấy được GPS (WebView trong app khác, quyền bị chặn, hết 25s): toạ độ
+ *   để trống, địa chỉ mang tiền tố "[KHÔNG CÓ GPS]" kèm lý do — đối chiếu bằng ảnh.
+ */
+export function finalizeAttendanceLocation(input: {
+  latitude: number | null
+  longitude: number | null
+  accuracy: number | null
+  address: string
+  failureReason?: string
+}): AttendanceLocationEvidence {
+  if (input.latitude === null || input.longitude === null || input.accuracy === null) {
+    const reason = (input.failureReason || 'không lấy được vị trí trên thiết bị này').trim().replace(/\.+$/, '')
+    return {
+      latitude: null,
+      longitude: null,
+      accuracy: null,
+      address: `${NO_GPS_ADDRESS_PREFIX} Chấm công không kèm định vị (${reason}). Đối chiếu bằng ảnh chấm công.`,
+    }
+  }
+  if (input.accuracy > ATTENDANCE_TARGET_ACCURACY_METRES) {
+    return {
+      latitude: input.latitude,
+      longitude: input.longitude,
+      accuracy: input.accuracy,
+      address: `${LOW_ACCURACY_ADDRESS_PREFIX} ±${Math.round(input.accuracy)}m · ${input.address}`,
+    }
+  }
+  return { latitude: input.latitude, longitude: input.longitude, accuracy: input.accuracy, address: input.address }
+}
+
+async function getAttendanceLocation(): Promise<AttendanceLocationEvidence> {
   if (!navigator.geolocation) {
-    throw new AttendanceLocationError('Thiết bị/trình duyệt không hỗ trợ định vị. Hãy mở bằng trình duyệt có GPS để chấm công.')
+    return finalizeAttendanceLocation({
+      latitude: null, longitude: null, accuracy: null, address: '',
+      failureReason: 'thiết bị/trình duyệt không hỗ trợ định vị',
+    })
   }
   // Trên Android Chrome, khi hộp thoại xin quyền vị trí còn treo thì `timeout`
   // của getCurrentPosition không chạy, nên cần hạn chót riêng bọc ngoài.
   // Trong WebView của app khác, getCurrentPosition có thể KHÔNG gọi callback nào cả
-  // (app chủ không cài onGeolocationPermissionsShowPrompt) — hết hạn chót phải nói đúng
-  // nguyên nhân đó thay vì bảo nhân viên đi bật GPS vốn đã bật sẵn.
+  // (app chủ không cài onGeolocationPermissionsShowPrompt).
   const inAppBrowser = detectDeviceEnvironment().isInAppBrowser
   const position = await withAttendanceDeadline(
     () => getBestGeolocationPosition(),
@@ -1645,21 +2298,50 @@ async function getAttendanceLocation() {
   ).catch((error: GeolocationPositionError | Error | null) => error)
   if (!position || !('coords' in position)) {
     const denied = position && 'code' in position && position.code === position.PERMISSION_DENIED
-    throw new AttendanceLocationError(
-      denied
-        ? locationPermissionHelpText()
+    // KHÔNG chặn chấm công (BUG-121): ghi rõ lý do thiếu GPS vào địa chỉ tự khai.
+    return finalizeAttendanceLocation({
+      latitude: null, longitude: null, accuracy: null, address: '',
+      failureReason: denied
+        ? (inAppBrowser ? 'trình duyệt trong app không được cấp quyền định vị' : 'quyền định vị đang bị chặn trên máy')
         : position instanceof Error && position.message
           ? position.message
-          : 'Không lấy được GPS. Hãy kiểm tra quyền định vị và sóng GPS rồi thử lại.',
-    )
+          : 'không bắt được tín hiệu GPS trong 25 giây',
+    })
   }
   const latitude = position.coords.latitude
   const longitude = position.coords.longitude
   const accuracy = position.coords.accuracy
-  const address = requireConcreteAttendanceAddress(
+  const address = resolveAttendanceAddress(
     await reverseGeocodeAttendanceWithRetry(latitude, longitude),
+    latitude,
+    longitude,
+    accuracy,
   )
-  return { latitude, longitude, accuracy, address }
+  return finalizeAttendanceLocation({ latitude, longitude, accuracy, address })
+}
+
+/** Tiền tố tự khai khi cả hai nguồn dịch địa chỉ cùng hỏng — nhìn báo cáo là biết ngay. */
+export const UNRESOLVED_ADDRESS_PREFIX = '[CHƯA DỊCH ĐƯỢC ĐỊA CHỈ]'
+
+/**
+ * Địa chỉ chấm công: ưu tiên địa chỉ cụ thể từ bản đồ. Nhưng khi CẢ HAI nguồn
+ * dịch địa chỉ (server + trình duyệt) cùng hỏng thì KHÔNG được chặn chấm công
+ * (BUG-120): bằng chứng gốc là ảnh + toạ độ GPS + sai số — địa chỉ chỉ là bản
+ * dịch cho dễ đọc. Lúc đó ghi toạ độ kèm tiền tố tự khai (đúng pattern
+ * "[CHỐT HÀNH CHÍNH]" đã dùng): quản lý nhìn báo cáo biết ngay bản ghi này chưa
+ * dịch được địa chỉ nhưng vẫn có đầy đủ vị trí thật để đối chiếu.
+ */
+export function resolveAttendanceAddress(
+  value: string,
+  latitude: number,
+  longitude: number,
+  accuracy: number,
+) {
+  const cleaned = value
+    .replace(/\s*[·|-]\s*GPS\s*-?\d+(?:\.\d+)?,\s*-?\d+(?:\.\d+)?\s*$/i, '')
+    .trim()
+  if (isConcreteAttendanceAddress(cleaned)) return cleaned
+  return `${UNRESOLVED_ADDRESS_PREFIX} GPS ${latitude.toFixed(6)}, ${longitude.toFixed(6)} (±${Math.round(accuracy)}m)`
 }
 
 /**
@@ -1671,6 +2353,12 @@ export async function probeAttendanceLocation(): Promise<
 > {
   try {
     const location = await getAttendanceLocation()
+    // BUG-121: luồng chấm công thật không còn ném lỗi vị trí — nhưng thẻ kiểm tra
+    // thiết bị vẫn phải CẢNH BÁO khi máy không lấy được GPS để nhân viên biết
+    // bản ghi sẽ thiếu định vị (chấm công vẫn thành công).
+    if (location.latitude === null || location.accuracy === null) {
+      return { ok: false, message: location.address }
+    }
     return { ok: true, accuracy: location.accuracy, address: location.address }
   } catch (error) {
     return {
@@ -1777,16 +2465,6 @@ function isConcreteAttendanceAddress(value: string) {
     && !/^(?:Vị trí GPS|GPS|Chưa lấy được địa chỉ)/i.test(cleaned)
 }
 
-function requireConcreteAttendanceAddress(value: string) {
-  const cleaned = value
-    .replace(/\s*[·|-]\s*GPS\s*-?\d+(?:\.\d+)?,\s*-?\d+(?:\.\d+)?\s*$/i, '')
-    .trim()
-  if (!isConcreteAttendanceAddress(cleaned)) {
-    throw new AttendanceLocationError('Chưa lấy được địa chỉ cụ thể. Hãy kiểm tra kết nối mạng rồi chấm công lại.')
-  }
-  return cleaned
-}
-
 function getBestGeolocationPosition() {
   const maximumAccuracyMetres = 150
   const targetAccuracyMetres = 35
@@ -1796,7 +2474,14 @@ function getBestGeolocationPosition() {
     let lastError: unknown
     for (const timeoutMs of attemptTimeouts) {
       try {
-        const position = await requestFreshGeolocationPosition(timeoutMs)
+        // BUG-131: một số WebView không bao giờ gọi callback của getCurrentPosition
+        // (kể cả option timeout) — hạn chót bao ngoài biến "treo" thành lỗi để rơi
+        // xuống nhánh chấm công không GPS của BUG-121 thay vì đứng hình cả lượt.
+        const position = await withAttendanceDeadline(
+          () => requestFreshGeolocationPosition(timeoutMs),
+          timeoutMs + 2000,
+          'Máy không phản hồi yêu cầu định vị.',
+        )
         if (!best || position.coords.accuracy < best.coords.accuracy) best = position
         if (best.coords.accuracy <= targetAccuracyMetres) break
       } catch (error) {
@@ -1804,10 +2489,11 @@ function getBestGeolocationPosition() {
         if (Number((error as GeolocationPositionError | undefined)?.code) === 1) break
       }
     }
-    if (best && best.coords.accuracy <= maximumAccuracyMetres) return best
-    if (best) {
-      throw new AttendanceLocationError(`GPS hiện sai số ±${Math.round(best.coords.accuracy)}m, chưa đủ chính xác để chấm công. Hãy ra gần cửa sổ/ngoài trời, bật Vị trí chính xác rồi thử lại.`)
-    }
+    // BUG-121: sai số lớn KHÔNG chặn chấm công nữa — trả toạ độ tốt nhất lấy được,
+    // finalizeAttendanceLocation sẽ đóng dấu "[GPS SAI SỐ LỚN] ±Xm" vào địa chỉ.
+    // maximumAccuracyMetres chỉ còn là ngưỡng "đủ tốt để dừng lấy mẫu sớm".
+    void maximumAccuracyMetres
+    if (best) return best
     throw lastError || new AttendanceLocationError('Không lấy được GPS mới. Hãy kiểm tra quyền định vị và thử lại.')
   })()
 }
@@ -1836,9 +2522,9 @@ async function stampAttendancePhoto(
     branchName: string
     timestamp: string
     address: string
-    latitude: number
-    longitude: number
-    accuracy: number
+    latitude: number | null
+    longitude: number | null
+    accuracy: number | null
     totalHoursLabel?: string
   },
 ) {
@@ -1875,7 +2561,9 @@ async function stampAttendancePhoto(
     details.branchName,
     new Date(details.timestamp).toLocaleString('vi-VN', { hour12: false, timeZone: 'Asia/Bangkok' }),
     details.address,
-    `GPS ${details.latitude.toFixed(6)}, ${details.longitude.toFixed(6)} · sai số ±${Math.round(details.accuracy)}m`,
+    details.latitude !== null && details.longitude !== null && details.accuracy !== null
+      ? `GPS ${details.latitude.toFixed(6)}, ${details.longitude.toFixed(6)} · sai số ±${Math.round(details.accuracy)}m`
+      : 'GPS: máy không lấy được vị trí lúc chấm công',
     ...(details.totalHoursLabel ? [details.totalHoursLabel] : []),
   ]
   context.textBaseline = 'bottom'

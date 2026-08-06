@@ -13,6 +13,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { burstGuard } from '../lib/browser'
 import { branchName as configuredBranchName, useConfiguredBranches } from '../lib/branches'
 import { fetchEmployees, permittedBranchIds } from '../lib/attendance'
 import { fetchMovements, fetchReportSnapshots } from '../lib/store'
@@ -132,17 +133,22 @@ export function ManagerDashboardPage({
         document.removeEventListener('visibilitychange', refreshWhenVisible)
       }
     }
+    // Dashboard nghe 7 bảng của CẢ hệ thống (không lọc chi nhánh) và mỗi lượt
+    // tải lại là loạt truy vấn nặng + vẽ lại biểu đồ. Giờ cao điểm 3 chi nhánh
+    // cùng bán thì không gộp là dashboard chạy liên tục.
+    const reloadSoon = burstGuard(refreshWhenActive, 1500)
     const channel = client.channel(uniqueChannelName(`manager-revenue-live:${branchKey}`))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts' }, () => setReloadTick((tick) => tick + 1))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, () => setReloadTick((tick) => tick + 1))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_allocations' }, () => setReloadTick((tick) => tick + 1))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_shift_sessions' }, () => setReloadTick((tick) => tick + 1))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'stock_movements' }, () => setReloadTick((tick) => tick + 1))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'operation_days' }, () => setReloadTick((tick) => tick + 1))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'report_snapshots' }, () => setReloadTick((tick) => tick + 1))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_allocations' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bag_shift_sessions' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'stock_movements' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'operation_days' }, reloadSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'report_snapshots' }, reloadSoon)
       .subscribe()
     return () => {
       window.clearInterval(timer)
+      reloadSoon.cancel()
       window.removeEventListener('focus', refreshWhenActive)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
       void client.removeChannel(channel)
@@ -400,7 +406,6 @@ export function ManagerDashboardPage({
             <button onClick={() => onNavigate('manager-revenue')}><span>▤</span><strong>{text.business}</strong><small>{text.businessSub}</small></button>
             <button onClick={() => onNavigate('manager-inventory')}><span>▦</span><strong>{text.inventory}</strong><small>{text.inventorySub}</small></button>
             {user.role === 'admin' && <button onClick={() => onNavigate('manager-attendance')}><span>◉</span><strong>{text.timesheet}</strong><small>{text.timesheetSub}</small></button>}
-            {user.role === 'admin' && <button onClick={() => onNavigate('manager-payroll')}><span>₫</span><strong>{text.payroll}</strong><small>{text.payrollSub}</small></button>}
             {user.role === 'admin' && <button onClick={() => onNavigate('report-archive')}><span>▣</span><strong>{text.reportArchive}</strong><small>{text.reportArchiveSub}</small></button>}
             {user.role === 'admin' && <button onClick={() => onNavigate('control')}><span>↑</span><strong>{text.audit}</strong><small>{text.auditSub}</small></button>}
           </section>

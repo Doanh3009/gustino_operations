@@ -3,3 +3,10 @@ supabase.zip
 
 # Local npm cache is not part of the production application.
 .npm-cache
+
+# Bao cao thuc tap va tai lieu ca nhan: chua ho ten, MSSV, thong tin don vi thuc tap.
+# Khong thuoc ung dung production va khong duoc dua len Vercel.
+*.docx
+*.pdf
+THONG_TIN_CAN_BO_SUNG.md
+scripts/report

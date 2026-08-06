@@ -112,6 +112,79 @@ function currentVietnamDateKey(now = new Date()) {
   return currentVietnamTimestamp(now).slice(0, 10)
 }
 
+const ATTENDANCE_AUTO_CLOSE_ADDRESS_PREFIX = '[CHỐT HÀNH CHÍNH] [LỖI QUÊN CHECK-OUT]'
+
+/**
+ * LAN không có Vercel cron, nên tự đối soát trước mỗi lượt đọc/check-in.
+ * Chỉ ca thuộc ngày đã qua và đã hết giờ theo lịch mới được đóng; ca qua đêm
+ * vẫn chờ tới đúng giờ tan ca. Toàn bộ thay đổi diễn ra đồng bộ trước persist,
+ * vì vậy nhiều request cùng lúc đều nhìn thấy cùng một trạng thái đã đóng.
+ * BUG-130: không có nhánh skip vĩnh viễn — phiên ngày cũ còn mở sẽ khóa
+ * Check-in của nhân viên đó mãi (luật một-phiên-mở). Check-in sau giờ tan ca
+ * đóng bằng đúng thời điểm check-in (0 giờ công); ca mở >18h đóng theo giờ
+ * tan ca, cả hai mang lý do riêng để Admin rà soát.
+ */
+function autoCloseStaleAttendanceRecords(now = new Date()) {
+  const today = currentVietnamDateKey(now)
+  let closed = 0
+  for (const record of store.attendanceRecords) {
+    if (record.checkOutTime) continue
+    const registration = store.shiftRegistrations.find((item) => item.id === record.shiftRegistrationId)
+    if (!registration || registration.workDate >= today) continue
+    const overnight = registration.endTime <= registration.startTime
+    const endDate = overnight ? addVietnamDateKeyDays(registration.workDate, 1) : registration.workDate
+    const scheduledEnd = new Date(`${endDate}T${normalizeAttendanceTime(registration.endTime)}+07:00`)
+    const checkIn = new Date(record.checkInTime)
+    if (Number.isNaN(scheduledEnd.getTime())
+      || Number.isNaN(checkIn.getTime())
+      || scheduledEnd > now) continue
+    let closeAt = scheduledEnd
+    let reasonText = 'Hệ thống tự đóng theo giờ tan ca của lịch đăng ký; Admin cần rà soát và chỉnh lại nếu giờ thực tế khác.'
+    if (checkIn.getTime() >= scheduledEnd.getTime()) {
+      closeAt = checkIn
+      reasonText = 'Check-in sau giờ tan ca của lịch đăng ký nên hệ thống đóng ngay tại thời điểm check-in (0 giờ công); Admin cần rà soát và chỉnh lại nếu giờ thực tế khác.'
+    } else if (scheduledEnd.getTime() - checkIn.getTime() > 18 * 60 * 60 * 1000) {
+      reasonText = 'Ca mở dài bất thường (hơn 18 giờ) nên hệ thống đóng theo giờ tan ca của lịch đăng ký; Admin cần rà soát và chỉnh lại nếu giờ thực tế khác.'
+    }
+    record.checkOutTime = closeAt.toISOString()
+    record.checkOutSelfieUrl = undefined
+    record.checkOutLatitude = undefined
+    record.checkOutLongitude = undefined
+    record.checkOutAccuracy = undefined
+    record.checkOutAddress = `${ATTENDANCE_AUTO_CLOSE_ADDRESS_PREFIX} ${reasonText}`
+    record.updatedAt = now.toISOString()
+    closed += 1
+  }
+  return closed
+}
+
+function normalizeAttendanceTime(value) {
+  const time = String(value || '').slice(0, 8)
+  return /^\d{2}:\d{2}$/.test(time) ? `${time}:00` : time
+}
+
+function addVietnamDateKeyDays(dateKey, amount) {
+  const [year, month, day] = String(dateKey).split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + amount)).toISOString().slice(0, 10)
+}
+
+function validatedAttendanceReplayTime(value, { registration, checkInTime } = {}) {
+  const replayedAt = new Date(value)
+  if (Number.isNaN(replayedAt.getTime()) || replayedAt.getTime() > Date.now() + 60_000) return null
+
+  if (checkInTime) {
+    const checkedInAt = new Date(checkInTime)
+    return !Number.isNaN(checkedInAt.getTime()) && replayedAt > checkedInAt
+      ? replayedAt.toISOString()
+      : null
+  }
+
+  if (!registration) return null
+  return currentVietnamDateKey(replayedAt) === registration.workDate
+    ? replayedAt.toISOString()
+    : null
+}
+
 const emptyStore = {
   movements: [],
   operationDays: [],
@@ -750,7 +823,11 @@ async function handleApi(request, response, url) {
       return json(response, 400, { error: 'Hoa don khong hop le.' })
     }
     if (!canAccessBranch(user, receipt.branchId)) return json(response, 403, { error: 'Khong co quyen tai chi nhanh nay.' })
-    if ((store.salesReceipts || []).some((item) => item.id === receipt.id || item.code === receipt.code)) {
+    // Idempotent theo id: client retry cung id thi tra lai hoa don cu (khong tao
+    // don trung, khong tru kho lan hai) — khop hanh vi RPC Supabase.
+    const existingById = (store.salesReceipts || []).find((item) => item.id === receipt.id)
+    if (existingById) return json(response, 200, existingById)
+    if ((store.salesReceipts || []).some((item) => item.code === receipt.code)) {
       return json(response, 409, { error: 'Hoa don da ton tai.' })
     }
     const totalQuantity = Number(receipt.totalQuantity || receipt.lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0))
@@ -759,7 +836,6 @@ async function handleApi(request, response, url) {
       ...receipt,
       sellerKey: receipt.sellerKey || receipt.sellerId || String(receipt.sellerName || '').trim().toLowerCase(),
       sellerName: String(receipt.sellerName || user.id),
-      paymentMethod: receipt.paymentMethod || 'cash',
       totalQuantity,
       totalAmount,
       createdBy: receipt.createdBy || user.id,
@@ -775,7 +851,27 @@ async function handleApi(request, response, url) {
       })).filter((line) => line.productId && line.quantity > 0),
     }
     if (!row.lines.length) return json(response, 400, { error: 'Hoa don chua co mon.' })
+    delete row.stockMovements
     store.salesReceipts.unshift(row)
+    // Ban hang phai tru kho theo cong thuc mon (BUG-115). May chu LAN khong co danh
+    // muc san pham nen client gui san cac dong phieu xuat da quy doi tu recipe.
+    // documentId = id hoa don de xoa hoa don la go dung nhom phieu nay.
+    const stockMovements = Array.isArray(receipt.stockMovements) ? receipt.stockMovements : []
+    const knownMovementIds = new Set((store.movements || []).map((item) => item.id))
+    const posMovements = stockMovements
+      .filter((item) => item && item.productId && Number(item.quantity) > 0 && !knownMovementIds.has(item.id))
+      .map((item) => ({
+        ...item,
+        id: item.id || `${row.id}-${item.productId}`,
+        documentId: row.id,
+        branchId: row.branchId,
+        type: 'sale_out',
+        quantity: Number(item.quantity),
+        shiftDate: item.shiftDate || row.businessDate,
+        createdBy: item.createdBy || row.createdBy,
+        createdAt: item.createdAt || row.createdAt,
+      }))
+    if (posMovements.length) store.movements = [...posMovements, ...(store.movements || [])]
     await persist()
     return json(response, 200, row)
   }
@@ -791,6 +887,9 @@ async function handleApi(request, response, url) {
     const ownsToday = (receipt.createdBy === user.id || receipt.sellerId === user.id) && receipt.businessDate === todayKey
     if (!canManage && !ownsToday) return json(response, 403, { error: 'Khong co quyen xoa hoa don nay.' })
     store.salesReceipts = (store.salesReceipts || []).filter((item) => item.id !== receiptId)
+    // Tra lai kho phan da tru khi ban, neu khong moi lan bam nham roi xoa la kho mat hang.
+    store.movements = (store.movements || []).filter((item) =>
+      !(item.documentId === receiptId && item.type === 'sale_out'))
     await persist()
     return json(response, 200, { ok: true })
   }
@@ -870,6 +969,25 @@ async function handleApi(request, response, url) {
             measuredWeightKg: item.measured_weight_kg == null ? undefined : Number(item.measured_weight_kg),
           }))
         store.movements = [...mappedMovements, ...store.movements]
+      }
+      await persist()
+      return json(response, 200, store.bagShiftSessions[index])
+    }
+    // Chủ ca phải là ca trưởng: ca phó lỡ mở ca trước thì ca trưởng nhận lại quyền.
+    const leaderSessionMatch = url.pathname.match(/^\/api\/shift-ledger\/sessions\/([^/]+)\/leader$/)
+    if (leaderSessionMatch && request.method === 'POST') {
+      if (!canWrite) return json(response, 403, { error: 'Bạn không có quyền đổi chủ ca.' })
+      const index = store.bagShiftSessions.findIndex((item) => item.id === leaderSessionMatch[1])
+      if (index < 0) return json(response, 404, { error: 'Không tìm thấy ca.' })
+      const session = store.bagShiftSessions[index]
+      if (!canAccessBranch(user, session.branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
+      if (session.status !== 'open') return json(response, 409, { error: 'Ca này đã bàn giao nên không đổi được chủ ca.' })
+      const payload = await body(request)
+      store.bagShiftSessions[index] = {
+        ...session,
+        leaderId: payload.leaderId || user.id,
+        leaderName: payload.leaderName || session.leaderName,
+        discrepancyNote: payload.discrepancyNote || session.discrepancyNote || '',
       }
       await persist()
       return json(response, 200, store.bagShiftSessions[index])
@@ -1204,21 +1322,47 @@ async function handleApi(request, response, url) {
       return json(response, 200, registration)
     }
     if (url.pathname === '/api/attendance/records' && request.method === 'GET') {
+      if (autoCloseStaleAttendanceRecords() > 0) await persist()
       return json(response, 200, attendanceFilters(attendanceRowsAllowed(user, store.attendanceRecords), url))
     }
     if (url.pathname === '/api/attendance/records' && request.method === 'POST') {
-      const record = await body(request)
-      const registration = store.shiftRegistrations.find((item) => item.id === record.shiftRegistrationId)
+      if (autoCloseStaleAttendanceRecords() > 0) await persist()
+      const payload = await body(request)
+      const registration = store.shiftRegistrations.find((item) => item.id === payload.shiftRegistrationId)
       if (!registration || registration.userId !== user.id || registration.status === 'rejected') {
         return json(response, 403, { error: 'Ca làm không hợp lệ hoặc không thuộc tài khoản này.' })
       }
       if (store.attendanceRecords.some((item) => item.shiftRegistrationId === registration.id)) {
         return json(response, 409, { error: 'Ca này đã check-in.' })
       }
+      // Khớp ràng buộc DB thật (index attendance_records_one_open_per_user):
+      // một người chỉ được một phiên chấm công đang mở.
+      if (store.attendanceRecords.some((item) => item.userId === user.id && !item.checkOutTime)) {
+        return json(response, 409, { error: 'Bạn đang còn một ca trong ngày chưa check-out nên chưa thể check-in ca mới. Hãy hoàn tất check-out ca đang làm.' })
+      }
       const serverNow = new Date().toISOString()
-      record.checkInTime = serverNow
-      record.createdAt = serverNow
-      record.updatedAt = serverNow
+      let checkInTime = serverNow
+      if (payload.replayedFromOutbox === true) {
+        const replayedAt = validatedAttendanceReplayTime(payload.checkInTime, { registration })
+        if (!replayedAt) return json(response, 400, { error: 'Giờ check-in lưu lúc mất mạng không hợp lệ hoặc không thuộc ngày đăng ký.' })
+        checkInTime = replayedAt
+      }
+      const profile = (store.profiles || []).find((item) => item.id === user.id)
+      const record = {
+        id: String(payload.id || randomUUID()),
+        userId: user.id,
+        userName: profile?.name || user.id,
+        branchId: registration.branchId,
+        shiftRegistrationId: registration.id,
+        checkInTime,
+        selfieUrl: payload.selfieUrl,
+        checkInLatitude: payload.checkInLatitude,
+        checkInLongitude: payload.checkInLongitude,
+        checkInAccuracy: payload.checkInAccuracy,
+        checkInAddress: payload.checkInAddress,
+        createdAt: serverNow,
+        updatedAt: serverNow,
+      }
       store.attendanceRecords.unshift(record)
       await persist()
       return json(response, 200, record)
@@ -1229,9 +1373,32 @@ async function handleApi(request, response, url) {
       if (index < 0) return json(response, 404, { error: 'Không tìm thấy bản ghi chấm công.' })
       if (store.attendanceRecords[index].userId !== user.id) return json(response, 403, { error: 'Không thể check-out thay người khác.' })
       if (store.attendanceRecords[index].checkOutTime) return json(response, 200, store.attendanceRecords[index])
-      const patch = await body(request)
+      const payload = await body(request)
+      if (payload.lateCheckOutTime) {
+        return json(response, 409, { error: 'Tính năng tự khai bù giờ ra đã ngừng. Ca qua ngày sẽ được hệ thống tự đóng và đưa vào danh sách lỗi cho Admin.' })
+      }
+      // Chỉ cho phép field bằng chứng check-out. Owner, branch, registration,
+      // check-in và metadata commit luôn giữ từ bản ghi/server hiện có.
+      const patch = {
+        checkOutTime: payload.checkOutTime,
+        replayedFromOutbox: payload.replayedFromOutbox,
+        checkOutSelfieUrl: payload.checkOutSelfieUrl,
+        checkOutLatitude: payload.checkOutLatitude,
+        checkOutLongitude: payload.checkOutLongitude,
+        checkOutAccuracy: payload.checkOutAccuracy,
+        checkOutAddress: payload.checkOutAddress,
+      }
       const serverNow = new Date().toISOString()
-      patch.checkOutTime = serverNow
+      if (patch.replayedFromOutbox === true) {
+        const replayedAt = validatedAttendanceReplayTime(patch.checkOutTime, {
+          checkInTime: store.attendanceRecords[index].checkInTime,
+        })
+        if (!replayedAt) return json(response, 400, { error: 'Giờ check-out lưu lúc mất mạng không hợp lệ.' })
+        patch.checkOutTime = replayedAt
+      } else {
+        patch.checkOutTime = serverNow
+      }
+      delete patch.replayedFromOutbox
       patch.updatedAt = serverNow
       store.attendanceRecords[index] = { ...store.attendanceRecords[index], ...patch }
       await persist()
@@ -1239,12 +1406,25 @@ async function handleApi(request, response, url) {
     }
     if (url.pathname === '/api/attendance/selfies' && request.method === 'POST') {
       const payload = await body(request)
-      if (!canAccessBranch(user, payload.branchId)) return json(response, 403, { error: 'Không có quyền tại chi nhánh này.' })
+      const registration = store.shiftRegistrations.find((item) => item.id === payload.registrationId)
+      if (!registration || registration.userId !== user.id || !canAccessBranch(user, registration.branchId)) {
+        return json(response, 403, { error: 'Ca làm không hợp lệ hoặc không thuộc tài khoản này.' })
+      }
       const match = String(payload.dataUrl || '').match(/^data:image\/(jpeg|jpg|png);base64,(.+)$/)
       if (!match) return json(response, 400, { error: 'Ảnh selfie không hợp lệ.' })
       await mkdir(selfieDir, { recursive: true })
       const extension = match[1] === 'png' ? 'png' : 'jpg'
-      const fileName = `${user.id.replace(/[^a-zA-Z0-9_-]/g, '_')}-${payload.registrationId}-${Date.now()}.${extension}`
+      // Retry của cùng một outbox op phải ghi đè đúng file cũ; Date.now() ở đây
+      // từng tạo thêm ảnh mồ côi mỗi nhịp mạng lỗi. Tên do client gửi chỉ là key,
+      // luôn được làm phẳng/lọc ký tự và giới hạn độ dài trước khi chạm filesystem.
+      const stableKey = String(payload.selfiePath || '')
+        .replace(/\.(?:jpe?g|png)$/i, '')
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .slice(-80)
+      const safeUserId = user.id.replace(/[^a-zA-Z0-9_-]/g, '_')
+      const safeRegistrationId = registration.id.replace(/[^a-zA-Z0-9_-]/g, '_')
+      const stableStem = `${safeUserId}-${safeRegistrationId}-${stableKey || Date.now()}`
+      const fileName = `${stableStem}.${extension}`
       await writeFile(join(selfieDir, fileName), Buffer.from(match[2], 'base64'))
       return json(response, 200, { url: `/uploads/attendance-selfies/${fileName}` })
     }
@@ -1256,6 +1436,10 @@ async function handleApi(request, response, url) {
   if (url.pathname === '/api/movements' && request.method === 'POST') {
     const payload = await body(request)
     const items = Array.isArray(payload) ? payload : [payload]
+    // Khớp hành vi cloud: DB thật có CHECK (quantity >= 0). LAN mà nhận số âm/NaN
+    // thì dữ liệu local sẽ vỡ khi đối chiếu với Supabase.
+    const invalid = items.find((item) => !item || !item.productId || !Number.isFinite(Number(item.quantity)) || Number(item.quantity) < 0)
+    if (invalid) return json(response, 400, { error: 'So luong phieu khong hop le (phai la so >= 0).' })
     const known = new Set(store.movements.map((item) => item.id))
     store.movements = [...items.filter((item) => !known.has(item.id)), ...store.movements]
     await persist()

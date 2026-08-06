@@ -1,7 +1,10 @@
 import { userHeaders } from './core'
+import { posStockDeductionByProduct, POS_STOCK_NOTE_PREFIX, productById } from './constants'
+import { createId } from './browser'
 import { shouldUseLanApi, supabase } from './supabase'
-import type { AppUser } from '../types'
+import type { AppUser, StockMovement } from '../types'
 
+/** Nghiệp vụ POS KHÔNG còn thu tiền. Kiểu này chỉ giữ lại để ĐỌC hóa đơn cũ. */
 export type PaymentMethod = 'cash' | 'qr' | 'card'
 
 export interface SalesReceiptLine {
@@ -21,7 +24,8 @@ export interface SalesReceipt {
   sellerKey: string
   sellerId?: string
   sellerName: string
-  paymentMethod: PaymentMethod
+  /** Chỉ tồn tại trên dữ liệu lịch sử — hóa đơn mới không ghi các trường này. */
+  paymentMethod?: PaymentMethod
   customerPaid?: number
   changeAmount?: number
   totalQuantity: number
@@ -111,11 +115,50 @@ export async function fetchSalesReceiptsRange(
   return rows.map(mapReceipt)
 }
 
+/**
+ * Phiếu xuất kho sinh từ một hóa đơn POS (BUG-115).
+ *
+ * Bán một món = trừ đúng những gì công thức của món đó khai (thành phẩm nguồn,
+ * NVL, bao bì), gom theo SKU để mỗi hóa đơn chỉ sinh một dòng cho mỗi SKU.
+ * `documentId` = id hóa đơn nên xóa hóa đơn là gỡ được đúng nhóm phiếu này.
+ *
+ * Trên Supabase việc này do RPC `post_pos_receipt_stock` làm trong cùng
+ * transaction với hóa đơn. Hàm này chỉ dùng cho đường LAN (QA/offline), nơi máy
+ * chủ không có danh mục sản phẩm nên không tự suy ra công thức được.
+ */
+export function buildPosStockMovements(user: AppUser, receipt: SalesReceipt): StockMovement[] {
+  const byProduct = posStockDeductionByProduct(receipt.lines)
+  const createdAt = receipt.createdAt || new Date().toISOString()
+  return Array.from(byProduct.entries())
+    .map(([productId, quantity]) => {
+      const product = productById(productId)
+      return {
+        id: createId(),
+        documentId: receipt.id,
+        branchId: receipt.branchId,
+        productId,
+        type: 'sale_out' as const,
+        quantity,
+        shiftDate: receipt.businessDate,
+        note: `${POS_STOCK_NOTE_PREFIX}${receipt.code}] Trừ kho theo công thức món`,
+        createdBy: receipt.createdBy || user.id,
+        createdAt,
+        measuredWeightKg: product?.unit === 'kg' ? quantity : undefined,
+      }
+    })
+    .filter((row) => row.quantity > 0)
+}
+
 export async function saveSalesReceipt(user: AppUser, receipt: SalesReceipt): Promise<SalesReceipt> {
   if (shouldUseLanApi(user)) {
-    await salesApi(user, '', { method: 'POST', body: JSON.stringify(receipt) })
+    await salesApi(user, '', {
+      method: 'POST',
+      body: JSON.stringify({ ...receipt, stockMovements: buildPosStockMovements(user, receipt) }),
+    })
     return receipt
   }
+  // Không gửi payment_method/customer_paid — nghiệp vụ không thu tiền. Giá gửi
+  // kèm chỉ mang tính hiển thị; RPC tự tra products.price và ghi đè.
   const { data, error } = await supabase!.rpc('create_cashier_pos_receipt', {
     p_receipt: {
       id: receipt.id,
@@ -123,8 +166,6 @@ export async function saveSalesReceipt(user: AppUser, receipt: SalesReceipt): Pr
       business_date: receipt.businessDate,
       seller_id: receipt.sellerId || null,
       seller_name: receipt.sellerName,
-      payment_method: receipt.paymentMethod,
-      customer_paid: receipt.customerPaid,
     },
     p_lines: receipt.lines.map((line) => ({
       allocation_id: line.allocationId || null,
@@ -140,8 +181,9 @@ export async function saveSalesReceipt(user: AppUser, receipt: SalesReceipt): Pr
     ...receipt,
     id: data.id,
     code: data.code,
-    customerPaid: Number(data.customer_paid),
-    changeAmount: Number(data.change_amount),
+    // Server là nguồn giá duy nhất: tin số server trả về, không tin số client tính.
+    totalAmount: data.total_amount !== undefined ? Number(data.total_amount) : receipt.totalAmount,
+    totalQuantity: data.total_quantity !== undefined ? Number(data.total_quantity) : receipt.totalQuantity,
     createdAt: data.created_at,
   }
 }

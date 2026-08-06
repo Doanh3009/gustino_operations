@@ -5,11 +5,13 @@ import {
   createEmployeeAccount,
   deleteAttendanceRecordByAdmin,
   deleteEmployeeAccount,
+  deleteEmptyShiftRegistrationByAdmin,
   fetchAttendanceRecords,
   fetchEmployees,
   fetchShiftRegistrations,
   fetchWorkShifts,
   ensureDefaultWorkShifts,
+  isAttendanceAutoClosedError,
   permittedBranchIds,
   resetEmployeePassword,
   updateAttendanceRecordByAdmin,
@@ -23,7 +25,8 @@ import { useLang } from '../lib/i18n'
 import { PRODUCTS, getPackingOptionsByOutput, getProducts, productById } from '../lib/constants'
 import { branchName as configuredBranchName, syncConfiguredBranchRows, useConfiguredBranches, writeConfiguredBranchRows, type ConfigBranch } from '../lib/branches'
 import { downloadBlob, shareOrDownloadBlob } from '../lib/browser'
-import { calculateStock, fetchInventoryReports, fetchMovements, fetchReportSnapshots } from '../lib/store'
+import { calculateStock, fetchInventoryReports, fetchMovements, fetchReportSnapshots, stockAdjustmentDeltas, sumStockAdjustments, type StockAdjustment } from '../lib/store'
+import { QUANTITY_DECIMALS, formatStockAmount } from '../lib/inventoryEntry'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { fetchBagAllocations, fetchBagShiftSessions } from '../lib/shiftLedger'
 import { buildShiftLeaderReceiptSources, buildShiftLeaderRevenueRows } from '../lib/shiftCompetition'
@@ -36,20 +39,23 @@ import {
   type CompetitionDayType,
 } from '../lib/competitionFairness'
 import { buildKpiEvidenceWorkbook, type KpiEvidenceSourceRow } from '../lib/kpiEvidenceWorkbook'
+import { buildDailyKpiWorkbook } from '../lib/kpiDailyWorkbook'
 import { DEFAULT_COMMISSION_RATE, DEFAULT_REVENUE_TARGET, dailyKpiBonus, employeeKpiKey, employeePeriodRevenueTarget, kpiRank, loadEmployeeRevenueTargets, fetchCommissionRules, fetchEmployeeKpiTargets, productSaleValues, saveCommissionRule, saveEmployeeRevenueTarget, soldBagQuantity, summarizeEmployeeBagSales, weeklyKpiBonus } from '../lib/commission'
 import { buildDailyRevenueRows } from '../lib/revenue'
-import { fetchEmployeePayrollHistory, fetchPayrollEntries, fetchRoleSalaryDefaults, upsertPayrollEntry, upsertRoleSalaryDefault, type PayrollEntry, type RoleSalaryDefault } from '../lib/payroll'
 import { fetchSalesReceiptsRange, type SalesReceipt } from '../lib/salesReceipts'
 import { emailToUsername, validateUsername } from '../lib/authIdentity'
-import { fetchSupplyRequests, type SupplyRequest } from '../lib/supplyRequests'
+import { fetchSupplyRequests, formatSupplyRequestDelivery, type SupplyRequest, type SupplyRequestStatus } from '../lib/supplyRequests'
 import { fetchActiveUsers } from '../lib/activeUsers'
 import { AttendanceAdjustmentArchive } from '../components/AttendanceAdjustmentArchive'
+import { DateTime24Field } from '../components/Time24Field'
+import { fetchAttendanceAdjustments } from '../lib/attendanceAdjustments'
 import { BranchesPage } from './admin/BranchesPage'
 import { DashboardPage } from './admin/DashboardPage'
 import { EmployeesPage } from './admin/EmployeesPage'
 import type {
   ActiveUserSession,
   AppUser,
+  AttendanceAdjustmentRequest,
   AttendanceRecord,
   BagAllocation,
   BagShiftSession,
@@ -66,8 +72,8 @@ import type {
   WorkShift,
 } from '../types'
 
-export type AdminSection = 'overview' | 'attendance' | 'commission' | 'payroll' | 'inventory' | 'requests' | 'accounts' | 'revenue'
-type EmployeeProfileRoute = 'overview' | 'attendance' | 'sales' | 'payroll' | 'account'
+export type AdminSection = 'overview' | 'attendance' | 'commission' | 'inventory' | 'requests' | 'accounts' | 'revenue'
+type EmployeeProfileRoute = 'overview' | 'attendance' | 'sales' | 'account'
 type BranchProfileRoute = 'overview' | 'revenue' | 'employees' | 'attendance' | 'inventory' | 'requests'
 
 function adminRouteFromHash() {
@@ -75,7 +81,7 @@ function adminRouteFromHash() {
   const kind = parts[1]
   const id = decodeURIComponent(parts[2] || '')
   const detail = parts[3] || 'overview'
-  const employeeTabs: EmployeeProfileRoute[] = ['overview', 'attendance', 'sales', 'payroll', 'account']
+  const employeeTabs: EmployeeProfileRoute[] = ['overview', 'attendance', 'sales', 'account']
   const branchTabs: BranchProfileRoute[] = ['overview', 'revenue', 'employees', 'attendance', 'inventory', 'requests']
   return {
     directory: kind === 'branches' ? 'branches' as const : 'employees' as const,
@@ -102,7 +108,9 @@ function navigateAdminHash(path: string) {
  */
 const INVENTORY_EXCEL_QUANTITY_FORMAT = 'General'
 const INVENTORY_EXCEL_INTEGER_FORMAT = '0'
-const INVENTORY_EXCEL_QUANTITY_DECIMALS = 4
+// Đúng bằng độ chính xác của `stock_movements.quantity` numeric(14,3) — số lẻ
+// thứ tư chỉ có thể là rác dấu phẩy động khi cộng dồn, không phải dữ liệu thật.
+const INVENTORY_EXCEL_QUANTITY_DECIMALS = QUANTITY_DECIMALS
 
 /** Đặt định dạng + làm tròn cho các cột số lượng của một sheet. */
 function applyInventoryQuantityFormat(sheet: import('exceljs').Worksheet, keys: string[]) {
@@ -119,12 +127,20 @@ function applyInventoryQuantityFormat(sheet: import('exceljs').Worksheet, keys: 
   }
 }
 
+// Tab lọc trạng thái của màn Đặt hàng (admin chỉ xem, không đổi trạng thái đơn).
+const SUPPLY_STATUS_TABS: Array<{ id: 'all' | SupplyRequestStatus; label: string }> = [
+  { id: 'all', label: 'Tất cả' },
+  { id: 'pending', label: 'Chờ duyệt' },
+  { id: 'acknowledged', label: 'Đã nhận' },
+  { id: 'fulfilled', label: 'Hoàn thành' },
+  { id: 'cancelled', label: 'Đã hủy' },
+]
+
 const ADMIN_SECTIONS: Array<{ id: AdminSection; icon: string }> = [
   { id: 'revenue', icon: '₫' },
   { id: 'overview', icon: '▤' },
   { id: 'attendance', icon: '◉' },
   { id: 'commission', icon: '★' },
-  { id: 'payroll', icon: '₫' },
   { id: 'inventory', icon: '▦' },
   { id: 'requests', icon: '↑' },
   { id: 'accounts', icon: '⊕' },
@@ -137,8 +153,7 @@ const ADMIN_TEXT = {
       revenue: 'Doanh thu',
       overview: 'Tổng quan',
       attendance: 'Chấm công',
-      commission: 'KPI',
-      payroll: 'KPI nhân viên',
+      commission: 'Thi đua nhân viên',
       inventory: 'Báo cáo kho',
       requests: 'Đặt hàng',
       accounts: 'Nhân sự',
@@ -175,8 +190,7 @@ const ADMIN_TEXT = {
       revenue: 'Doanh thu',
       overview: 'Tổng quan',
       attendance: 'Chấm công',
-      commission: 'KPI',
-      payroll: 'KPI nhân viên',
+      commission: 'Thi đua nhân viên',
       inventory: 'Báo cáo kho',
       requests: 'Đặt hàng',
       accounts: 'Nhân sự',
@@ -215,8 +229,7 @@ const ADMIN_TEXT_EN = {
     revenue: 'Revenue',
     overview: 'Overview',
     attendance: 'Attendance',
-    commission: 'KPI',
-    payroll: 'Staff KPI',
+    commission: 'Employee competition',
     inventory: 'Inventory Report',
     requests: 'Orders',
     accounts: 'People',
@@ -256,45 +269,15 @@ const ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
   { value: 'manager', label: 'Quản lý' },
 ]
 
-interface PayrollDraft {
-  hourlyRate: string
-  fixedSalary: string
-  bonus: string
-  deduction: string
-  evidenceUrl: string
-  evidenceNote: string
-  note: string
-}
-
 // Chỉ nhân sự vận hành bán hàng được tính KPI/lương doanh số.
 // Manager/admin/kitchen là vai trò giám sát hoặc hỗ trợ, không tham gia KPI bán hàng.
 const PAYROLL_ROLES: Role[] = ['shift_leader', 'staff']
 const ATTENDANCE_EDIT_PAGE_SIZE = 20
 type CompetitionRoleFilter = 'all' | 'staff' | 'shift_leader'
 
-const emptyPayrollDraft: PayrollDraft = {
-  hourlyRate: '',
-  fixedSalary: '',
-  bonus: '',
-  deduction: '',
-  evidenceUrl: '',
-  evidenceNote: '',
-  note: '',
-}
-
-function roleSlotKey(branchId: string, role: Role) {
-  return `${branchId}|${role}`
-}
-
 function lastDayOfMonth(period: string) {
   const [year, month] = period.split('-').map(Number)
   return `${period}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
-}
-
-function competitionModeLabel(mode: 'daily' | 'monthly' | 'leaders') {
-  if (mode === 'daily') return 'Nhân viên theo ngày'
-  if (mode === 'leaders') return 'Ca trưởng theo tháng'
-  return 'Nhân viên theo tháng'
 }
 
 function competitionDayTypeLabel(filter: CompetitionDayType) {
@@ -313,11 +296,11 @@ function nonNegativeFilterNumber(value: string, fallback: number) {
   return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : fallback
 }
 
-type ManagementDataKey = 'employees' | 'shifts' | 'registrations' | 'records' | 'movements'
+type ManagementDataKey = 'employees' | 'shifts' | 'registrations' | 'records' | 'adjustments' | 'movements'
   | 'inventoryReports' | 'allocations' | 'sessions' | 'requests' | 'snapshots' | 'receipts'
 
 const ALL_MANAGEMENT_DATA: ManagementDataKey[] = [
-  'employees', 'shifts', 'registrations', 'records', 'movements',
+  'employees', 'shifts', 'registrations', 'records', 'adjustments', 'movements',
   'inventoryReports', 'allocations', 'sessions', 'requests', 'snapshots', 'receipts',
 ]
 
@@ -326,12 +309,11 @@ function managementDataNeeds(section: AdminSection, focused: boolean) {
   const bySection: Record<AdminSection, ManagementDataKey[]> = {
     overview: ALL_MANAGEMENT_DATA,
     revenue: ['employees', 'movements', 'allocations', 'snapshots', 'receipts'],
-    attendance: ['employees', 'shifts', 'registrations', 'records'],
+    attendance: ['employees', 'shifts', 'registrations', 'records', 'adjustments'],
     commission: ['employees', 'shifts', 'registrations', 'records', 'allocations', 'sessions', 'receipts'],
-    payroll: ['employees', 'shifts', 'registrations', 'records', 'allocations', 'sessions', 'receipts'],
     inventory: ['employees', 'movements', 'inventoryReports', 'sessions', 'receipts'],
     requests: ['employees', 'requests'],
-    accounts: ['employees', 'records', 'movements', 'requests', 'receipts'],
+    accounts: ['employees', 'records', 'adjustments', 'movements', 'requests', 'receipts'],
   }
   return new Set<ManagementDataKey>(bySection[section])
 }
@@ -340,17 +322,16 @@ function managementRealtimeTables(section: AdminSection, focused: boolean) {
   if (section === 'overview') return [
     'sales_receipts', 'sales_receipt_items', 'shift_registrations', 'attendance_records',
     'bag_allocations', 'bag_shift_sessions', 'stock_movements', 'operation_days',
-    'inventory_reports', 'supply_requests', 'report_snapshots',
+    'inventory_reports', 'supply_requests', 'report_snapshots', 'attendance_adjustment_requests',
   ]
   const bySection: Record<AdminSection, string[]> = {
     overview: [],
     revenue: ['sales_receipts', 'sales_receipt_items', 'bag_allocations', 'bag_shift_sessions', 'stock_movements', 'operation_days', 'report_snapshots'],
-    attendance: ['shift_registrations', 'attendance_records'],
+    attendance: ['shift_registrations', 'attendance_records', 'attendance_adjustment_requests'],
     commission: ['sales_receipts', 'sales_receipt_items', 'shift_registrations', 'attendance_records', 'bag_allocations', 'bag_shift_sessions'],
-    payroll: ['sales_receipts', 'sales_receipt_items', 'shift_registrations', 'attendance_records', 'bag_allocations', 'bag_shift_sessions'],
     inventory: ['stock_movements', 'operation_days', 'inventory_reports', 'bag_shift_sessions', 'sales_receipts', 'sales_receipt_items'],
     requests: ['supply_requests'],
-    accounts: ['sales_receipts', 'sales_receipt_items', 'attendance_records', 'stock_movements', 'supply_requests'],
+    accounts: ['sales_receipts', 'sales_receipt_items', 'attendance_records', 'attendance_adjustment_requests', 'stock_movements', 'supply_requests'],
   }
   return bySection[section]
 }
@@ -369,6 +350,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [shifts, setShifts] = useState<WorkShift[]>([])
   const [registrations, setRegistrations] = useState<ShiftRegistration[]>([])
   const [records, setRecords] = useState<AttendanceRecord[]>([])
+  const [attendanceAdjustments, setAttendanceAdjustments] = useState<AttendanceAdjustmentRequest[]>([])
   const [movements, setMovements] = useState<StockMovement[]>([])
   const [inventoryReports, setInventoryReports] = useState<InventoryReport[]>([])
   const [bagAllocations, setBagAllocations] = useState<BagAllocation[]>([])
@@ -388,8 +370,12 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const rankingMonthFrom = `${rankingPeriod}-01`
   const rankingMonthTo = lastDayOfMonth(rankingPeriod)
   const todayKey = localDateKey()
+  const attendanceDateMax = activeSection === 'attendance' ? todayKey : undefined
+  const currentMonthKey = todayKey.slice(0, 7)
+  const attendanceCorrectionMonth = from.slice(0, 7)
   const [attendanceListMode, setAttendanceListMode] = useState<'date' | 'employee'>('date')
   const [attendanceListDate, setAttendanceListDate] = useState(todayKey)
+  const [attendanceListBranchId, setAttendanceListBranchId] = useState('')
   const [attendanceListEmployeeId, setAttendanceListEmployeeId] = useState('')
   const [attendanceEmployeeSearch, setAttendanceEmployeeSearch] = useState('')
   const [attendanceListPage, setAttendanceListPage] = useState(1)
@@ -409,14 +395,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     positionTitle: string
     avatarUrl: string
   }>>({})
-  const [payrollDrafts, setPayrollDrafts] = useState<Record<string, PayrollDraft>>({})
-  const [roleDefaultDrafts, setRoleDefaultDrafts] = useState<Record<string, { hourlyRate: string; fixedSalary: string }>>({})
   const [commissionRuleDrafts, setCommissionRuleDrafts] = useState<Record<string, { targetRevenue: string; commissionRate: string }>>({})
   const [employeeKpiDrafts, setEmployeeKpiDrafts] = useState<Record<string, string>>(() =>
     Object.fromEntries(Object.entries(loadEmployeeRevenueTargets()).map(([key, value]) => [key, String(value)])),
   )
-  const payrollSaveTimers = useRef<Record<string, number>>({})
-  const roleDefaultTimers = useRef<Record<string, number>>({})
   const commissionRuleTimers = useRef<Record<string, number>>({})
   const competitionPosterRef = useRef<HTMLDivElement>(null)
   const [savingEmployeeDetailsId, setSavingEmployeeDetailsId] = useState('')
@@ -443,10 +425,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     employmentEndDate: '',
     employmentNote: '',
   })
-  const [employeePayrollHistory, setEmployeePayrollHistory] = useState<PayrollEntry[]>([])
   const [employeeCrmSaving, setEmployeeCrmSaving] = useState(false)
   const [temporaryCredential, setTemporaryCredential] = useState<{ username: string; password: string } | null>(null)
-  const [showSupplyReport, setShowSupplyReport] = useState(false)
+  const [supplyStatusFilter, setSupplyStatusFilter] = useState<'all' | SupplyRequestStatus>('all')
   const [inventoryDetailBranchId, setInventoryDetailBranchId] = useState('')
   const [activeUsers, setActiveUsers] = useState<ActiveUserSession[]>([])
   const [attendanceEdit, setAttendanceEdit] = useState<{
@@ -458,7 +439,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   } | null>(null)
   const [attendanceEditSaving, setAttendanceEditSaving] = useState(false)
   const [attendanceDelete, setAttendanceDelete] = useState<{
-    recordId: string
+    kind: 'record' | 'empty-registration'
+    recordId: string | null
+    registrationId: string
     employeeName: string
     workDate: string
     reason: string
@@ -508,6 +491,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         nextShifts,
         nextRegistrations,
         nextRecords,
+        nextAttendanceAdjustments,
         nextMovements,
         nextInventoryReports,
         nextBagAllocations,
@@ -520,6 +504,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         dataNeeds.has('shifts') ? fetchWorkShifts(user) : Promise.resolve(shifts),
         dataNeeds.has('registrations') ? fetchShiftRegistrations(user, { from: receiptFrom, to: receiptTo }) : Promise.resolve(registrations),
         dataNeeds.has('records') ? fetchAttendanceRecords(user, { from: receiptFrom, to: receiptTo }) : Promise.resolve(records),
+        dataNeeds.has('adjustments') ? fetchAttendanceAdjustments(user, { from: receiptFrom, to: receiptTo }) : Promise.resolve(attendanceAdjustments),
         dataNeeds.has('movements') ? Promise.all(managedBranchIds.map((id) => fetchMovements(id, user))).then((items) => items.flat()) : Promise.resolve(movements),
         dataNeeds.has('inventoryReports') ? Promise.all(managedBranchIds.map((id) => fetchInventoryReports(id, user))).then((items) => items.flat()) : Promise.resolve(inventoryReports),
         dataNeeds.has('allocations') ? Promise.all(managedBranchIds.map((id) => fetchBagAllocations(user, { branchId: id }))).then((items) => items.flat()) : Promise.resolve(bagAllocations),
@@ -532,6 +517,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       setShifts(nextShifts)
       setRegistrations(nextRegistrations)
       setRecords(nextRecords)
+      setAttendanceAdjustments(nextAttendanceAdjustments)
       setMovements(nextMovements)
       setInventoryReports(nextInventoryReports)
       setBagAllocations(nextBagAllocations)
@@ -561,13 +547,28 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   useEffect(() => { void refresh(true) }, [user.id, from, to, activeSection, focused])
 
   useEffect(() => {
+    if (activeSection !== 'attendance') return
+    if (from > todayKey) setFrom(todayKey)
+    if (to > todayKey) setTo(todayKey)
+  }, [activeSection, from, to, todayKey])
+
+  useEffect(() => {
     const fallbackDate = todayKey >= from && todayKey <= to ? todayKey : to
     setAttendanceListDate((current) => current >= from && current <= to ? current : fallbackDate)
-    setAttendanceListEmployeeId('')
     setAttendanceListPage(1)
     setAttendanceEdit(null)
+    setAttendanceDelete(null)
     setCompetitionDate((current) => current >= from && current <= to ? current : fallbackDate)
-  }, [from, to, branchId])
+  }, [from, to])
+
+  useEffect(() => {
+    setAttendanceListBranchId(branchId)
+    setAttendanceListEmployeeId('')
+    setAttendanceEmployeeSearch('')
+    setAttendanceListPage(1)
+    setAttendanceEdit(null)
+    setAttendanceDelete(null)
+  }, [branchId])
 
   useEffect(() => {
     if (user.role !== 'admin' || (focused && activeSection !== 'accounts')) return
@@ -619,24 +620,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   }, [user.id, user.authToken, from, to, activeSection, focused])
 
   useEffect(() => {
-    setPayrollDrafts({})
-    setRoleDefaultDrafts({})
-    return
-    let active = true
-    void fetchCommissionRules(user).then((rules) => {
-      if (!active) return
-      setCommissionRuleDrafts(Object.fromEntries(rules.map((rule) => [rule.branchId, {
-        targetRevenue: String(rule.targetQuantity || DEFAULT_REVENUE_TARGET),
-        commissionRate: String(rule.commissionPerUnit || DEFAULT_COMMISSION_RATE),
-      }])))
-    }).catch(() => {
-      if (!active) return
-      setCommissionRuleDrafts({})
-    })
-    return () => { active = false }
-  }, [user.id])
-
-  useEffect(() => {
     let active = true
     const managedBranchIds = permittedBranchIds(user)
     void fetchEmployeeKpiTargets(user, managedBranchIds).then((targets) => {
@@ -648,37 +631,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     }).catch(() => undefined)
     return () => { active = false }
   }, [user.id, user.branchId])
-
-  // Tải lương theo tháng + lương mặc định theo vai trò từ Supabase.
-  useEffect(() => {
-    let active = true
-    const managedBranchIds = permittedBranchIds(user)
-    const period = from.slice(0, 7)
-    void Promise.all([
-      fetchPayrollEntries(user, period, managedBranchIds),
-      fetchRoleSalaryDefaults(user, managedBranchIds),
-    ]).then(([entries, defaults]) => {
-      if (!active) return
-      setPayrollDrafts(Object.fromEntries(entries.map((entry) => [entry.employeeId, {
-        hourlyRate: entry.hourlyRate === null ? '' : String(entry.hourlyRate),
-        fixedSalary: entry.fixedSalary === null ? '' : String(entry.fixedSalary),
-        bonus: entry.bonus ? String(entry.bonus) : '',
-        deduction: entry.deduction ? String(entry.deduction) : '',
-        evidenceUrl: entry.evidenceUrl || '',
-        evidenceNote: entry.evidenceNote || '',
-        note: entry.note,
-      }])))
-      setRoleDefaultDrafts(Object.fromEntries(defaults.map((def) => [roleSlotKey(def.branchId, def.role), {
-        hourlyRate: def.hourlyRate ? String(def.hourlyRate) : '',
-        fixedSalary: def.fixedSalary ? String(def.fixedSalary) : '',
-      }])))
-      setError('')
-    }).catch((reason) => {
-      if (!active) return
-      setError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu bảng lương đồng bộ.')
-    })
-    return () => { active = false }
-  }, [user.id, from])
 
   const branchIds = permittedBranchIds(user)
   const visibleBranches = branches.filter((branch) => branchIds.includes(branch.id))
@@ -726,6 +678,12 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       && (!employeeId || item.userId === employeeId)
       && date >= from && date <= to
   })
+  const rangeAttendanceAdjustments = attendanceAdjustments.filter((item) =>
+    (!branchId || item.branchId === branchId)
+    && (!employeeId || item.userId === employeeId)
+    && item.workDate >= from
+    && item.workDate <= to,
+  )
   const graceByShift = useMemo(
     () => new Map(shifts.map((shift) => [shift.id, shift.graceMinutes])),
     [shifts],
@@ -758,9 +716,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     [allAttendanceRows, payrollEmployeeIds, payrollEmployeeNames],
   )
   const allAttendanceDetailRows = useMemo(
-    () => buildAttendanceDetailRows(rangeRegistrations, rangeRecords, graceByShift)
+    () => buildAttendanceDetailRows(rangeRegistrations, rangeRecords, graceByShift, rangeAttendanceAdjustments)
       .filter((row) => rangeRegistrations.some((registration) => registration.id === row.registrationId)),
-    [rangeRegistrations, rangeRecords, graceByShift],
+    [rangeRegistrations, rangeRecords, graceByShift, rangeAttendanceAdjustments],
   )
   const attendanceDetailRows = useMemo(
     () => allAttendanceDetailRows.filter((row) =>
@@ -770,17 +728,23 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     [allAttendanceDetailRows, payrollEmployeeIds, payrollEmployeeNames],
   )
   const attendanceListRows = useMemo(
-    () => buildAttendanceDetailRows(rangeRegistrations, rangeRecords, graceByShift),
-    [rangeRegistrations, rangeRecords, graceByShift],
+    () => buildAttendanceDetailRows(rangeRegistrations, rangeRecords, graceByShift, rangeAttendanceAdjustments),
+    [rangeRegistrations, rangeRecords, graceByShift, rangeAttendanceAdjustments],
   )
+  const attendanceAutoCloseErrors = useMemo(
+    () => attendanceListRows.filter((row) => isAttendanceAutoClosedError(row.checkOutAddress)),
+    [attendanceListRows],
+  )
+  const attendanceListBranchOptions = visibleBranches.slice().sort((a, b) => a.name.localeCompare(b.name, 'vi'))
   const attendanceListEmployeeOptions = useMemo(() => {
     const byEmployee = new Map<string, { id: string; name: string; branchId: string }>()
     attendanceListRows.forEach((row) => {
+      if (attendanceListBranchId && row.branchId !== attendanceListBranchId) return
       if (!row.userId || byEmployee.has(row.userId)) return
       byEmployee.set(row.userId, { id: row.userId, name: row.employeeName, branchId: row.branchId })
     })
     return Array.from(byEmployee.values()).sort((a, b) => a.name.localeCompare(b.name, 'vi'))
-  }, [attendanceListRows])
+  }, [attendanceListRows, attendanceListBranchId])
   const attendanceEmployeeSearchKey = normalizeName(attendanceEmployeeSearch)
   const attendanceListVisibleEmployeeOptions = useMemo(() => (
     attendanceEmployeeSearchKey
@@ -790,12 +754,15 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       : attendanceListEmployeeOptions
   ), [attendanceListEmployeeOptions, attendanceEmployeeSearchKey])
   const attendanceListFilteredRows = useMemo(() => {
+    const branchRows = attendanceListRows.filter((row) =>
+      !attendanceListBranchId || row.branchId === attendanceListBranchId,
+    )
     const modeRows = attendanceListMode === 'date'
-      ? attendanceListRows.filter((row) => row.workDate === attendanceListDate)
+      ? branchRows.filter((row) => row.workDate === attendanceListDate)
       : attendanceListEmployeeId
-        ? attendanceListRows.filter((row) => row.userId === attendanceListEmployeeId)
+        ? branchRows.filter((row) => row.userId === attendanceListEmployeeId)
         : attendanceEmployeeSearchKey
-          ? attendanceListRows
+          ? branchRows
           : []
     const scopedRows = attendanceEmployeeSearchKey
       ? modeRows.filter((row) =>
@@ -808,7 +775,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       || a.employeeName.localeCompare(b.employeeName, 'vi')
       || a.scheduledStart.localeCompare(b.scheduledStart),
     )
-  }, [attendanceListRows, attendanceListMode, attendanceListDate, attendanceListEmployeeId, attendanceEmployeeSearchKey])
+  }, [attendanceListRows, attendanceListMode, attendanceListDate, attendanceListBranchId, attendanceListEmployeeId, attendanceEmployeeSearchKey])
   const attendanceListTotalPages = Math.max(1, Math.ceil(attendanceListFilteredRows.length / ATTENDANCE_EDIT_PAGE_SIZE))
   const attendanceListSafePage = Math.min(attendanceListPage, attendanceListTotalPages)
   const attendanceListPageStart = (attendanceListSafePage - 1) * ATTENDANCE_EDIT_PAGE_SIZE
@@ -847,6 +814,17 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const totalShifts = attendanceRows.reduce((sum, row) => sum + row.totalShifts, 0)
   const activeNow = records.filter((record) => !record.checkOutTime && (!branchId || record.branchId === branchId)).length
   const wasteRows = buildWasteRows(rangeMovements)
+  const overviewBillRows = useMemo(
+    () => salesReceipts
+      .filter((receipt) =>
+        receipt.businessDate >= from
+        && receipt.businessDate <= to
+        && (!branchId || receipt.branchId === branchId),
+      )
+      .slice()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)),
+    [salesReceipts, branchId, from, to],
+  )
   const inventorySaleOutMovements = movements
     .filter((item) =>
       item.type === 'sale_out'
@@ -907,6 +885,12 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     const lossSummary = summarizeInventoryQuantities(
       branchStockRows.filter((row) => row.waste > 0).map((row) => ({ quantity: row.waste, unit: row.product.unit })),
     )
+    // Phần sổ được sửa tay trong kỳ — chính là chênh lệch mà cột Nhập/Xuất không
+    // giải thích được. Không hiện ra thì bảng kho trông như tự nhảy số.
+    const adjustSummary = summarizeInventoryQuantities(
+      branchStockRows.filter((row) => Math.abs(row.adjust) > 0.0005).map((row) => ({ quantity: row.adjust, unit: row.product.unit })),
+      'Không sửa tồn',
+    )
     const branchShiftRows = inventoryShiftReconciliationRows.filter((row) => row.branchId === branch.id)
     const dailyPosSummary = summarizeInventoryQuantities(
       branchShiftRows
@@ -925,6 +909,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       inboundSummary,
       outboundSummary,
       lossSummary,
+      adjustSummary,
       dailyPosSummary,
     }
   })
@@ -935,16 +920,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     lowSkus: lowStockRows.filter((line) => Math.abs(line.expected) > 0.0001).length,
     movements: rangeMovements.length,
   }
-  const archiveRows = [
-    ...periodInventoryReports.map((report) => ({
-      id: report.id,
-      date: report.reportDate,
-      branchId: report.branchId,
-      type: 'Phiếu kiểm kê',
-      detail: `${report.reportNo} · ${report.shift} · ${report.reporter}`,
-      createdAt: report.createdAt,
-    })),
-  ].sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
   const commissionRows = useMemo(
     () => buildCommissionRows(
       bagAllocations.filter((item) => {
@@ -974,6 +949,28 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       to,
     ),
     [bagAllocations, salesReceipts, payrollEmployees, attendanceDetailRows, branchId, from, to],
+  )
+  const monthlyDailyKpiRows = useMemo(
+    () => buildDailyEmployeeKpiRows(
+      bagAllocations.filter((item) => {
+        const date = allocationReportDate(item)
+        return date >= rankingMonthFrom
+          && date <= rankingMonthTo
+          && competitionDayMatches(date, competitionDayType)
+          && (!branchId || item.branchId === branchId)
+      }),
+      salesReceipts.filter((receipt) =>
+        receipt.businessDate >= rankingMonthFrom
+        && receipt.businessDate <= rankingMonthTo
+        && competitionDayMatches(receipt.businessDate, competitionDayType)
+        && (!branchId || receipt.branchId === branchId),
+      ),
+      payrollEmployees,
+      attendanceDetailRows,
+      rankingMonthFrom,
+      rankingMonthTo,
+    ),
+    [bagAllocations, salesReceipts, payrollEmployees, attendanceDetailRows, branchId, rankingMonthFrom, rankingMonthTo, competitionDayType],
   )
   const monthlyCompetitionRows = useMemo(() => {
     const includedDates = competitionDayType === 'all'
@@ -1095,6 +1092,12 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     && row.shiftCount <= maximumCompetitionShifts,
   )
   const competitionRankingRows = competitionFilteredRows.slice(0, 10)
+  const competitionExportRows = (competitionRankingMode === 'leaders' ? leaderCompetitionRows : monthlyCompetitionRows)
+    .filter((row) =>
+      (effectiveCompetitionRole === 'all' || row.role === effectiveCompetitionRole)
+      && row.shiftCount >= minimumCompetitionShifts
+      && row.shiftCount <= maximumCompetitionShifts,
+    )
   const competitionRangeFrom = competitionRankingMode === 'daily' ? competitionDate : rankingMonthFrom
   const competitionRangeTo = competitionRankingMode === 'daily' ? competitionDate : rankingMonthTo
   const competitionEvidenceAllocations = useMemo(
@@ -1125,42 +1128,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     }),
     [salesReceipts, bagAllocations, branchId, from, to, selectedBranches.length],
   )
-  const payrollPeriod = from.slice(0, 7)
-  const roleDefaults = useMemo(() => {
-    const map: Record<string, RoleSalaryDefault> = {}
-    Object.entries(roleDefaultDrafts).forEach(([key, value]) => {
-      const [defBranchId, role] = key.split('|')
-      map[key] = {
-        branchId: defBranchId,
-        role: role as Role,
-        hourlyRate: parseMoney(value.hourlyRate),
-        fixedSalary: parseMoney(value.fixedSalary),
-      }
-    })
-    return map
-  }, [roleDefaultDrafts])
-  const payrollRows = useMemo(
-    () => buildPayrollRows(payrollEmployees, attendanceRows, commissionRows, payrollDrafts, roleDefaults),
-    [payrollEmployees, attendanceRows, commissionRows, payrollDrafts, roleDefaults],
-  )
-  // Các tổ hợp (chi nhánh × vai trò) cần đặt lương mặc định, suy từ nhân viên hiện có.
-  const payrollRoleSlots = useMemo(() => {
-    const slots = new Map<string, { branchId: string; role: Role }>()
-    payrollEmployees.forEach((employee) => {
-      if (!employee.branchId || !PAYROLL_ROLES.includes(employee.role)) return
-      slots.set(roleSlotKey(employee.branchId, employee.role), { branchId: employee.branchId, role: employee.role })
-    })
-    return Array.from(slots.values()).sort((a, b) =>
-      branchName(a.branchId).localeCompare(branchName(b.branchId), 'vi') || a.role.localeCompare(b.role),
-    )
-  }, [payrollEmployees])
-  const payrollTotals = {
-    basePay: payrollRows.reduce((sum, row) => sum + row.basePay, 0),
-    commission: payrollRows.reduce((sum, row) => sum + row.commission, 0),
-    bonus: payrollRows.reduce((sum, row) => sum + row.bonus, 0),
-    deduction: payrollRows.reduce((sum, row) => sum + row.deduction, 0),
-    grossPay: payrollRows.reduce((sum, row) => sum + row.grossPay, 0),
-  }
   const pendingRequests = supplyRequests.filter((r) => r.status === 'pending').length
 
   const periodSnapshots = (() => {
@@ -1187,6 +1154,25 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         : monthRange(-1)
     setFrom(range.from)
     setTo(range.to)
+  }
+
+  function setAttendanceCorrectionMonth(month: string) {
+    if (!/^\d{4}-\d{2}$/.test(month) || month > currentMonthKey) return
+    const monthEnd = lastDayOfMonth(month)
+    const preferredDay = Number(attendanceListDate.slice(8, 10)) || 1
+    const lastDay = Number(monthEnd.slice(8, 10))
+    const candidateDate = `${month}-${String(Math.min(preferredDay, lastDay)).padStart(2, '0')}`
+    const selectedDate = candidateDate > todayKey ? todayKey : candidateDate
+    setFrom(`${month}-01`)
+    setTo(lastDayOfMonth(month))
+    setAttendanceListDate(selectedDate)
+    setAttendanceListPage(1)
+    setAttendanceEdit(null)
+    setAttendanceDelete(null)
+  }
+
+  function moveAttendanceCorrectionMonth(amount: number) {
+    setAttendanceCorrectionMonth(shiftMonthKey(attendanceCorrectionMonth, amount))
   }
 
   async function changeRole(employee: EmployeeProfile, role: Role) {
@@ -1315,10 +1301,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       employmentEndDate: employee.employmentEndDate || '',
       employmentNote: employee.employmentNote || '',
     })
-    setEmployeePayrollHistory([])
-    void fetchEmployeePayrollHistory(user, employee.id)
-      .then(setEmployeePayrollHistory)
-      .catch((reason) => setError(reason instanceof Error ? reason.message : 'Không thể tải lịch sử lương.'))
   }, [crmEmployeeId, employees, user.id])
 
   async function saveEmployeeCrm(employee: EmployeeProfile) {
@@ -1461,6 +1443,25 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       && (!employeeId || req.requestedBy === employeeId)
       && date >= from && date <= to
   })
+  // Phân loại đơn đặt hàng: lọc theo trạng thái rồi gom theo chi nhánh. Danh sách và Excel
+  // dùng CHUNG một tập đã lọc để cái nhìn trên màn hình khớp đúng file xuất ra.
+  const supplyStatusCounts = {
+    all: rangeSupplyRequests.length,
+    pending: rangeSupplyRequests.filter((req) => req.status === 'pending').length,
+    acknowledged: rangeSupplyRequests.filter((req) => req.status === 'acknowledged').length,
+    fulfilled: rangeSupplyRequests.filter((req) => req.status === 'fulfilled').length,
+    cancelled: rangeSupplyRequests.filter((req) => req.status === 'cancelled').length,
+  }
+  const filteredSupplyRequests = rangeSupplyRequests.filter((req) =>
+    supplyStatusFilter === 'all' || req.status === supplyStatusFilter)
+  // Gom theo chính branchId có trong dữ liệu (không lấy từ danh sách chi nhánh) để đơn của
+  // chi nhánh đã đổi tên/ngừng hoạt động vẫn hiện thay vì bị rơi mất.
+  const supplyRequestsByBranch = Array.from(new Set(filteredSupplyRequests.map((req) => req.branchId)))
+    .sort((a, b) => branchName(a).localeCompare(branchName(b), 'vi'))
+    .map((id) => ({
+      branchId: id,
+      requests: filteredSupplyRequests.filter((req) => req.branchId === id),
+    }))
 
   async function runExport(kind: string, emptyMessage: string, task: () => void | Promise<void>, successMessage: string) {
     if (exportBusy) return
@@ -1510,16 +1511,17 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   }
 
   async function exportKpiEvidenceExcel() {
+    const exportMode = competitionRankingMode === 'leaders' ? 'leaders' : 'monthly'
     const sourcesByRow = buildCompetitionSourcesByRow(
-      competitionFilteredRows,
-      competitionRankingMode,
-      competitionRangeFrom,
-      competitionRangeTo,
+      competitionExportRows,
+      exportMode,
+      rankingMonthFrom,
+      rankingMonthTo,
       competitionEvidenceAllocations,
       competitionEvidenceSessions,
       competitionEvidenceReceipts,
     )
-    const sourceRows: KpiEvidenceSourceRow[] = competitionFilteredRows.flatMap((row) =>
+    const sourceRows: KpiEvidenceSourceRow[] = competitionExportRows.flatMap((row) =>
       (sourcesByRow.get(competitionRowKey(row)) || []).map((source) => ({
         businessDate: source.businessDate,
         employeeKey: row.employeeKey,
@@ -1538,12 +1540,13 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         createdAt: source.createdAt,
       })),
     )
+    const exportedEmployeeKeys = new Set(competitionExportRows.map((row) => competitionRowKey(row)))
     const workbook = await buildKpiEvidenceWorkbook({
-      title: `KPI DOANH THU CÓ BẰNG CHỨNG · ${formatDate(competitionRangeFrom)} - ${formatDate(competitionRangeTo)}`,
+      title: `THI ĐUA NHÂN VIÊN · ${formatDate(rankingMonthFrom)} - ${formatDate(rankingMonthTo)}`,
       generatedAt: new Date(),
       filters: [
-        { label: 'Phân loại', value: competitionModeLabel(competitionRankingMode) },
-        { label: 'Kỳ dữ liệu', value: `${formatDate(competitionRangeFrom)} - ${formatDate(competitionRangeTo)}` },
+        { label: 'Phân loại', value: competitionRankingMode === 'leaders' ? 'Ca trưởng theo tháng' : 'Nhân viên theo tháng + chi tiết ngày' },
+        { label: 'Kỳ dữ liệu', value: `${formatDate(rankingMonthFrom)} - ${formatDate(rankingMonthTo)}` },
         { label: 'Chi nhánh', value: branchId ? branchName(branchId) : 'Toàn hệ thống' },
         { label: 'Nhân sự toàn cục', value: employeeId ? employees.find((employee) => employee.id === employeeId)?.name || employeeId : 'Tất cả' },
         { label: 'Vai trò thi đua', value: effectiveCompetitionRole === 'all' ? 'Tất cả' : roleLabel(effectiveCompetitionRole) },
@@ -1552,27 +1555,81 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         { label: 'Số ca tối đa', value: competitionMaxShifts || 'Không giới hạn' },
         { label: 'Thời điểm xuất', value: formatDateTime(new Date().toISOString()) },
       ],
-      summaryRows: competitionFilteredRows.map((row) => ({
+      summaryRows: competitionExportRows.map((row) => ({
         employeeKey: row.employeeKey,
         employeeName: row.employeeName,
         branchId: row.branchId,
         branchName: branchName(row.branchId),
         roleLabel: roleLabel(row.role),
         shiftCount: row.shiftCount,
+        soldQuantity: row.soldQuantity,
         revenue: row.revenue,
         targetRevenue: row.targetRevenue,
         progress: row.progress,
         rank: row.rank,
         reward: row.commission,
       })),
+      dailyRows: competitionRankingMode === 'leaders' ? [] : monthlyDailyKpiRows
+        .filter((row) => exportedEmployeeKeys.has(competitionRowKey(row)))
+        .map((row) => ({ ...row, branchName: branchName(row.branchId) })),
       sourceRows,
     })
-    await saveWorkbook(workbook, `kpi-bang-chung-${competitionRankingMode}-${competitionRangeFrom}-${competitionRangeTo}.xlsx`)
+    await saveWorkbook(workbook, `thi-dua-bang-chung-${competitionRankingMode}-${rankingMonthFrom}-${rankingMonthTo}.xlsx`)
+  }
+
+  async function exportDailyKpiExcel() {
+    const workbook = await buildDailyKpiWorkbook({
+      from,
+      to,
+      branchLabel: branchId ? branchName(branchId) : 'Toàn hệ thống',
+      employeeLabel: employeeId ? employees.find((employee) => employee.id === employeeId)?.name || employeeId : 'Tất cả nhân viên',
+      generatedAt: new Date(),
+      rows: dailyKpiRows.map((row) => ({ ...row, branchName: branchName(row.branchId) })),
+    })
+    await saveWorkbook(workbook, `kpi-thuong-theo-ngay-${from}-${to}.xlsx`)
   }
 
   async function exportAttendance() {
     const ExcelJS = await import('exceljs')
     const workbook = new ExcelJS.Workbook()
+    // File công xuất theo đúng bộ lọc chi nhánh/nhân viên/khoảng ngày đang chọn
+    // trên màn hình (chọn một chi nhánh thì file chỉ có chi nhánh đó — chủ đích).
+    const exportSummaryRows = attendanceRows
+    const exportDetailRows = attendanceDetailRows
+    // Màn Chấm công KHÔNG tải hóa đơn/phát túi (managementDataNeeds không có
+    // 'receipts'/'allocations' cho section này) nên state ở đây rỗng — trước đây
+    // các sheet KPI/doanh thu xuất ra trắng trơn. Lấy dữ liệu THẬT ngay lúc bấm
+    // xuất, đúng khoảng ngày + chi nhánh đang lọc.
+    const exportBranchScope = branchId ? [branchId] : permittedBranchIds(user)
+    const [freshReceipts, freshAllocationLists] = await Promise.all([
+      fetchSalesReceiptsRange(user, { branchIds: exportBranchScope, from, to }),
+      Promise.all(exportBranchScope.map((id) => fetchBagAllocations(user, { branchId: id }).catch(() => [] as BagAllocation[]))),
+    ])
+    const exportReceipts = freshReceipts.filter((receipt) =>
+      receipt.businessDate >= from && receipt.businessDate <= to && (!branchId || receipt.branchId === branchId),
+    )
+    const exportAllocations = freshAllocationLists.flat().filter((item) => {
+      const date = allocationReportDate(item)
+      return date >= from && date <= to && (!branchId || item.branchId === branchId)
+    })
+    const exportCommissionRows = buildCommissionRows(
+      exportAllocations.filter((item) => soldBagQuantity(item) > 0),
+      payrollEmployees,
+      exportSummaryRows,
+      exportReceipts,
+      commissionRuleDrafts,
+      employeeKpiDrafts,
+      from,
+      to,
+    )
+    const exportDailyKpiRows = buildDailyEmployeeKpiRows(
+      exportAllocations.filter((item) => soldBagQuantity(item) > 0),
+      exportReceipts,
+      payrollEmployees,
+      exportDetailRows,
+      from,
+      to,
+    )
     const positionByUser = new Map<string, string>()
     const positionByName = new Map<string, string>()
     employees.forEach((employee) => {
@@ -1584,7 +1641,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       positionByUser.get(userId) || positionByName.get(`${branchId}|${normalizeName(name)}`) || ''
     const detailSheet = workbook.addWorksheet('Chi tiết chấm công')
     detailSheet.columns = attendanceDetailColumns()
-    for (const row of attendanceDetailRows) {
+    for (const row of exportDetailRows) {
       await addAttendanceDetailRow(detailSheet, row, resolvePosition(row.userId, row.branchId, row.employeeName))
     }
     styleSheet(detailSheet, `CHI TIẾT CHẤM CÔNG ${formatDate(from)} - ${formatDate(to)}`)
@@ -1601,7 +1658,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       { header: 'Vắng', key: 'absentCount', width: 10 },
       { header: 'Quên checkout', key: 'missingCheckoutCount', width: 16 },
     ]
-    attendanceRows.forEach((row) => summarySheet.addRow({ ...row, position: resolvePosition(row.userId, row.branchId, row.employeeName), branch: branchName(row.branchId) }))
+    exportSummaryRows.forEach((row) => summarySheet.addRow({ ...row, position: resolvePosition(row.userId, row.branchId, row.employeeName), branch: branchName(row.branchId) }))
     styleSheet(summarySheet, `TỔNG HỢP CHẤM CÔNG ${formatDate(from)} - ${formatDate(to)}`)
 
     const commissionSheet = workbook.addWorksheet('KPI doanh thu')
@@ -1619,37 +1676,118 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       { header: 'Thưởng tháng', key: 'monthlyBonus', width: 16 },
       { header: 'Tổng thưởng KPI', key: 'commission', width: 18 },
     ]
-    commissionRows.forEach((row) => commissionSheet.addRow({
+    exportCommissionRows.forEach((row) => commissionSheet.addRow({
       ...row,
       branch: branchName(row.branchId),
       achieved: row.achieved ? 'Đạt' : 'Chưa đạt',
     }))
     styleSheet(commissionSheet, `KPI DOANH THU ${formatDate(from)} - ${formatDate(to)}`)
 
-    // Nhật ký doanh thu từng nhân viên theo từng ngày (để kế toán đối chiếu KPI ngày).
+    // Bảng KPI theo ngày đổ vào file công, sheet riêng, GOM THEO TÊN nhân viên:
+    // mỗi người liệt kê từng ngày (kèm tháng) bán bao nhiêu, đạt KPI bao nhiêu %,
+    // thưởng ngày bao nhiêu, rồi chốt một dòng TỔNG in đậm — kế toán dò theo tên.
+    const kpiByNameSheet = workbook.addWorksheet('KPI theo tên từng ngày')
+    kpiByNameSheet.columns = [
+      { header: 'Nhân viên', key: 'employeeName', width: 26 },
+      { header: 'Vị trí', key: 'position', width: 15 },
+      { header: 'Chi nhánh', key: 'branch', width: 22 },
+      { header: 'Tháng', key: 'month', width: 10 },
+      { header: 'Ngày', key: 'date', width: 13 },
+      { header: 'Giờ công (thập phân)', key: 'totalHours', width: 20 },
+      { header: 'SL bán', key: 'soldQuantity', width: 10 },
+      { header: 'Doanh thu ngày', key: 'revenue', width: 16 },
+      { header: 'KPI ngày', key: 'targetRevenue', width: 14 },
+      { header: '% đạt', key: 'progress', width: 10 },
+      { header: 'Hạng', key: 'rank', width: 8 },
+      { header: 'Thưởng ngày', key: 'dailyBonus', width: 14 },
+    ]
+    const kpiByNameRows = [...exportDailyKpiRows].sort((a, b) =>
+      a.employeeName.localeCompare(b.employeeName, 'vi')
+      || branchName(a.branchId).localeCompare(branchName(b.branchId), 'vi')
+      || a.date.localeCompare(b.date))
+    const kpiNameGroups = new Map<string, typeof kpiByNameRows>()
+    kpiByNameRows.forEach((row) => {
+      const key = `${normalizeName(row.employeeName)}|${row.branchId}`
+      kpiNameGroups.set(key, [...(kpiNameGroups.get(key) || []), row])
+    })
+    kpiNameGroups.forEach((rows) => {
+      rows.forEach((row) => kpiByNameSheet.addRow({
+        employeeName: row.employeeName,
+        position: row.positionTitle,
+        branch: branchName(row.branchId),
+        month: formatMonthLabel(row.date.slice(0, 7)),
+        date: formatDate(row.date),
+        totalHours: row.totalHours,
+        soldQuantity: row.soldQuantity,
+        revenue: row.revenue,
+        targetRevenue: row.targetRevenue,
+        progress: row.progress,
+        rank: row.rank,
+        dailyBonus: row.dailyBonus,
+      }))
+      const totalRow = kpiByNameSheet.addRow({
+        employeeName: `TỔNG · ${rows[0].employeeName}`,
+        branch: branchName(rows[0].branchId),
+        totalHours: Number(rows.reduce((sum, row) => sum + row.totalHours, 0).toFixed(2)),
+        soldQuantity: rows.reduce((sum, row) => sum + row.soldQuantity, 0),
+        revenue: rows.reduce((sum, row) => sum + row.revenue, 0),
+        progress: `${rows.filter((row) => row.progress >= 100).length} ngày đạt`,
+        dailyBonus: rows.reduce((sum, row) => sum + row.dailyBonus, 0),
+      })
+      totalRow.font = { bold: true }
+    })
+    styleSheet(kpiByNameSheet, `KPI TỪNG NHÂN VIÊN THEO NGÀY ${formatDate(from)} - ${formatDate(to)}`)
+
+    // Nhật ký doanh thu hóa đơn theo ngày (giữ nguyên cho kế toán đối chiếu).
     const dailyRevenueSheet = workbook.addWorksheet('Doanh thu NV theo ngày')
     dailyRevenueSheet.columns = [
-      { header: 'Ngày', key: 'date', width: 14 },
       { header: 'Nhân viên', key: 'employeeName', width: 26 },
       { header: 'Chi nhánh', key: 'branch', width: 24 },
+      { header: 'Tháng', key: 'month', width: 10 },
+      { header: 'Ngày', key: 'date', width: 14 },
       { header: 'Số hóa đơn', key: 'receipts', width: 12 },
       { header: 'SL bán', key: 'quantity', width: 12 },
       { header: 'Doanh thu', key: 'revenue', width: 16 },
     ]
-    buildDailyEmployeeRevenueRows(salesReceipts, from, to, branchId).forEach((row) =>
-      dailyRevenueSheet.addRow({ ...row, date: formatDate(row.date), branch: branchName(row.branchId) }),
-    )
-    styleSheet(dailyRevenueSheet, `DOANH THU NHÂN VIÊN THEO NGÀY ${formatDate(from)} - ${formatDate(to)}`)
+    const dailyRevenueRows = buildDailyEmployeeRevenueRows(exportReceipts, from, to, '')
+      .sort((a, b) => a.employeeName.localeCompare(b.employeeName, 'vi')
+        || branchName(a.branchId).localeCompare(branchName(b.branchId), 'vi')
+        || a.date.localeCompare(b.date))
+    const revenueGroups = new Map<string, typeof dailyRevenueRows>()
+    dailyRevenueRows.forEach((row) => {
+      const key = `${normalizeName(row.employeeName)}|${row.branchId}`
+      revenueGroups.set(key, [...(revenueGroups.get(key) || []), row])
+    })
+    revenueGroups.forEach((rows) => {
+      rows.forEach((row) => dailyRevenueSheet.addRow({
+        employeeName: row.employeeName,
+        branch: branchName(row.branchId),
+        month: formatMonthLabel(row.date.slice(0, 7)),
+        date: formatDate(row.date),
+        receipts: row.receipts,
+        quantity: row.quantity,
+        revenue: row.revenue,
+      }))
+      const totalRow = dailyRevenueSheet.addRow({
+        employeeName: `TỔNG · ${rows[0].employeeName}`,
+        branch: branchName(rows[0].branchId),
+        receipts: rows.reduce((sum, row) => sum + row.receipts, 0),
+        quantity: rows.reduce((sum, row) => sum + row.quantity, 0),
+        revenue: rows.reduce((sum, row) => sum + row.revenue, 0),
+      })
+      totalRow.font = { bold: true }
+    })
+    styleSheet(dailyRevenueSheet, `DOANH THU TỪNG NHÂN VIÊN THEO NGÀY ${formatDate(from)} - ${formatDate(to)}`)
 
     const exportBranchIds = Array.from(new Set([
-      ...attendanceRows.map((row) => row.branchId),
-      ...attendanceDetailRows.map((row) => row.branchId),
+      ...exportSummaryRows.map((row) => row.branchId),
+      ...exportDetailRows.map((row) => row.branchId),
     ])).sort((a, b) => branchName(a).localeCompare(branchName(b), 'vi'))
     const usedSheetNames = new Set(workbook.worksheets.map((sheet) => sheet.name))
     for (const id of exportBranchIds) {
       const branchSheet = workbook.addWorksheet(uniqueSheetName(branchName(id), usedSheetNames))
       branchSheet.columns = attendanceDetailColumns()
-      for (const row of attendanceDetailRows.filter((item) => item.branchId === id)) {
+      for (const row of exportDetailRows.filter((item) => item.branchId === id)) {
         await addAttendanceDetailRow(branchSheet, row, resolvePosition(row.userId, row.branchId, row.employeeName))
       }
       styleSheet(branchSheet, `CHẤM CÔNG ${branchName(id)} ${formatDate(from)} - ${formatDate(to)}`)
@@ -1674,6 +1812,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       { header: 'Nhập / tăng', key: 'inbound', width: 14 },
       { header: 'Xuất / giảm', key: 'outbound', width: 14 },
       { header: 'Hao hụt', key: 'waste', width: 12 },
+      { header: 'Điều chỉnh kiểm kê', key: 'adjust', width: 18 },
       { header: 'Tồn cuối kỳ', key: 'closing', width: 14 },
     ]
     stockRows.forEach((row) => summarySheet.addRow({
@@ -1685,9 +1824,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       inbound: row.inbound,
       outbound: row.outbound,
       waste: row.waste,
+      adjust: row.adjust,
       closing: row.closing,
     }))
-    applyInventoryQuantityFormat(summarySheet, ['opening', 'inbound', 'outbound', 'waste', 'closing'])
+    applyInventoryQuantityFormat(summarySheet, ['opening', 'inbound', 'outbound', 'waste', 'adjust', 'closing'])
     styleSheet(summarySheet, `TỔNG HỢP KHO ${formatDate(from)} - ${formatDate(to)}`)
 
     const shiftReconciliationSheet = workbook.addWorksheet('Đối chiếu ca')
@@ -1703,6 +1843,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       { header: 'ĐVT', key: 'unit', width: 10 },
       { header: 'Tồn đầu', key: 'opening', width: 13 },
       { header: 'Nhập thêm', key: 'additions', width: 13 },
+      { header: 'Sửa tồn trong ca', key: 'adjust', width: 17 },
       { header: 'POS quy đổi', key: 'posEquivalent', width: 15 },
       { header: 'Hao hụt', key: 'waste', width: 12 },
       { header: 'Tồn bàn giao', key: 'closing', width: 16 },
@@ -1726,6 +1867,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         unit: line.unit,
         opening: line.opening,
         additions: line.additions,
+        adjust: line.adjust,
         posEquivalent: line.posEquivalent,
         waste: line.waste,
         closing: line.closing,
@@ -1739,7 +1881,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           : 'SKU nguồn chưa nằm trong tồn bàn giao của ca',
       }))
     })
-    applyInventoryQuantityFormat(shiftReconciliationSheet, ['opening', 'additions', 'posEquivalent', 'waste', 'closing', 'officialOut', 'difference'])
+    applyInventoryQuantityFormat(shiftReconciliationSheet, ['opening', 'additions', 'adjust', 'posEquivalent', 'waste', 'closing', 'officialOut', 'difference'])
     shiftReconciliationSheet.getColumn('revenue').numFmt = INVENTORY_EXCEL_INTEGER_FORMAT
     styleSheet(shiftReconciliationSheet, `ĐỐI CHIẾU XUẤT BÁN THEO CA ${formatDate(from)} - ${formatDate(to)}`)
 
@@ -1918,52 +2060,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     await saveWorkbook(workbook, `danh-sach-dat-hang-${from}-${to}.xlsx`)
   }
 
-  function updatePayrollDraft(employeeKey: string, patch: Partial<PayrollDraft>) {
-    setPayrollDrafts((drafts) => {
-      const nextDraft = { ...emptyPayrollDraft, ...(drafts[employeeKey] || {}), ...patch }
-      const employee = employees.find((item) => item.id === employeeKey)
-      const payrollRow = payrollRows.find((item) => item.employeeKey === employeeKey)
-      window.clearTimeout(payrollSaveTimers.current[employeeKey])
-      payrollSaveTimers.current[employeeKey] = window.setTimeout(() => {
-        void upsertPayrollEntry(user, {
-          employeeId: employeeKey,
-          branchId: employee?.branchId || payrollRow?.branchId || '',
-          period: payrollPeriod,
-          hourlyRate: nextDraft.hourlyRate.trim() === '' ? null : parseMoney(nextDraft.hourlyRate),
-          fixedSalary: nextDraft.fixedSalary.trim() === '' ? null : parseMoney(nextDraft.fixedSalary),
-          bonus: parseMoney(nextDraft.bonus),
-          deduction: parseMoney(nextDraft.deduction),
-          evidenceUrl: nextDraft.evidenceUrl.trim(),
-          evidenceNote: nextDraft.evidenceNote.trim(),
-          note: nextDraft.note,
-        }).catch((error) => {
-          setError(error instanceof Error ? `Không thể tự lưu lương nhân viên: ${error.message}` : 'Không thể tự lưu lương nhân viên.')
-        })
-      }, 600)
-      return { ...drafts, [employeeKey]: nextDraft }
-    })
-  }
-
-  function updateRoleDefaultDraft(branchId: string, role: Role, patch: Partial<{ hourlyRate: string; fixedSalary: string }>) {
-    const key = roleSlotKey(branchId, role)
-    setRoleDefaultDrafts((drafts) => {
-      const base = drafts[key] || { hourlyRate: '', fixedSalary: '' }
-      const nextDraft = { ...base, ...patch }
-      window.clearTimeout(roleDefaultTimers.current[key])
-      roleDefaultTimers.current[key] = window.setTimeout(() => {
-        void upsertRoleSalaryDefault(user, {
-          branchId,
-          role,
-          hourlyRate: parseMoney(nextDraft.hourlyRate),
-          fixedSalary: parseMoney(nextDraft.fixedSalary),
-        }).catch((error) => {
-          setError(error instanceof Error ? `Không thể tự lưu lương mặc định: ${error.message}` : 'Không thể tự lưu lương mặc định.')
-        })
-      }, 600)
-      return { ...drafts, [key]: nextDraft }
-    })
-  }
-
   function updateCommissionRuleDraft(branchId: string, patch: Partial<{ targetRevenue: string; commissionRate: string }>) {
     setCommissionRuleDrafts((drafts) => {
       const base = drafts[branchId] || {
@@ -1985,39 +2081,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       }, 600)
       return { ...drafts, [branchId]: nextDraft }
     })
-  }
-
-  function setPayrollMonth(month: string) {
-    if (!month) return
-    setFrom(`${month}-01`)
-    setTo(lastDayOfMonth(month))
-  }
-
-  function exportPayroll() {
-    const rows = payrollRows.map((row) => [
-      row.employeeName,
-      branchName(row.branchId),
-      row.positionTitle,
-      row.totalShifts,
-      row.totalHours,
-      row.workDays,
-      row.hourlyRate,
-      row.fixedSalary,
-      row.basePay,
-      row.commission,
-      row.dailyBonus,
-      row.weeklyBonus,
-      row.monthlyBonus,
-      row.bonus,
-      row.deduction,
-      row.grossPay,
-      row.note,
-    ])
-    const csv = [
-      ['Nhân viên', 'Chi nhánh', 'Vị trí', 'Ca', 'Giờ công (thập phân)', 'Ngày công', 'Lương giờ', 'Lương cứng', 'Lương công', 'Thưởng KPI', 'Thưởng ngày', 'Thưởng tuần', 'Thưởng tháng', 'Thưởng thêm', 'Trừ', 'Thực nhận', 'Ghi chú'],
-      ...rows,
-    ].map((line) => line.map(csvCell).join(',')).join('\n')
-    download(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }), `bang-luong-${from}-${to}.csv`)
   }
 
   async function saveAttendanceCorrection(event: React.FormEvent) {
@@ -2046,15 +2109,25 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     if (!attendanceDelete || attendanceDeleteSaving) return
     setAttendanceDeleteSaving(true)
     try {
-      await deleteAttendanceRecordByAdmin(user, {
-        recordId: attendanceDelete.recordId,
-        reason: attendanceDelete.reason,
-      })
+      if (attendanceDelete.kind === 'empty-registration') {
+        await deleteEmptyShiftRegistrationByAdmin(user, {
+          registrationId: attendanceDelete.registrationId,
+          reason: attendanceDelete.reason,
+        })
+      } else {
+        if (!attendanceDelete.recordId) throw new Error('Thiếu bản ghi chấm công cần xóa.')
+        await deleteAttendanceRecordByAdmin(user, {
+          recordId: attendanceDelete.recordId,
+          reason: attendanceDelete.reason,
+        })
+      }
       await refresh(false)
       setAttendanceDelete(null)
-      setFeedback(`Đã xóa ca của ${attendanceDelete.employeeName} ngày ${formatDate(attendanceDelete.workDate)} và đồng bộ lại bảng lương.`)
+      setFeedback(attendanceDelete.kind === 'empty-registration'
+        ? `Đã xóa dòng đăng ký ca chưa chấm công của ${attendanceDelete.employeeName} ngày ${formatDate(attendanceDelete.workDate)}. Không có dữ liệu chấm công hay lương nào bị ảnh hưởng.`
+        : `Đã xóa ca của ${attendanceDelete.employeeName} ngày ${formatDate(attendanceDelete.workDate)} và đồng bộ lại bảng lương.`)
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Không thể xóa ca của nhân viên.')
+      setError(reason instanceof Error ? reason.message : 'Không thể xóa dòng đã chọn.')
     } finally {
       setAttendanceDeleteSaving(false)
     }
@@ -2067,6 +2140,42 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     setAttendanceDelete(null)
   }
 
+  function selectAttendanceListBranch(nextBranchId: string) {
+    if (nextBranchId === attendanceListBranchId) return
+    setAttendanceListBranchId(nextBranchId)
+    setAttendanceListEmployeeId('')
+    setAttendanceListPage(1)
+    setAttendanceEdit(null)
+    setAttendanceDelete(null)
+  }
+
+  function beginAttendanceCorrection(row: (typeof attendanceListRows)[number], revealTarget = false) {
+    if (!row.attendanceRecordId) return
+    const targetRows = revealTarget
+      ? attendanceListRows.filter((item) => item.workDate === row.workDate && item.branchId === row.branchId)
+      : attendanceListFilteredRows
+    const targetIndex = Math.max(0, targetRows.findIndex((item) => item.attendanceRecordId === row.attendanceRecordId))
+    if (revealTarget) {
+      setAttendanceListMode('date')
+      setAttendanceListDate(row.workDate)
+      setAttendanceListBranchId(row.branchId)
+      setAttendanceListEmployeeId('')
+      setAttendanceEmployeeSearch('')
+    }
+    setAttendanceListPage(Math.floor(targetIndex / ATTENDANCE_EDIT_PAGE_SIZE) + 1)
+    setAttendanceDelete(null)
+    setAttendanceEdit({
+      recordId: row.attendanceRecordId,
+      employeeName: row.employeeName,
+      checkInTime: toDateTimeLocalValue(row.checkInTime)
+        || attendanceScheduledDateTimeLocal(row.workDate, row.scheduledStart),
+      checkOutTime: toDateTimeLocalValue(row.checkOutTime)
+        || attendanceScheduledDateTimeLocal(row.workDate, row.scheduledEnd, row.scheduledEnd <= row.scheduledStart),
+      reason: '',
+    })
+    window.requestAnimationFrame(() => document.getElementById('attendance-detail-list')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }
+
   return (
     <div className="page admin-page">
       <div className="admin-filter-bar admin-date-filters">
@@ -2076,8 +2185,8 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               {visibleBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
             </select>
           </label>
-          <label>{text.from}<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
-          <label>{text.to}<input type="date" value={to} min={from} onChange={(event) => setTo(event.target.value)} /></label>
+          <label>{text.from}<input type="date" value={from} max={attendanceDateMax} onChange={(event) => setFrom(attendanceDateMax && event.target.value > attendanceDateMax ? attendanceDateMax : event.target.value)} /></label>
+          <label>{text.to}<input type="date" value={to} min={from} max={attendanceDateMax} onChange={(event) => setTo(attendanceDateMax && event.target.value > attendanceDateMax ? attendanceDateMax : event.target.value)} /></label>
           <div className="admin-quick-ranges">
             <button onClick={() => setQuickRange('today')}>{text.today}</button>
             <button onClick={() => setQuickRange('month')}>{text.thisMonth}</button>
@@ -2186,7 +2295,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               employeeCount={employees.filter((employee) => employee.active !== false).length}
               activeUsers={activeUsers}
               showActiveUsers={user.role === 'admin'}
-              archiveRows={archiveRows}
+              recentBills={overviewBillRows}
               wasteRows={wasteRows}
               branchName={branchName}
             />
@@ -2197,7 +2306,11 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
             <>
             <section className="erp-workspace-panel admin-report-section">
               <div className="section-title">
-                <div><span className="eyebrow dark">BẢNG CHẤM CÔNG</span><h2>Chấm công theo ngày, tháng</h2></div>
+                <div>
+                  <span className="eyebrow dark">BẢNG CHẤM CÔNG</span>
+                  <h2>Chấm công theo ngày, tháng</h2>
+                  <p>File Excel xuất theo đúng bộ lọc chi nhánh và khoảng ngày đang chọn — muốn đủ mọi chi nhánh, chọn "Tất cả chi nhánh" trước khi xuất.</p>
+                </div>
                 <button
                   type="button"
                   className="primary-button"
@@ -2243,6 +2356,52 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               {!attendanceRows.length && <p className="empty-copy">Không có dữ liệu chấm công trong khoảng đã chọn.</p>}
             </section>
 
+            <section className="erp-workspace-panel attendance-error-section">
+              <div className="section-title">
+                <div>
+                  <span className="eyebrow dark">LỖI CHẤM CÔNG TỰ ĐÓNG</span>
+                  <h2>Ca qua ngày cần Admin rà soát</h2>
+                  <p>Hệ thống đã tự đóng theo giờ tan ca để nhân viên không bị treo ca. Sau khi Admin lưu chỉnh công, dòng này sẽ rời danh sách và lịch sử chỉnh sửa vẫn được giữ.</p>
+                </div>
+                <span className="date-chip">{attendanceAutoCloseErrors.length} lỗi</span>
+              </div>
+              <div className="table-scroll">
+                <table className="data-table attendance-error-table">
+                  <thead>
+                    <tr>
+                      <th>Ngày</th>
+                      <th>Nhân viên</th>
+                      <th>Chi nhánh</th>
+                      <th>Giờ ca</th>
+                      <th>Check-in</th>
+                      <th>Hệ thống tự out</th>
+                      <th>Trạng thái</th>
+                      <th>Xử lý</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {attendanceAutoCloseErrors.map((row) => (
+                      <tr key={`attendance-error-${row.attendanceRecordId || row.registrationId}`}>
+                        <td>{formatDate(row.workDate)}</td>
+                        <td><strong>{row.employeeName}</strong></td>
+                        <td>{branchName(row.branchId)}</td>
+                        <td>{row.scheduledStart}–{row.scheduledEnd}</td>
+                        <td>{row.checkInTime ? formatDateTime(row.checkInTime) : 'Chưa có'}</td>
+                        <td>{row.checkOutTime ? formatDateTime(row.checkOutTime) : 'Chưa đóng'}</td>
+                        <td><span className="attendance-state absent">Cần rà soát</span></td>
+                        <td>
+                          {user.role === 'admin' && row.attendanceRecordId
+                            ? <button type="button" className="mini-button attendance-edit-button" onClick={() => beginAttendanceCorrection(row, true)}>Chỉnh công ngay</button>
+                            : <span className="attendance-no-record">Chỉ Admin được chỉnh</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {!attendanceAutoCloseErrors.length && <p className="empty-copy">Không có ca tự đóng nào cần rà soát trong khoảng ngày đã chọn.</p>}
+            </section>
+
             <section className="erp-workspace-panel attendance-detail-section">
               <div className="section-title">
                 <div className="attendance-cute-heading">
@@ -2256,6 +2415,23 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 <span className="date-chip">{attendanceListFilteredRows.length} ca</span>
               </div>
               <div className="attendance-correction-filters">
+                <div className="attendance-month-picker">
+                  <button type="button" onClick={() => moveAttendanceCorrectionMonth(-1)} aria-label="Mở tháng chấm công trước">← Tháng trước</button>
+                  <label>Tháng cần chỉnh
+                    <input
+                      type="month"
+                      value={attendanceCorrectionMonth}
+                      max={currentMonthKey}
+                      onChange={(event) => setAttendanceCorrectionMonth(event.target.value)}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => moveAttendanceCorrectionMonth(1)}
+                    disabled={attendanceCorrectionMonth >= currentMonthKey}
+                    aria-label="Mở tháng chấm công sau"
+                  >Tháng sau →</button>
+                </div>
                 <div className="attendance-correction-mode" aria-label="Cách lọc danh sách công">
                   <button
                     type="button"
@@ -2270,6 +2446,17 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     onClick={() => selectAttendanceListMode('employee')}
                   >Theo nhân viên</button>
                 </div>
+                <label>Chi nhánh cần chỉnh
+                  <select
+                    value={attendanceListBranchId}
+                    onChange={(event) => selectAttendanceListBranch(event.target.value)}
+                  >
+                    <option value="">Tất cả chi nhánh</option>
+                    {attendanceListBranchOptions.map((branch) => (
+                      <option key={branch.id} value={branch.id}>{branch.name}</option>
+                    ))}
+                  </select>
+                </label>
                 <label className="attendance-employee-search">Tìm nhân viên
                   <input
                     type="search"
@@ -2324,10 +2511,13 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 <div className="attendance-correction-filter-summary">
                   <strong>{attendanceListFilteredRows.length}</strong>
                   <span>ca phù hợp</span>
-                  <small>{attendanceListMode === 'date' ? formatDate(attendanceListDate) : `${formatDate(from)}–${formatDate(to)}`}</small>
+                  <small>
+                    {attendanceListBranchId ? branchName(attendanceListBranchId) : 'Tất cả chi nhánh'} · {' '}
+                    {attendanceListMode === 'date' ? formatDate(attendanceListDate) : `${formatDate(from)}–${formatDate(to)}`}
+                  </small>
                 </div>
               </div>
-              <div className="attendance-detail-list">
+              <div className="attendance-detail-list" id="attendance-detail-list">
                 {attendanceListPageRows.map((row) => (
                   <article key={`${row.registrationId}-${row.attendanceRecordId || 'scheduled'}`}>
                     <div className="attendance-detail-date">
@@ -2351,16 +2541,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         <button
                           type="button"
                           className="mini-button attendance-edit-button"
-                          onClick={() => {
-                            setAttendanceDelete(null)
-                            setAttendanceEdit({
-                              recordId: row.attendanceRecordId!,
-                              employeeName: row.employeeName,
-                              checkInTime: toDateTimeLocalValue(row.checkInTime),
-                              checkOutTime: toDateTimeLocalValue(row.checkOutTime),
-                              reason: '',
-                            })
-                          }}
+                          onClick={() => beginAttendanceCorrection(row)}
                         >Chỉnh công</button>
                         <button
                           type="button"
@@ -2368,7 +2549,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                           onClick={() => {
                             setAttendanceEdit(null)
                             setAttendanceDelete({
+                              kind: 'record',
                               recordId: row.attendanceRecordId!,
+                              registrationId: row.registrationId,
                               employeeName: row.employeeName,
                               workDate: row.workDate,
                               reason: '',
@@ -2376,20 +2559,51 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                           }}
                         >Xóa ca</button>
                       </div>
-                    ) : <span className="attendance-no-record">Chưa có bản ghi</span>}
+                    ) : (
+                      <div className="attendance-record-actions">
+                        <span className="attendance-no-record">Chưa có bản ghi</span>
+                        <button
+                          type="button"
+                          className="mini-button attendance-delete-button"
+                          onClick={() => {
+                            setAttendanceEdit(null)
+                            setAttendanceDelete({
+                              kind: 'empty-registration',
+                              recordId: null,
+                              registrationId: row.registrationId,
+                              employeeName: row.employeeName,
+                              workDate: row.workDate,
+                              reason: '',
+                            })
+                          }}
+                        >Xóa dòng</button>
+                      </div>
+                    )}
+
+                    {row.note && (
+                      <div className="attendance-detail-note">
+                        <strong>Ghi chú bảng công</strong>
+                        <span>{row.note}</span>
+                      </div>
+                    )}
 
                     {attendanceEdit && attendanceEdit.recordId === row.attendanceRecordId && (
                       <form className="attendance-correction-form" onSubmit={saveAttendanceCorrection}>
                         <div>
                           <strong>Chỉnh công · {attendanceEdit.employeeName}</strong>
                           <small>Mọi thay đổi được lưu lịch sử và đồng bộ vào bảng lương.</small>
+                          <button
+                            type="button"
+                            className="attendance-use-schedule"
+                            onClick={() => setAttendanceEdit((current) => current ? {
+                              ...current,
+                              checkInTime: attendanceScheduledDateTimeLocal(row.workDate, row.scheduledStart),
+                              checkOutTime: attendanceScheduledDateTimeLocal(row.workDate, row.scheduledEnd, row.scheduledEnd <= row.scheduledStart),
+                            } : current)}
+                          >Dùng giờ theo ca {row.scheduledStart}–{row.scheduledEnd}</button>
                         </div>
-                        <label>Giờ vào
-                          <input type="datetime-local" value={attendanceEdit.checkInTime} onChange={(event) => setAttendanceEdit((current) => current ? { ...current, checkInTime: event.target.value } : current)} required />
-                        </label>
-                        <label>Giờ ra
-                          <input type="datetime-local" value={attendanceEdit.checkOutTime} onChange={(event) => setAttendanceEdit((current) => current ? { ...current, checkOutTime: event.target.value } : current)} required />
-                        </label>
+                        <DateTime24Field label="Giờ vào" value={attendanceEdit.checkInTime} onChange={(value) => setAttendanceEdit((current) => current ? { ...current, checkInTime: value } : current)} />
+                        <DateTime24Field label="Giờ ra" value={attendanceEdit.checkOutTime} onChange={(value) => setAttendanceEdit((current) => current ? { ...current, checkOutTime: value } : current)} />
                         <label className="attendance-correction-reason">Lý do điều chỉnh
                           <input value={attendanceEdit.reason} minLength={3} onChange={(event) => setAttendanceEdit((current) => current ? { ...current, reason: event.target.value } : current)} placeholder="Ví dụ: thiết bị lỗi không ghi nhận đúng giờ" required />
                         </label>
@@ -2400,11 +2614,15 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       </form>
                     )}
 
-                    {attendanceDelete && attendanceDelete.recordId === row.attendanceRecordId && (
+                    {attendanceDelete && attendanceDelete.registrationId === row.registrationId && (
                       <form className="attendance-delete-confirm" onSubmit={saveAttendanceDeletion}>
                         <div>
-                          <strong>Xóa ca · {attendanceDelete.employeeName}</strong>
-                          <small>Ngày {formatDate(attendanceDelete.workDate)} · Chỉ bản ghi này bị xóa; lịch đăng ký ca vẫn được giữ lại.</small>
+                          <strong>{attendanceDelete.kind === 'empty-registration' ? 'Xóa dòng' : 'Xóa ca'} · {attendanceDelete.employeeName}</strong>
+                          <small>
+                            {attendanceDelete.kind === 'empty-registration'
+                              ? `Ngày ${formatDate(attendanceDelete.workDate)} · Chỉ xóa đăng ký ca chưa có bản ghi chấm công; nhân viên, bảng công và lương không bị ảnh hưởng.`
+                              : `Ngày ${formatDate(attendanceDelete.workDate)} · Chỉ bản ghi này bị xóa; lịch đăng ký ca vẫn được giữ lại.`}
+                          </small>
                         </div>
                         <label>Lý do xóa
                           <input
@@ -2419,7 +2637,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         <div className="attendance-delete-actions">
                           <button type="button" className="secondary-button" onClick={() => setAttendanceDelete(null)} disabled={attendanceDeleteSaving}>Giữ lại</button>
                           <button type="submit" className="attendance-delete-confirm-button" disabled={attendanceDeleteSaving}>
-                            {attendanceDeleteSaving ? 'Đang xóa…' : 'Xác nhận xóa ca'}
+                            {attendanceDeleteSaving ? 'Đang xóa…' : attendanceDelete.kind === 'empty-registration' ? 'Xác nhận xóa dòng' : 'Xác nhận xóa ca'}
                           </button>
                         </div>
                       </form>
@@ -2466,7 +2684,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           {activeSection === 'commission' && (
             <section className="erp-workspace-panel commission-section">
               <div className="section-title">
-                <div><span className="eyebrow dark">KPI DOANH THU</span><h2>Tổng kết bán hàng theo nhân viên</h2></div>
+                <div><span className="eyebrow dark">KPI & XẾP HẠNG</span><h2>Thi đua nhân viên</h2></div>
                 <div className="section-actions">
                   <span className="date-chip">{commissionRows.filter((row) => row.achieved).length} người đạt KPI</span>
                   <button
@@ -2475,11 +2693,11 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     disabled={exportBusy === 'kpi-evidence'}
                     onClick={() => void runExport(
                       'kpi-evidence',
-                      competitionFilteredRows.length ? '' : 'Chưa có dữ liệu KPI phù hợp bộ lọc để xuất Excel.',
+                      competitionExportRows.length ? '' : 'Chưa có dữ liệu thi đua trong tháng phù hợp bộ lọc để xuất Excel.',
                       exportKpiEvidenceExcel,
                       'Đã xuất Excel KPI kèm bằng chứng nguồn doanh thu.',
                     )}
-                  >{exportBusy === 'kpi-evidence' ? 'Đang xuất Excel…' : 'Xuất Excel bằng chứng'}</button>
+                  >{exportBusy === 'kpi-evidence' ? 'Đang xuất Excel…' : 'Xuất Excel ngày & tháng'}</button>
                   <button type="button" className="secondary-button" disabled={exportBusy === 'competition-image'} onClick={() => void exportCompetitionImage()}>
                     {exportBusy === 'competition-image' ? 'Đang xuất…' : 'Xuất ảnh thi đua'}
                   </button>
@@ -2616,125 +2834,25 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
             </section>
           )}
 
-          {/* ===== BẢNG LƯƠNG (khôi phục §27 Phase 4: đồng bộ bảng công → lương) ===== */}
-          {activeSection === 'payroll' && (
-            <section className="erp-workspace-panel payroll-section">
-              <div className="section-title">
-                <div><span className="eyebrow dark">BẢNG LƯƠNG</span><h2>Lương tháng {formatMonthLabel(payrollPeriod)}</h2></div>
-                <div className="section-actions">
-                  <label className="payroll-month-pick">Kỳ lương
-                    <input type="month" value={payrollPeriod} onChange={(event) => setPayrollMonth(event.target.value)} />
-                  </label>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => void runExport(
-                      'payroll',
-                      payrollRows.length ? '' : 'Chưa có dữ liệu lương trong kỳ hiện tại để tải CSV.',
-                      exportPayroll,
-                      'Đã tải CSV bảng lương.',
-                    )}
-                    disabled={exportBusy === 'payroll'}
-                  >{exportBusy === 'payroll' ? 'Đang tải…' : 'Tải CSV'}</button>
-                </div>
-              </div>
-              <div className="payroll-summary-grid">
-                <article><span>Lương công</span><strong>{formatMoney(payrollTotals.basePay)}</strong></article>
-                <article><span>Thưởng KPI</span><strong>{formatMoney(payrollTotals.commission)}</strong></article>
-                <article><span>Thưởng / trừ</span><strong>{formatMoney(payrollTotals.bonus - payrollTotals.deduction)}</strong></article>
-                <article className="total"><span>Thực nhận</span><strong>{formatMoney(payrollTotals.grossPay)}</strong></article>
-              </div>
-
-              <div className="payroll-defaults">
-                <div className="payroll-defaults-head">
-                  <strong>Lương mặc định theo vai trò</strong>
-                  <span>áp dụng khi không nhập riêng cho từng người</span>
-                </div>
-                {payrollRoleSlots.length ? (
-                  <div className="payroll-default-grid">
-                    {payrollRoleSlots.map((slot) => {
-                      const key = roleSlotKey(slot.branchId, slot.role)
-                      const draft = roleDefaultDrafts[key] || { hourlyRate: '', fixedSalary: '' }
-                      return (
-                        <article key={key}>
-                          <strong>{branchName(slot.branchId)} · {roleLabel(slot.role)}</strong>
-                          <label>Lương giờ
-                            <input inputMode="numeric" value={draft.hourlyRate} placeholder="0"
-                              onChange={(event) => updateRoleDefaultDraft(slot.branchId, slot.role, { hourlyRate: cleanMoneyInput(event.target.value) })} />
-                          </label>
-                          <label>Lương cứng / tháng
-                            <input inputMode="numeric" value={draft.fixedSalary} placeholder="0"
-                              onChange={(event) => updateRoleDefaultDraft(slot.branchId, slot.role, { fixedSalary: cleanMoneyInput(event.target.value) })} />
-                          </label>
-                        </article>
-                      )
-                    })}
-                  </div>
-                ) : <p className="empty-copy">Chưa có nhân viên (ngoài admin/bếp) trong bộ lọc để đặt lương.</p>}
-              </div>
-
-              <div className="adm-list payroll-card-list">
-                {payrollRows.map((row) => (
-                  <article className="adm-row payroll-card" key={row.employeeKey}>
-                    <div className="adm-row-head">
-                      <div className="adm-row-id"><strong>{row.employeeName}</strong><small>{branchName(row.branchId)} · {row.positionTitle}</small></div>
-                      <div className="adm-row-hero"><b className="adm-hero-money">{formatMoney(row.grossPay)}</b><span>thực nhận</span></div>
-                    </div>
-                    <div className="adm-metrics">
-                      <span><i>Công</i><b>{formatDecimalHoursAsDuration(row.totalHours)}</b></span>
-                      <span><i>Ngày · ca</i><b>{formatNumber(row.workDays)} · {row.totalShifts}</b></span>
-                      <span><i>Lương công</i><b>{formatMoney(row.basePay)}</b></span>
-                      <span className="ok"><i>Thưởng KPI</i><b>{formatMoney(row.dailyBonus + row.weeklyBonus)}</b></span>
-                      <span><i>Ngày đạt KPI</i><b>{row.achievedDays} ngày · {formatNumber(row.kpiProgress)}%</b></span>
-                    </div>
-                    <p className="payroll-basepay-formula">
-                      {row.fixedSalary > 0
-                        ? <>Lương công = lương cứng <b>{formatMoney(row.fixedSalary)}</b></>
-                        : <>Lương công = <b>{formatDecimalHoursAsDuration(row.totalHours)}</b> (<b>{formatNumber(row.totalHours)}</b> giờ thập phân) × <b>{formatMoney(row.hourlyRate)}</b>/giờ = <b>{formatMoney(row.basePay)}</b></>}
-                    </p>
-                    <div className="payroll-bonus-breakdown">
-                      <span>KPI <b>{formatNumber(row.kpiProgress)}% · {row.achievedDays} ngày đạt</b></span>
-                      <span>Ngày <b>{formatMoney(row.dailyBonus)}</b></span>
-                      <span>Tuần <b>{formatMoney(row.weeklyBonus)}</b></span>
-                    </div>
-                    <div className="payroll-inputs">
-                      <label>Lương giờ
-                        <input className="payroll-money-input" inputMode="numeric" value={row.draft.hourlyRate}
-                          placeholder={row.roleHourlyDefault ? `MĐ ${formatNumber(row.roleHourlyDefault)}` : '0'}
-                          onChange={(event) => updatePayrollDraft(row.employeeKey, { hourlyRate: cleanMoneyInput(event.target.value) })} />
-                      </label>
-                      <label>Lương cứng
-                        <input className="payroll-money-input" inputMode="numeric" value={row.draft.fixedSalary}
-                          placeholder={row.roleFixedDefault ? `MĐ ${formatNumber(row.roleFixedDefault)}` : '0'}
-                          onChange={(event) => updatePayrollDraft(row.employeeKey, { fixedSalary: cleanMoneyInput(event.target.value) })} />
-                      </label>
-                      <label>Thưởng
-                        <input className="payroll-money-input" inputMode="numeric" value={row.draft.bonus} placeholder="0"
-                          onChange={(event) => updatePayrollDraft(row.employeeKey, { bonus: cleanMoneyInput(event.target.value) })} />
-                      </label>
-                      <label>Trừ
-                        <input className="payroll-money-input" inputMode="numeric" value={row.draft.deduction} placeholder="0"
-                          onChange={(event) => updatePayrollDraft(row.employeeKey, { deduction: cleanMoneyInput(event.target.value) })} />
-                      </label>
-                      <label className="wide">Ghi chú
-                        <input className="payroll-note-input" value={row.draft.note} placeholder="Ứng lương, thưởng KPI..."
-                          onChange={(event) => updatePayrollDraft(row.employeeKey, { note: event.target.value })} />
-                      </label>
-                    </div>
-                  </article>
-                ))}
-                {!payrollRows.length && <p className="empty-copy">Chưa có nhân viên phù hợp bộ lọc để lập bảng lương.</p>}
-              </div>
-              <p className="commission-note">Lương được lưu theo <b>từng tháng</b> và đồng bộ nhiều thiết bị (Supabase; tạm lưu trên máy nếu chưa chạy migration). Bảng công và thưởng KPI lấy tự động theo kỳ lương. Lương công = lương cứng nếu có, ngược lại = giờ công × lương giờ.</p>
-            </section>
-          )}
-
-          {/* ===== CHI TIẾT KPI THEO NGÀY (nguồn thưởng cộng vào bảng lương ở trên) ===== */}
-          {activeSection === 'payroll' && (
+          {/* ===== CHI TIẾT KPI THEO NGÀY (đặt trong Thi đua sau khi bỏ bảng lương) ===== */}
+          {activeSection === 'commission' && (
             <section className="erp-workspace-panel payroll-section">
               <div className="section-title">
                 <div><span className="eyebrow dark">CHI TIẾT KPI THEO NGÀY</span><h2>KPI & thưởng theo ngày</h2></div>
-                <span className="date-chip">{dailyKpiRows.length} dòng KPI</span>
+                <div className="section-actions">
+                  <span className="date-chip">{dailyKpiRows.length} dòng KPI</span>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={exportBusy === 'kpi-daily'}
+                    onClick={() => void runExport(
+                      'kpi-daily',
+                      dailyKpiRows.length ? '' : 'Chưa có dữ liệu KPI theo ngày trong bộ lọc hiện tại để xuất Excel.',
+                      exportDailyKpiExcel,
+                      'Đã xuất Excel KPI theo ngày gồm doanh thu và tiền thưởng.',
+                    )}
+                  >{exportBusy === 'kpi-daily' ? 'Đang xuất Excel…' : 'Xuất Excel KPI theo ngày'}</button>
+                </div>
               </div>
               <div className="kpi-reading-guide">
                 <strong>Cách đọc KPI</strong>
@@ -2784,7 +2902,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 </table>
               </div>
               {!dailyKpiRows.length && <p className="empty-copy">Chưa có doanh thu KPI trong khoảng đã chọn.</p>}
-              <p className="commission-note">Thưởng KPI theo ngày ở bảng này được cộng tự động vào cột Thưởng KPI của bảng lương phía trên.</p>
+              <p className="commission-note">Thưởng KPI theo ngày dùng chung công thức với sheet "KPI theo tên từng ngày" trong file Excel bảng công.</p>
             </section>
           )}
 
@@ -2878,6 +2996,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       <div><span>Nhập trong kỳ</span><b>{inventoryDetailSummary.inboundSummary}</b></div>
                       <div><span>Xuất trong kỳ</span><b>{inventoryDetailSummary.outboundSummary}</b></div>
                       <div className={inventoryDetailSummary.lossQty ? 'danger' : ''}><span>Hao hụt</span><b>{inventoryDetailSummary.lossSummary}</b></div>
+                      <div><span>Sửa tồn trong kỳ</span><b>{inventoryDetailSummary.adjustSummary}</b></div>
                     </div>
 
                     <div className="inventory-branch-detail-content">
@@ -2974,7 +3093,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         <summary>Chi tiết đối chiếu theo SKU</summary>
                         <div className="inventory-shift-reconciliation-lines">
                           <div className="inventory-shift-reconciliation-line head">
-                            <span>Sản phẩm nguồn</span><span>Tồn đầu</span><span>Nhập thêm</span><span>POS quy đổi</span>
+                            <span>Sản phẩm nguồn</span><span>Tồn đầu</span><span>Nhập thêm</span><span>Sửa tồn</span><span>POS quy đổi</span>
                             <span>Hao hụt</span><span>Tồn cuối</span><span>Out</span><span>Lệch</span>
                           </div>
                           {row.lines.map((line) => (
@@ -2982,6 +3101,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                               <span data-label="Sản phẩm nguồn"><strong>{line.productName}</strong><small>{line.sku}</small></span>
                               <span data-label="Tồn đầu">{formatInventoryQuantity(line.opening, line.unit)}</span>
                               <span data-label="Nhập thêm">{formatInventoryQuantity(line.additions, line.unit)}</span>
+                              <span data-label="Sửa tồn">{line.adjust ? formatInventoryDelta(line.adjust, line.unit) : '—'}</span>
                               <span data-label="POS quy đổi">{formatInventoryQuantity(line.posEquivalent, line.unit)}</span>
                               <span data-label="Hao hụt">{formatInventoryQuantity(line.waste, line.unit)}</span>
                               <span data-label="Tồn cuối">{line.closing === null ? 'Chưa bàn giao' : formatInventoryQuantity(line.closing, line.unit)}</span>
@@ -3038,17 +3158,14 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           {activeSection === 'requests' && (
             <section className="erp-workspace-panel admin-requests-workspace">
               <div className="section-title">
-                <div><span className="eyebrow dark">YÊU CẦU NHẬP HÀNG</span><h2>Báo đặt hàng từ ca trưởng</h2></div>
+                <div><span className="eyebrow dark">YÊU CẦU NHẬP HÀNG</span><h2>Đơn đặt hàng từ các chi nhánh</h2></div>
                 <div className="section-actions">
-                  <button className="secondary-button" onClick={() => setShowSupplyReport((value) => !value)}>
-                    {showSupplyReport ? 'Ẩn báo cáo' : 'Xem báo cáo'}
-                  </button>
                   <button
                     type="button"
                     className="primary-button"
                     onClick={() => void runExport(
                       'supply',
-                      rangeSupplyRequests.length ? '' : 'Chưa có yêu cầu đặt hàng trong bộ lọc hiện tại để xuất Excel.',
+                      filteredSupplyRequests.length ? '' : 'Chưa có yêu cầu đặt hàng trong bộ lọc hiện tại để xuất Excel.',
                       exportSupplyReportExcel,
                       'Đã xuất Excel danh sách đặt hàng.',
                     )}
@@ -3057,40 +3174,43 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   <span className="date-chip">{pendingRequests} chờ duyệt</span>
                 </div>
               </div>
-              <p className="admin-readonly-note">Admin chỉ theo dõi, lọc và xuất danh sách; không đặt hàng hoặc đổi trạng thái đơn tại màn này.</p>
-              {showSupplyReport && (
-                <div className="adm-list">
-                  {rangeSupplyRequests.map((req) => (
-                    <article className="adm-row" key={`report-${req.id}`}>
-                      <div className="adm-row-head">
-                        <div className="adm-row-id"><strong>{req.productName}</strong><small>{branchName(req.branchId)} · {req.requestedByName} · {formatDate(req.createdAt.slice(0, 10))}</small></div>
-                        <div className="adm-row-hero"><b>{req.quantity}</b><span>{req.unit}</span></div>
-                      </div>
-                      <div className="adm-metrics">
-                        <span><i>Trạng thái</i><b>{supplyStatusLabel(req.status)}</b></span>
-                        <span style={{ flex: '2 1 140px' }}><i>Ghi chú</i><b>{req.note || '-'}</b></span>
-                      </div>
-                    </article>
-                  ))}
-                  {!rangeSupplyRequests.length && <p className="empty-copy">Chưa có yêu cầu đặt hàng nào trong bộ lọc này.</p>}
-                </div>
-              )}
-              <div className="supply-request-list">
-                {supplyRequests.map((req) => (
-                  <div key={req.id} className={`supply-request-item${req.status === 'pending' ? ' pending' : ''}`}>
-                    <span className="supply-request-icon">↑</span>
-                    <span>
-                      <strong>{req.productName} · {req.quantity} {req.unit}</strong>
-                      <small>{branchName(req.branchId)} · {req.requestedByName} · {formatDate(req.createdAt.slice(0, 10))}{req.note ? ` · "${req.note}"` : ''}</small>
-                    </span>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
-                      <span className={`supply-status-badge ${req.status}`}>
-                        {req.status === 'pending' ? 'Chờ duyệt' : req.status === 'acknowledged' ? 'Đã nhận' : req.status === 'cancelled' ? 'Đã hủy' : 'Hoàn thành'}
-                      </span>
-                    </div>
-                  </div>
+              <p className="admin-readonly-note">Admin chỉ theo dõi, lọc và xuất danh sách; không đặt hàng hoặc đổi trạng thái đơn tại màn này. Đơn do ca trưởng tại chi nhánh gửi lên.</p>
+              {/* Lọc theo chi nhánh và khoảng ngày dùng chung thanh lọc ở đầu trang Quản trị.
+                  Tab dưới đây lọc thêm theo trạng thái; danh sách và Excel dùng CHUNG một tập đã lọc. */}
+              <nav className="supply-status-tabs" aria-label="Lọc theo trạng thái đơn">
+                {SUPPLY_STATUS_TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    className={supplyStatusFilter === tab.id ? 'active' : ''}
+                    onClick={() => setSupplyStatusFilter(tab.id)}
+                  >{tab.label}<b>{supplyStatusCounts[tab.id]}</b></button>
                 ))}
-                {!supplyRequests.length && <p className="empty-copy">Chưa có yêu cầu đặt hàng nào.</p>}
+              </nav>
+              <div className="supply-branch-groups">
+                {supplyRequestsByBranch.map((group) => (
+                  <details className="supply-branch-group" key={group.branchId} open>
+                    <summary>
+                      <span><strong>{branchName(group.branchId) || group.branchId}</strong><small>{group.requests.length} đơn</small></span>
+                      <b>{group.requests.filter((req) => req.status === 'pending').length || '✓'}</b>
+                    </summary>
+                    <div className="supply-request-list">
+                      {group.requests.map((req) => (
+                        <div key={req.id} className={`supply-request-item${req.status === 'pending' ? ' pending' : ''}`}>
+                          <span className="supply-request-icon">↑</span>
+                          <span>
+                            <strong>{req.productName} · {formatNumber(req.quantity)} {req.unit}</strong>
+                            <small>{req.requestedByName} · {formatDate(req.createdAt.slice(0, 10))}{req.note ? ` · "${req.note}"` : ''}</small>
+                          </span>
+                          <span className="supply-request-tail">
+                            <span className={`supply-status-badge ${req.status}`}>{supplyStatusLabel(req.status)}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ))}
+                {!filteredSupplyRequests.length && <p className="empty-copy">Chưa có yêu cầu đặt hàng nào khớp bộ lọc hiện tại.</p>}
               </div>
             </section>
           )}
@@ -3296,7 +3416,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         ['overview', 'Tổng quan'],
                         ['attendance', 'Chấm công'],
                         ['sales', 'Doanh số'],
-                        ['payroll', 'Lương thưởng'],
                         ['account', 'Tài khoản'],
                       ] as const).map(([id, label]) => (
                         <button type="button" key={id} className={employeeProfileTab === id ? 'active' : ''} onClick={() => navigateAdminHash(`/admin/employees/${encodeURIComponent(crmEmployeeId)}/${id}`)}>{label}</button>
@@ -3372,27 +3491,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                           {employeeCrmDraft.employmentStatus === 'ended' && <label>Ngày nghỉ việc<input type="date" required value={employeeCrmDraft.employmentEndDate} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, employmentEndDate: event.target.value })} /></label>}
                           <label className="wide">Ghi chú quản lý<textarea value={employeeCrmDraft.employmentNote} maxLength={2000} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, employmentNote: event.target.value })} /></label>
                           <button type="button" className="primary-button" disabled={employeeCrmSaving} onClick={() => void saveEmployeeCrm(employee)}>{employeeCrmSaving ? 'Đang lưu…' : 'Lưu trạng thái việc làm'}</button>
-                        </div>
-                      </section>
-                    </div>}
-                    {employeeProfileTab === 'payroll' && <div className="admin-crm-history-grid single">
-                      <section className="admin-crm-profile-panel">
-                        <div className="admin-crm-subtitle"><strong>Lịch sử bảng lương</strong><small>Tối đa 36 tháng từ cấu hình lương đã lưu; lương theo giờ chỉ hiển thị đơn giá, không suy đoán tiền thực nhận.</small></div>
-                        <div className="admin-crm-history-list">
-                          {employeePayrollHistory.map((entry) => {
-                            const fixedSalary = entry.fixedSalary || 0
-                            const configuredTotal = fixedSalary + entry.bonus - entry.deduction
-                            return <article key={entry.period}>
-                              <span><b>Tháng {entry.period.slice(5)}/{entry.period.slice(0, 4)}</b><small>{entry.note || 'Bảng lương đã lưu'}</small></span>
-                              <span>
-                                <strong>{entry.fixedSalary !== null ? formatMoney(configuredTotal) : `${formatMoney(entry.hourlyRate || 0)}/giờ`}</strong>
-                                <small>{entry.fixedSalary !== null
-                                  ? `Lương cố định ${formatMoney(fixedSalary)} · Thưởng ${formatMoney(entry.bonus)} · Trừ ${formatMoney(entry.deduction)}`
-                                  : `Đơn giá theo giờ · Thưởng ${formatMoney(entry.bonus)} · Trừ ${formatMoney(entry.deduction)}`}</small>
-                              </span>
-                            </article>
-                          })}
-                          {!employeePayrollHistory.length && <p className="empty-copy">Chưa có bảng lương tháng đã lưu cho nhân viên này.</p>}
                         </div>
                       </section>
                     </div>}
@@ -3815,7 +3913,7 @@ function buildCompetitionSourcesByRow(
           sourceCode: source.receipt.code || '',
           shiftLabel: `Ca ${source.sessionSequence}`,
           detail: `Ca ${source.sessionSequence} · ${receiptLineSummary(source.receipt.lines)}`,
-          meta: `${source.receipt.sellerName} · ${paymentMethodLabel(source.receipt.paymentMethod)}`,
+          meta: source.receipt.sellerName,
         }))
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
       result.set(competitionRowKey(row), sources)
@@ -3842,7 +3940,7 @@ function buildCompetitionSourcesByRow(
           sourceCode: '',
           shiftLabel: '',
           detail: productById(source.allocation.productId)?.name || source.allocation.productId,
-          meta: `Mã nguồn ${source.allocation.id}`,
+          meta: 'Phiếu giao túi đã chốt',
         }
       : {
           id: source.id,
@@ -3855,7 +3953,7 @@ function buildCompetitionSourcesByRow(
           sourceCode: source.receipt.code || '',
           shiftLabel: '',
           detail: receiptLineSummary(source.directLines),
-          meta: `Bán trực tiếp · ${paymentMethodLabel(source.receipt.paymentMethod)}`,
+          meta: 'Bán trực tiếp',
         })
     result.set(competitionRowKey(row), sources)
   })
@@ -3870,12 +3968,6 @@ function receiptLineSummary(lines: SalesReceipt['lines']) {
   return lines.length
     ? lines.map((line) => `${formatNumber(line.quantity)} × ${line.productName}`).join(', ')
     : 'Hóa đơn không có dòng sản phẩm'
-}
-
-function paymentMethodLabel(method: SalesReceipt['paymentMethod']) {
-  if (method === 'qr') return 'QR/chuyển khoản'
-  if (method === 'card') return 'Thẻ'
-  return 'Tiền mặt'
 }
 
 function EmployeeCompetitionPoster({
@@ -4147,65 +4239,6 @@ function buildDailyEmployeeKpiRows(
     .sort((a, b) => b.date.localeCompare(a.date) || branchName(a.branchId).localeCompare(branchName(b.branchId), 'vi') || b.revenue - a.revenue)
 }
 
-function buildPayrollRows(
-  employees: EmployeeProfile[],
-  attendanceRows: ReturnType<typeof buildAttendanceReport>,
-  commissionRows: ReturnType<typeof buildCommissionRows>,
-  drafts: Record<string, PayrollDraft>,
-  roleDefaults: Record<string, RoleSalaryDefault>,
-) {
-  return employees.filter((employee) => PAYROLL_ROLES.includes(employee.role)).map((employee) => {
-    const employeeKey = employee.id
-    const attendance = attendanceRows.find((row) =>
-      row.userId === employee.id
-      || (normalizeName(row.employeeName) === normalizeName(employee.name) && row.branchId === employee.branchId),
-    )
-    const commission = commissionRows.find((row) =>
-      row.employeeKey === employee.id
-      || (normalizeName(row.employeeName) === normalizeName(employee.name) && row.branchId === employee.branchId),
-    )
-    const draft = { ...emptyPayrollDraft, ...(drafts[employeeKey] || {}) }
-    const def = roleDefaults[roleSlotKey(employee.branchId || '', employee.role)]
-    // Lương hiệu lực: ưu tiên số nhập riêng cho người này, nếu trống dùng lương mặc định theo vai trò.
-    const hourlyRate = draft.hourlyRate.trim() !== '' ? parseMoney(draft.hourlyRate) : (def?.hourlyRate || 0)
-    const fixedSalary = draft.fixedSalary.trim() !== '' ? parseMoney(draft.fixedSalary) : (def?.fixedSalary || 0)
-    const bonus = parseMoney(draft.bonus)
-    const deduction = parseMoney(draft.deduction)
-    const totalHours = attendance?.totalHours || 0
-    const basePay = fixedSalary > 0 ? fixedSalary : Math.round(totalHours * hourlyRate)
-    const commissionPay = commission?.commission || 0
-    const dailyBonus = commission?.dailyBonus || 0
-    const weeklyBonus = commission?.weeklyBonus || 0
-    const monthlyBonus = commission?.monthlyBonus || 0
-    return {
-      employeeKey,
-      employeeName: employee.name,
-      branchId: employee.branchId || '',
-      positionTitle: employee.positionTitle || roleLabel(employee.role),
-      role: employee.role,
-      totalShifts: attendance?.totalShifts || 0,
-      totalHours,
-      workDays: attendance?.workDays || 0,
-      hourlyRate,
-      fixedSalary,
-      roleHourlyDefault: def?.hourlyRate || 0,
-      roleFixedDefault: def?.fixedSalary || 0,
-      basePay,
-      commission: commissionPay,
-      dailyBonus,
-      weeklyBonus,
-      monthlyBonus,
-      kpiProgress: commission?.progress || 0,
-      achievedDays: commission?.achievedDays || 0,
-      bonus,
-      deduction,
-      grossPay: basePay + commissionPay + bonus - deduction,
-      note: draft.note,
-      draft,
-    }
-  }).sort((a, b) => branchName(a.branchId).localeCompare(branchName(b.branchId), 'vi') || a.employeeName.localeCompare(b.employeeName, 'vi'))
-}
-
 function buildCompetitionRows(
   commissionRows: ReturnType<typeof buildCommissionRows>,
   attendanceRecords: AttendanceRecord[],
@@ -4285,12 +4318,19 @@ function buildCompetitionRows(
     )
 }
 
+/**
+ * Số lượng kho ở màn quản trị PHẢI đọc y hệt màn Kho của ca trưởng: cùng 3 chữ
+ * số lẻ như `stock_movements.quantity` numeric(14,3), cùng cách viết số tiếng
+ * Việt. Bản cũ tự làm tròn riêng (4 số lẻ cho kg, 2 cho đơn vị khác, dấu nhóm
+ * hàng nghìn đổi thành khoảng trắng) nên cùng một tồn mà hai màn ra hai con số.
+ */
 function formatInventoryQuantity(value: number, unit: string) {
-  const normalized = Math.abs(value) < 0.00005 ? 0 : value
-  if (unit === 'kg' && normalized !== 0 && Math.abs(normalized) < 1) {
-    return `${formatInventoryDecimal(normalized * 1000, 2)} g`
-  }
-  return `${formatInventoryDecimal(normalized, unit === 'kg' ? 4 : 2)} ${unit}`.trim()
+  return formatStockAmount(value, unit)
+}
+
+/** Điều chỉnh tồn phải thấy rõ dấu: "+2,5 kg" khác hẳn "−2,5 kg". */
+function formatInventoryDelta(value: number, unit: string) {
+  return `${value > 0 ? '+' : ''}${formatStockAmount(value, unit)}`
 }
 
 function formatInventoryDecimal(value: number, maximumFractionDigits: number) {
@@ -4337,6 +4377,16 @@ function buildShiftInventoryReconciliation(
     }))
   })
   const additionTypes = new Set<StockMovement['type']>(['opening', 'inbound', 'processing_in', 'packing_in', 'adjustment'])
+  // Điều chỉnh tồn phải tính theo TỪNG chi nhánh (tồn cộng dồn của cùng một SKU
+  // ở hai chi nhánh là hai sổ khác nhau) và chỉ tính MỘT lần cho cả bảng.
+  const movementsByBranch = new Map<string, StockMovement[]>()
+  for (const movement of movements) {
+    const bucket = movementsByBranch.get(movement.branchId)
+    if (bucket) bucket.push(movement)
+    else movementsByBranch.set(movement.branchId, [movement])
+  }
+  const adjustmentsByBranch = new Map<string, StockAdjustment[]>()
+  for (const [branchId, rows] of movementsByBranch) adjustmentsByBranch.set(branchId, stockAdjustmentDeltas(rows))
 
   return sessions
     .filter((session) =>
@@ -4360,6 +4410,15 @@ function buildShiftInventoryReconciliation(
         if (movement.branchId !== session.branchId || movement.shiftDate !== session.businessDate) return false
         const movementMs = Date.parse(movement.createdAt)
         return Number.isFinite(movementMs) && movementMs >= startMs && movementMs <= endMs
+      })
+      // Phiếu sửa tồn ghi GIỮA ca. Loại phiếu kiểm đếm cuối ca (`documentId` =
+      // id phiên) vì số của nó chính là `closing` — cộng vào đây là tự triệt
+      // tiêu đúng phần lệch mà bảng này sinh ra để soi.
+      const sessionAdjustments = (adjustmentsByBranch.get(session.branchId) || []).filter((item) => {
+        if (item.movement.shiftDate !== session.businessDate) return false
+        if (item.movement.documentId === session.id) return false
+        const stampMs = Date.parse(item.movement.createdAt)
+        return Number.isFinite(stampMs) && stampMs >= startMs && stampMs <= endMs
       })
       const openingBalances = session.openingBalances || {}
       const closingBalances = session.closingBalances || {}
@@ -4398,7 +4457,13 @@ function buildShiftInventoryReconciliation(
             .reduce((sum, movement) => sum + movement.quantity, 0)
           const closing = isOfficial && trackedByHandover ? Number(closingBalances[productId] || 0) : null
           const posEquivalent = posBySource.get(productId) || 0
-          const officialOut = closing === null ? null : opening + additions - closing - waste
+          // Sửa tồn giữa ca là một khoản tăng/giảm THẬT của sổ, không phải hàng
+          // bán ra. Thiếu nó thì "Out chính thức" gánh luôn phần chênh và bảng
+          // báo lệch POS oan đúng bằng số đã sửa.
+          const adjust = sessionAdjustments
+            .filter((item) => item.movement.productId === productId)
+            .reduce((sum, item) => sum + item.delta, 0)
+          const officialOut = closing === null ? null : opening + additions + adjust - closing - waste
           const difference = officialOut === null ? null : officialOut - posEquivalent
           return {
             productId,
@@ -4408,6 +4473,7 @@ function buildShiftInventoryReconciliation(
             trackedByHandover,
             opening,
             additions,
+            adjust,
             posEquivalent,
             waste,
             closing,
@@ -4528,12 +4594,21 @@ function inventoryCategoryLabel(category: Product['category']) {
   return 'Bao bì'
 }
 
+/**
+ * Sổ kho theo kỳ. Phải có cột ĐIỀU CHỈNH: phiếu kiểm kê / sửa tồn ghi movement
+ * `count` — nó đặt lại tồn nên có mặt trong `opening`/`closing`, nhưng không
+ * thuộc cột Nhập lẫn cột Xuất. Thiếu cột này thì sau mỗi lần ca trưởng sửa tồn,
+ * "Tồn đầu + Nhập − Xuất − Hao" không ra "Tồn cuối" và bảng trông như sai số.
+ */
 function buildInventoryRows(movements: StockMovement[], branchIds: string[], from: string, to: string) {
   return branchIds.flatMap((branchId) => {
     const branchMovements = movements.filter((item) => item.branchId === branchId)
     const openingStock = new Map(calculateStock(branchMovements.filter((item) => item.shiftDate < from)).map((line) => [line.product.id, line.expected]))
     const closingStock = new Map(calculateStock(branchMovements.filter((item) => item.shiftDate <= to)).map((line) => [line.product.id, line.expected]))
     const period = branchMovements.filter((item) => item.shiftDate >= from && item.shiftDate <= to)
+    // Delta tính trên TOÀN BỘ lịch sử chi nhánh (hiệu so với tồn cộng dồn ngay
+    // trước phiếu), lọc về kỳ đang xem sau.
+    const adjustments = stockAdjustmentDeltas(branchMovements)
     return getProducts().map((product) => {
       const rows = period.filter((item) => item.productId === product.id)
       const inbound = rows.filter((item) => ['opening', 'inbound', 'processing_in', 'packing_in'].includes(item.type))
@@ -4542,6 +4617,7 @@ function buildInventoryRows(movements: StockMovement[], branchIds: string[], fro
       const outbound = rows.filter((item) => ['processing_out', 'packing_out', 'sale_out'].includes(item.type))
         .reduce((sum, item) => sum + item.quantity, 0)
       const waste = rows.filter((item) => item.type === 'waste').reduce((sum, item) => sum + item.quantity, 0)
+      const adjust = sumStockAdjustments(adjustments, { productId: product.id, from, to })
       return {
         branchId,
         product,
@@ -4549,9 +4625,10 @@ function buildInventoryRows(movements: StockMovement[], branchIds: string[], fro
         inbound,
         outbound,
         waste,
+        adjust,
         closing: closingStock.get(product.id) || 0,
       }
-    }).filter((row) => row.opening || row.inbound || row.outbound || row.waste || row.closing)
+    }).filter((row) => row.opening || row.inbound || row.outbound || row.waste || row.adjust || row.closing)
   })
 }
 
@@ -5100,6 +5177,21 @@ function toDateTimeLocalValue(value?: string) {
   if (Number.isNaN(date.getTime())) return ''
   const offset = date.getTimezoneOffset() * 60000
   return new Date(date.getTime() - offset).toISOString().slice(0, 16)
+}
+
+function attendanceScheduledDateTimeLocal(workDate: string, time: string, nextDay = false) {
+  const date = nextDay ? addDateKeyDays(workDate, 1) : workDate
+  return `${date}T${time.slice(0, 5)}`
+}
+
+function addDateKeyDays(dateKey: string, amount: number) {
+  const [year, month, day] = dateKey.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + amount)).toISOString().slice(0, 10)
+}
+function shiftMonthKey(monthKey: string, amount: number) {
+  const [year, month] = monthKey.split('-').map(Number)
+  const shifted = new Date(Date.UTC(year, month - 1 + amount, 1))
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}`
 }
 function attendanceDetailStatus(status: 'completed' | 'working' | 'absent' | 'scheduled') {
   return ({ completed: 'Đã hoàn thành', working: 'Đang làm', absent: 'Vắng', scheduled: 'Chưa tới ca' })[status]

@@ -3,9 +3,12 @@ import { buildOperationalReportPatch, mergeBagSalesIntoReportState } from '../li
 import { DEFAULT_REVENUE_TARGET, dailyKpiBonus, employeeKpiKey, employeePeriodRevenueTarget, employeeRevenueTarget, fetchEmployeeKpiTargets, kpiRank, productSaleValues, summarizeEmployeeBagSales } from '../lib/commission'
 import { PRODUCTS, productById as catalogProductById } from '../lib/constants'
 import { branchName as configuredBranchName } from '../lib/branches'
-import { calculateStock, ensureOperationDay, fetchReportSnapshots, finalizeDailyReport, getOperationDay, saveShiftReportSnapshot } from '../lib/store'
+import { calculateStock, ensureOperationDay, fetchReportSnapshots, finalizeDailyReport, getOperationDay, saveShiftReportSnapshot, stockAdjustmentDeltas } from '../lib/store'
+import { formatQuantity } from '../lib/inventoryEntry'
 import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
-import { fetchBagAllocations, fetchBagShiftSessions, latestOwnedBagShiftSession } from '../lib/shiftLedger'
+import { fetchBagAllocations, fetchBagShiftSessions, latestOwnedBagShiftSession, ownsBagShiftSession } from '../lib/shiftLedger'
+import { sessionScopeWindow, timestampInScopeWindow } from '../lib/shiftReportScope'
+import { clearHandoverReportRequest, readHandoverReportRequest, writeHandoverReportRequest, type HandoverReportRequest } from '../lib/handoverReportRequest'
 import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { localDateKey } from '../lib/dates'
@@ -118,6 +121,18 @@ interface WasteReportRow {
   sourceName: string
 }
 
+/** Một dòng phiếu SỬA TỒN / kiểm kê trong ngày: sổ được đặt lại bao nhiêu, lệch bao nhiêu. */
+interface StockAdjustmentReportRow {
+  id: string
+  productName: string
+  unit: string
+  /** Số tồn khai lại. */
+  quantity: number
+  /** Số khai − tồn hệ thống ngay trước phiếu. */
+  delta: number
+  note: string
+}
+
 interface StockReportRow {
   productId: string
   name: string
@@ -185,6 +200,7 @@ interface DailyReportModel {
   productRows: ProductReportRow[]
   employeeRows: EmployeeReportRow[]
   wasteRows: WasteReportRow[]
+  adjustmentRows: StockAdjustmentReportRow[]
   stockRows: StockReportRow[]
   bagShiftSummary: ReturnType<typeof buildBagShiftSummary>
   proofImages: ProofImage[]
@@ -197,33 +213,6 @@ interface ReportLedgerData {
   records: AttendanceRecord[]
   receipts: SalesReceipt[]
   snapshots: ReportSnapshot[]
-}
-
-interface HandoverReportRequest {
-  shiftId: string
-  sequence: number
-  businessDate: string
-}
-
-function readHandoverReportRequest(): HandoverReportRequest | null {
-  try {
-    const raw = window.sessionStorage.getItem('gustino:handover-report')
-    if (!raw) return null
-    const value = JSON.parse(raw)
-    if (!value?.shiftId || !value?.businessDate || ![1, 2].includes(Number(value.sequence))) return null
-    return { shiftId: String(value.shiftId), sequence: Number(value.sequence), businessDate: String(value.businessDate) }
-  } catch {
-    return null
-  }
-}
-
-function clearHandoverReportRequest() {
-  try {
-    window.sessionStorage.removeItem('gustino:handover-report')
-  } catch {
-    // Storage can be unavailable in a private mobile browser. The manual
-    // finalize action remains available in that case.
-  }
 }
 
 export function ReportPage({ user, movements, onRefresh }: Props) {
@@ -249,7 +238,25 @@ const [shiftRegistrations, setShiftRegistrations] = useState<ShiftRegistration[]
   const [reportSnapshot, setReportSnapshot] = useState<ReportSnapshot | null>(null)
   const [handoverReportRequest, setHandoverReportRequest] = useState<HandoverReportRequest | null>(() => readHandoverReportRequest())
   const automaticFinalizeAttemptRef = useRef('')
-  const businessDate = localDateKey()
+  /** Số lần tự gửi LẠI ảnh còn thiếu trong lần mở màn này (chặn lặp vô hạn). */
+  const automaticResendAttemptRef = useRef(0)
+  /** Poster ẩn chưa render xong thì hẹn thử lại thay vì bỏ qua im lặng (gốc lỗi "quên gửi"). */
+  const [posterRetryTick, setPosterRetryTick] = useState(0)
+  /**
+   * Số liệu ĐÓNG BĂNG cho các poster ẩn trong lúc chụp + gửi: cả ảnh Ca lẫn ảnh
+   * Tổng ngày phải render từ đúng MỘT lần đọc dữ liệu (cùng bộ số với snapshot).
+   * Không đóng băng thì realtime/poll 5s cập nhật state giữa 2 lần chụp → 2 ảnh
+   * cùng đợt gửi lệch số giao dịch (83 vs 81).
+   */
+  const [frozenPosterModels, setFrozenPosterModels] = useState<Partial<Record<ReportScope, DailyReportModel>> | null>(null)
+  // businessDate phải BÁM đồng hồ: tính một lần lúc render thì màn hình mở qua
+  // nửa đêm sẽ giữ ngày cũ vô hạn (không có gì ép re-render). Tick 30s là đủ.
+  const [clockTick, setClockTick] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setClockTick(Date.now()), 30000)
+    return () => window.clearInterval(timer)
+  }, [])
+  const businessDate = localDateKey(new Date(clockTick))
 
   async function loadReportLedger(): Promise<ReportLedgerData> {
     const [sessions, allocations, registrations, records, receipts, snapshots] = await Promise.all([
@@ -313,6 +320,23 @@ const [shiftRegistrations, setShiftRegistrations] = useState<ShiftRegistration[]
 
   useEffect(() => {
     const client = user.authToken ? null : supabase
+    const reloadAll = () => {
+      void refreshLedger().catch(() => null)
+      void refreshFinalizationState().catch(() => null)
+    }
+    const reloadWhenVisible = () => {
+      if (document.visibilityState === 'visible') reloadAll()
+    }
+    // Realtime chỉ là kênh đánh thức — DB mới là nguồn sự thật. Mất mạng/ngủ máy
+    // xong phải tự tải lại, không được đứng im chờ event không bao giờ tới.
+    window.addEventListener('focus', reloadAll)
+    window.addEventListener('online', reloadAll)
+    document.addEventListener('visibilitychange', reloadWhenVisible)
+    const removeWindowListeners = () => {
+      window.removeEventListener('focus', reloadAll)
+      window.removeEventListener('online', reloadAll)
+      document.removeEventListener('visibilitychange', reloadWhenVisible)
+    }
 if (!client) {
       const timer = window.setInterval(() => {
         void Promise.all([
@@ -320,7 +344,10 @@ if (!client) {
           refreshFinalizationState(),
         ]).catch(() => null)
       }, 5000)
-      return () => window.clearInterval(timer)
+      return () => {
+        window.clearInterval(timer)
+        removeWindowListeners()
+      }
     }
     const channel = client.channel(uniqueChannelName(`report-ledger:${user.branchId}:${businessDate}`))
       .on('postgres_changes', {
@@ -359,8 +386,13 @@ if (!client) {
         table: 'operation_days',
         filter: `branch_id=eq.${user.branchId}`,
       }, () => void refreshFinalizationState().catch(() => null))
-      .subscribe()
+      // SUBSCRIBED bắn cả lúc join lần đầu LẪN mỗi lần rejoin sau khi rớt mạng
+      // → dùng làm tín hiệu refetch để không bỏ lỡ thay đổi trong lúc mất kết nối.
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') reloadAll()
+      })
     return () => {
+      removeWindowListeners()
       void client.removeChannel(channel)
     }
   }, [businessDate, user.branchId, user.id])
@@ -369,9 +401,23 @@ if (!client) {
     () => buildDailyReport(user, movements, bagSessions, bagAllocations, shiftRegistrations, attendanceRecords, salesReceipts, businessDate, employeeKpiTargets),
     [user, movements, bagSessions, bagAllocations, shiftRegistrations, attendanceRecords, salesReceipts, businessDate, employeeKpiTargets],
   )
+  /**
+   * Ca cần chốt là ca VỪA bàn giao, không phải ca có sequence lớn nhất mà mình
+   * sở hữu. Khi một ca trưởng phụ trách cả hai ca trong ngày (lịch xuyên ca),
+   * Ca 2 được tự mở ngay khi Ca 1 đóng; lấy "ca mới nhất" sẽ nhảy sang Ca 2 và
+   * báo cáo Ca 1 không bao giờ được chốt/gửi Zalo.
+   */
+  function resolveLeaderShiftSession(sessions: BagShiftSession[], request: HandoverReportRequest | null) {
+    const requested = request && request.businessDate === businessDate
+      ? sessions.find((item) => item.id === request.shiftId
+        && item.sequence === request.sequence
+        && ownsBagShiftSession(item, user))
+      : undefined
+    return requested || latestOwnedBagShiftSession(sessions, user)
+  }
   const leaderShiftSession = useMemo(() => {
-    return latestOwnedBagShiftSession(bagSessions, user)
-  }, [bagSessions, user.id, user.name])
+    return resolveLeaderShiftSession(bagSessions, handoverReportRequest)
+  }, [bagSessions, handoverReportRequest, businessDate, user.id, user.name])
 
   useEffect(() => {
     if (!leaderShiftSession) return
@@ -385,9 +431,12 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
   const hasShiftTwo = bagSessions.some((item) => item.sequence === 2)
   const report = useMemo(() => {
     if (reportScope === 'day' || !selectedShift) return dailyReport
-    const scopedMovements = movements.filter((item) => isTimestampInShift(item.createdAt, selectedShift))
+    // Vùng doanh thu của ca: chia ngày bằng MỘT điểm cắt giữa hai ca (BUG-117) —
+    // hóa đơn trước giờ mở ca/trong khoảng trống giữa hai ca không được biến mất.
+    const scopeWindow = sessionScopeWindow(selectedShift, bagSessions)
+    const scopedMovements = movements.filter((item) => timestampInScopeWindow(item.createdAt, scopeWindow))
     const scopedAllocations = bagAllocations.filter((item) => item.shiftId === selectedShift.id)
-    const scopedReceipts = salesReceipts.filter((item) => isTimestampInShift(item.createdAt, selectedShift))
+    const scopedReceipts = salesReceipts.filter((item) => timestampInScopeWindow(item.createdAt, scopeWindow))
     return buildDailyReport(
       user,
       scopedMovements,
@@ -399,19 +448,20 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
       businessDate,
       employeeKpiTargets,
     )
-  }, [reportScope, selectedShift, dailyReport, user, movements, bagAllocations, shiftRegistrations, attendanceRecords, salesReceipts, businessDate, employeeKpiTargets])
+  }, [reportScope, selectedShift, bagSessions, dailyReport, user, movements, bagAllocations, shiftRegistrations, attendanceRecords, salesReceipts, businessDate, employeeKpiTargets])
   function reportModelForScope(scope: ReportScope) {
     if (scope === 'day') return dailyReport
     const session = bagSessions.find((item) => item.sequence === (scope === 'shift-1' ? 1 : 2))
     if (!session) return dailyReport
+    const scopeWindow = sessionScopeWindow(session, bagSessions)
     return buildDailyReport(
       user,
-      movements.filter((item) => isTimestampInShift(item.createdAt, session)),
+      movements.filter((item) => timestampInScopeWindow(item.createdAt, scopeWindow)),
       [session],
       bagAllocations.filter((item) => item.shiftId === session.id),
       shiftRegistrations,
       attendanceRecords,
-      salesReceipts.filter((item) => isTimestampInShift(item.createdAt, session)),
+      salesReceipts.filter((item) => timestampInScopeWindow(item.createdAt, scopeWindow)),
       businessDate,
       employeeKpiTargets,
     )
@@ -441,7 +491,11 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
   const visibleMessage = friendlyReportMessage(message)
   const messageTone = reportMessageTone(message)
 
-  async function queueCurrentReportImages(session: BagShiftSession, sendNow = false): Promise<N8nQueueResult> {
+  async function queueCurrentReportImages(
+    session: BagShiftSession,
+    sendNow = false,
+    options: { force?: boolean } = {},
+  ): Promise<N8nQueueResult> {
     const reportKinds: N8nReportKind[] = Array.from(new Set<N8nReportKind>([
       session.sequence === 1 ? 'shift-1' : 'shift-2',
       ...(session.sequence === 2 ? ['day' as N8nReportKind] : []),
@@ -466,17 +520,39 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
       shiftId: session.id,
       shiftSequence: session.sequence as 1 | 2,
       sendNow,
+      force: options.force === true,
       reports,
     })
   }
 
-  async function sendReportToZalo() {
-    if (!leaderShiftSession || !shiftReportEntry) return
-    const confirmed = window.confirm('Gửi ngay ảnh báo cáo lên Zalo? Thao tác này có thể gửi trùng nếu báo cáo đã được gửi trước đó.')
-    if (!confirmed) return
+  /**
+   * Bộ số liệu đóng băng để GỬI LẠI ảnh: lấy từ CHÍNH snapshot đã chốt, không
+   * lấy từ state live — ảnh gửi lại phải khớp tuyệt đối với số đã lưu trong
+   * report_snapshots (nguồn chuẩn của doanh thu).
+   */
+  function frozenModelsFromSnapshotEntry(session: BagShiftSession, entry: NonNullable<typeof shiftReportEntry>) {
+    const scope: ReportScope = session.sequence === 1 ? 'shift-1' : 'shift-2'
+    const frozen: Partial<Record<ReportScope, DailyReportModel>> = {
+      [scope]: entry.report as unknown as DailyReportModel,
+    }
+    if (session.sequence === 2) {
+      frozen.day = (reportSnapshot?.payload.dailyReport as unknown as DailyReportModel) || dailyReport
+    }
+    return frozen
+  }
+
+  /**
+   * Gửi (lại) ảnh báo cáo cho ca đã chốt mà KHÔNG chốt lại snapshot. Server tự
+   * bỏ qua ảnh đã vào hàng đợi thành công (idempotent) trừ khi force=true.
+   * Trả về true khi đủ ảnh đã vào hàng đợi (hoặc n8n tắt/chưa cấu hình — không
+   * còn gì để gửi từ phía app).
+   */
+  async function resendReportImages(options: { force?: boolean } = {}): Promise<boolean> {
+    if (!leaderShiftSession || !shiftReportEntry) return false
     setBusy(true)
+    setFrozenPosterModels(frozenModelsFromSnapshotEntry(leaderShiftSession, shiftReportEntry))
     try {
-      const result = await queueCurrentReportImages(leaderShiftSession, true)
+      const result = await queueCurrentReportImages(leaderShiftSession, true, options)
       await saveShiftReportSnapshot(user, businessDate, {
         shiftId: shiftReportEntry.shiftId,
         sequence: shiftReportEntry.sequence,
@@ -485,28 +561,45 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
         leaderName: shiftReportEntry.leaderName,
         report: shiftReportEntry.report,
         zaloDelivery: shiftReportEntry.zaloDelivery,
-        n8nDelivery: { ...result, updatedAt: new Date().toISOString() },
+        // Gộp job theo từng ảnh thay vì ghi đè: server đã lưu job của ảnh gửi
+        // thành công trước đó, ghi đè bằng kết quả một phần sẽ xóa mất dấu vết.
+        n8nDelivery: {
+          ...result,
+          jobs: { ...(shiftReportEntry.n8nDelivery?.jobs || {}), ...result.jobs },
+          updatedAt: new Date().toISOString(),
+        },
       })
       await refreshLedger()
       setMessage(result.message)
+      return result.queued || result.mode === 'disabled' || result.mode === 'not-configured'
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Chưa gửi được báo cáo lên Zalo.')
+      setMessage(error instanceof Error ? error.message : 'Chưa gửi lại được ảnh báo cáo.')
+      return false
     } finally {
+      setFrozenPosterModels(null)
       setBusy(false)
     }
   }
 
-  async function saveCloud() {
+  async function sendReportToZalo() {
+    if (!leaderShiftSession || !shiftReportEntry) return
+    const confirmed = window.confirm('Gửi ngay ảnh báo cáo lên Zalo? Thao tác này có thể gửi trùng nếu báo cáo đã được gửi trước đó.')
+    if (!confirmed) return
+    // force=true: người dùng đã xác nhận chấp nhận gửi trùng ở confirm phía trên.
+    await resendReportImages({ force: true })
+  }
+
+  async function saveCloud(): Promise<{ saved: boolean; delivered: boolean }> {
     if (finalized) {
       setMessage('Ngày đã kết thúc. Chúc cả đội ngủ ngon.')
-      return false
+      return { saved: false, delivered: false }
     }
     setBusy(true)
     try {
       const freshLedger = await loadReportLedger()
       applyReportLedger(freshLedger)
       const freshSnapshot = freshLedger.snapshots.find((item) => item.reportDate === businessDate) || null
-      const freshLeaderShiftSession = latestOwnedBagShiftSession(freshLedger.sessions, user)
+      const freshLeaderShiftSession = resolveLeaderShiftSession(freshLedger.sessions, handoverReportRequest)
       if (!freshLeaderShiftSession) {
         throw new Error('Không tìm thấy ca do bạn phụ trách trong ngày hôm nay.')
       }
@@ -538,14 +631,17 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
       }
 
       const shiftScope: ReportScope = freshLeaderShiftSession.sequence === 1 ? 'shift-1' : 'shift-2'
+      // Vùng doanh thu của ca tính trên danh sách phiên MỚI NHẤT vừa đọc lại —
+      // ảnh/snapshot của ca phải cộng lại đúng bằng Tổng ngày (BUG-117).
+      const freshScopeWindow = sessionScopeWindow(freshLeaderShiftSession, freshLedger.sessions)
       const shiftReport = buildDailyReport(
         user,
-        movements.filter((item) => isTimestampInShift(item.createdAt, freshLeaderShiftSession)),
+        movements.filter((item) => timestampInScopeWindow(item.createdAt, freshScopeWindow)),
         [freshLeaderShiftSession],
         freshLedger.allocations.filter((item) => item.shiftId === freshLeaderShiftSession.id),
         freshLedger.registrations,
         freshLedger.records,
-        freshLedger.receipts.filter((item) => isTimestampInShift(item.createdAt, freshLeaderShiftSession)),
+        freshLedger.receipts.filter((item) => timestampInScopeWindow(item.createdAt, freshScopeWindow)),
         businessDate,
         employeeKpiTargets,
       )
@@ -593,6 +689,13 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
           employeeCount: model.employeeRows.length,
         }
       })
+      // ĐÓNG BĂNG số liệu cho các poster ẩn TRƯỚC khi chụp: ảnh Ca và ảnh Tổng
+      // ngày phải cùng render từ freshLedger — đúng bộ số vừa ghi vào snapshot.
+      // Không đóng băng thì realtime/poll cập nhật state giữa hai lần chụp và
+      // hai ảnh của cùng một lần gửi lệch số giao dịch/doanh thu.
+      setFrozenPosterModels(freshIsSecondShiftFinalization
+        ? { 'shift-2': shiftReport, day: freshDailyReport }
+        : { 'shift-1': shiftReport })
       let n8nResult: N8nQueueResult
       try {
         n8nResult = await queueCurrentReportImages(freshLeaderShiftSession, true)
@@ -603,6 +706,8 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
           message: error instanceof Error ? error.message : 'Không tạo được ảnh để đưa vào n8n.',
           jobs: {},
         }
+      } finally {
+        setFrozenPosterModels(null)
       }
       const zaloResult = n8nResult.mode === 'not-configured'
         ? await sendZaloShiftReports(user, {
@@ -621,15 +726,18 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
         ...(zaloResult ? { zaloDelivery: { ...zaloResult } } : {}),
       })
       await refreshLedger()
+      // Đã gửi đủ ảnh (hoặc n8n tắt/chưa cấu hình — app không còn gì để gửi).
+      // Chỉ khi đó cờ nhắc mới được phép tắt; gửi thiếu ảnh thì phải nhắc tiếp.
+      const delivered = n8nResult.queued || n8nResult.mode === 'disabled' || n8nResult.mode === 'not-configured'
       const deliveryMessage = zaloResult?.message || n8nResult.message
       setMessage(freshIsSecondShiftFinalization
         ? `Đã chốt Ca 2 và Tổng ngày. ${deliveryMessage}`
         : `Đã chốt báo cáo Ca 1. ${deliveryMessage}`)
-      return true
+      return { saved: true, delivered }
     } catch (error) {
       const detail = error instanceof Error ? error.message : ''
       setMessage(detail ? `Không thể lưu báo cáo: ${detail}` : 'Không thể lưu báo cáo.')
-      return false
+      return { saved: false, delivered: false }
     } finally {
       setBusy(false)
     }
@@ -642,23 +750,61 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
     // Do not discard it during that first empty render, otherwise a valid
     // handover never reaches automatic report finalization.
     if (!leaderShiftSession) return
-    if (request.businessDate !== businessDate || request.sequence !== leaderShiftSession.sequence || request.shiftId !== leaderShiftSession.id) {
+    if (request.businessDate !== businessDate) {
+      // Yêu cầu còn sót của ngày trước, bỏ qua không cần báo.
       clearHandoverReportRequest()
       setHandoverReportRequest(null)
       return
     }
-    if (leaderShiftSession.status !== 'closed' || finalized || busy) return
+    if (request.sequence !== leaderShiftSession.sequence || request.shiftId !== leaderShiftSession.id) {
+      clearHandoverReportRequest()
+      setHandoverReportRequest(null)
+      setMessage('Không tìm thấy ca vừa bàn giao để tự chốt báo cáo. Hãy bấm "Chốt báo cáo" thủ công rồi kiểm tra nhóm Zalo.')
+      return
+    }
+    if (busy) return
     const scopes: ReportScope[] = leaderShiftSession.sequence === 2 ? ['shift-2', 'day'] : ['shift-1']
-    if (scopes.some((scope) => !n8nPosterRefs[scope].current)) return
-    const attemptKey = `${request.shiftId}:${request.businessDate}`
-    if (automaticFinalizeAttemptRef.current === attemptKey) return
-    automaticFinalizeAttemptRef.current = attemptKey
-    void saveCloud().then((saved) => {
-      if (!saved) return
+    if (scopes.some((scope) => !n8nPosterRefs[scope].current)) {
+      // Poster ẩn chưa render xong: KHÔNG bỏ qua im lặng (gốc lỗi "quên gửi") —
+      // hẹn kiểm tra lại sau 400ms cho tới khi DOM sẵn sàng.
+      const timer = window.setTimeout(() => setPosterRetryTick((tick) => tick + 1), 400)
+      return () => window.clearTimeout(timer)
+    }
+
+    if (!shiftReportEntry) {
+      // Chưa chốt báo cáo cho ca này → chốt + gửi trọn gói.
+      if (leaderShiftSession.status !== 'closed' || finalized) return
+      const attemptKey = `${request.shiftId}:${request.businessDate}`
+      if (automaticFinalizeAttemptRef.current === attemptKey) return
+      automaticFinalizeAttemptRef.current = attemptKey
+      void saveCloud().then((result) => {
+        if (!result.saved || !result.delivered) return
+        clearHandoverReportRequest()
+        setHandoverReportRequest(null)
+      })
+      return
+    }
+
+    // Báo cáo ĐÃ chốt nhưng cờ nhắc vẫn còn → còn ảnh chưa vào hàng đợi n8n
+    // (ví dụ lần trước chỉ gửi được ảnh Ca, thiếu ảnh Tổng ngày). Tự gửi lại
+    // phần thiếu từ số liệu snapshot; server bỏ qua ảnh đã gửi nên không trùng.
+    const delivery = shiftReportEntry.n8nDelivery
+    const fullyDelivered = delivery?.queued === true
+      || delivery?.mode === 'disabled'
+      || delivery?.mode === 'not-configured'
+    if (fullyDelivered) {
+      clearHandoverReportRequest()
+      setHandoverReportRequest(null)
+      return
+    }
+    if (automaticResendAttemptRef.current >= 2) return
+    automaticResendAttemptRef.current += 1
+    void resendReportImages().then((delivered) => {
+      if (!delivered) return
       clearHandoverReportRequest()
       setHandoverReportRequest(null)
     })
-  }, [handoverReportRequest, businessDate, leaderShiftSession?.id, leaderShiftSession?.sequence, leaderShiftSession?.status, finalized, busy])
+  }, [handoverReportRequest, businessDate, leaderShiftSession?.id, leaderShiftSession?.sequence, leaderShiftSession?.status, finalized, busy, shiftReportEntry, posterRetryTick])
 
   async function reopenDay() {
     if (!window.confirm('Mở lại ngày vận hành để bổ sung/sửa số liệu? Sau khi xong nhớ bấm Chốt báo cáo lại.')) return
@@ -666,7 +812,15 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
     try {
       await ensureOperationDay(user, businessDate, { allowAutoOpen: true, reopenClosed: true })
       setFinalized(false)
-      setMessage('Đã mở lại ngày vận hành. Bổ sung số liệu xong hãy chốt báo cáo lại.')
+      // Mở lại ngày = báo cáo đã gửi trước đó không còn đúng. Bật lại cờ nhắc để
+      // ca trưởng phải chốt & gửi lại báo cáo sau khi sửa số. Chỉ ghi cờ nhắc,
+      // KHÔNG cập nhật state auto-gửi ở lần render này (số có thể chưa sửa xong);
+      // lần mở lại màn Báo cáo sau mới đọc cờ và tự gửi bản đã sửa.
+      const reclosable = latestOwnedBagShiftSession(bagSessions, user)
+      if (reclosable && reclosable.businessDate === businessDate) {
+        writeHandoverReportRequest({ shiftId: reclosable.id, sequence: reclosable.sequence, businessDate })
+      }
+      setMessage('Đã mở lại ngày vận hành. Bổ sung số liệu xong hãy chốt báo cáo lại (Capy sẽ nhắc cho tới khi gửi).')
       await Promise.all([onRefresh(), refreshLedger()])
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Không thể mở lại ngày vận hành.')
@@ -781,7 +935,9 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
         {automaticPosterScopes.map((scope) => (
           <ReportPoster
             key={`n8n-${scope}`}
-            report={reportModelForScope(scope)}
+            /* Khi đang chốt/gửi: dùng số liệu ĐÓNG BĂNG chung của lần chốt đó,
+               để 2 ảnh không lệch nhau vì realtime cập nhật giữa 2 lần chụp. */
+            report={frozenPosterModels?.[scope] ?? reportModelForScope(scope)}
             scopeLabel={reportPosterScopeLabel(scope)}
             posterRef={n8nPosterRefs[scope]}
           />
@@ -914,6 +1070,15 @@ function ReportPoster({
               <b>{formatNumber(item.quantity)} {item.unit}</b>
             </div>
           )) : <div className="rp-loss-row muted"><span>Không có ghi chú hủy hàng.</span></div>}
+          {report.adjustmentRows.length > 0 && <>
+            <div className="rp-loss-row"><span><b>Sửa tồn trong ngày</b></span><b>{report.adjustmentRows.length} phiếu</b></div>
+            {report.adjustmentRows.slice(0, 5).map((item) => (
+              <div className="rp-loss-row" key={item.id}>
+                <span>{item.productName} · đặt lại {formatNumber(item.quantity)} {item.unit}</span>
+                <b>{item.delta > 0 ? '+' : ''}{formatNumber(item.delta)} {item.unit}</b>
+              </div>
+            ))}
+          </>}
         </div>
         <div className="rp-card rp-proofs">
           <div className="rp-card-head"><strong>📸 HÌNH ẢNH QUẦY</strong></div>
@@ -992,6 +1157,7 @@ function buildDailyReport(
   const inboundRows = groupProductQuantities(todayMovements.filter((item) => item.type === 'inbound'))
   const packingRows = groupProductQuantities(todayMovements.filter((item) => item.type === 'packing_in'))
   const wasteRows = buildWasteRows(todayMovements)
+  const adjustmentRows = buildAdjustmentRows(movements, user.branchId, businessDate)
   const stockRows = buildStockRows(movements, user.branchId, businessDate)
   const totalIssued = productRows.reduce((sum, item) => sum + item.issued, 0)
   const totalSold = productRows.reduce((sum, item) => sum + item.sold, 0)
@@ -1093,6 +1259,7 @@ const totalDamaged = productRows.reduce((sum, item) => sum + item.damaged, 0)
     productRows,
     employeeRows,
     wasteRows,
+    adjustmentRows,
     stockRows,
     bagShiftSummary: buildBagShiftSummary(todaySessions, todayAllocations),
     proofImages: buildProofImages(todaySessions, user.branchId, businessDate),
@@ -1398,7 +1565,7 @@ const productRow = current.productMap.get(allocation.productId) || {
     })
   })
 
-  // Người bán POS/nhận túi luôn được giữ, KHÔNG phụ thuộc đăng ký ca (BUG-082/BUG-110):
+  // Người bán POS/nhận túi luôn được giữ, KHÔNG phụ thuộc đăng ký ca (BUG-082/BUG-111):
   // nhân viên bán hàng nhưng quên đăng ký ca vẫn phải có tên trong báo cáo.
   // Bộ lọc duy nhất là có phát sinh bán hàng thật (`hasSalesActivity`).
   return Array.from(rows.values())
@@ -1448,6 +1615,32 @@ function buildWasteRows(movements: StockMovement[]): WasteReportRow[] {
         sourceName: source?.name || '',
       }
     })
+}
+
+/**
+ * Phiếu SỬA TỒN / kiểm kê trong ngày. Bắt buộc phải có mặt trong báo cáo: nó
+ * đặt lại tồn nên bảng tồn cuối ngày nhảy số, nhưng KHÔNG xuất hiện ở cột nhập
+ * hay cột xuất nào — không liệt kê ra thì người đọc không có cách nào đối chiếu
+ * "tồn đầu + nhập − xuất − hao = tồn cuối".
+ *
+ * Delta phải tính trên TOÀN BỘ lịch sử (hiệu so với tồn cộng dồn ngay trước
+ * phiếu) rồi mới lọc về ngày đang xem.
+ */
+function buildAdjustmentRows(movements: StockMovement[], branchId: string, businessDate: string): StockAdjustmentReportRow[] {
+  return stockAdjustmentDeltas(movements.filter((item) => item.branchId === branchId))
+    .filter((item) => item.movement.shiftDate === businessDate)
+    .map(({ movement, delta }) => {
+      const product = catalogProductById(movement.productId)
+      return {
+        id: movement.id,
+        productName: product?.name || movement.productId,
+        unit: product?.unit || '',
+        quantity: movement.quantity,
+        delta,
+        note: movement.note,
+      }
+    })
+    .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.productName.localeCompare(b.productName, 'vi'))
 }
 
 function buildStockRows(movements: StockMovement[], branchId: string, businessDate: string): StockReportRow[] {
@@ -1587,11 +1780,6 @@ function shiftLabel(sequence: number) {
   if (sequence === 1) return 'Ca sáng'
   if (sequence === 2) return 'Ca tối'
   return `Ca ${sequence}`
-}
-
-function isTimestampInShift(timestamp: string, session: BagShiftSession) {
-  if (!timestamp || timestamp < session.startedAt) return false
-  return !session.endedAt || timestamp <= session.endedAt
 }
 
 function defaultReportScopeForLeader(session: Pick<BagShiftSession, 'sequence'>): ReportScope {
@@ -1750,8 +1938,13 @@ function roundPercent(value: number) {
   return Math.round(value * 10) / 10
 }
 
+/**
+ * Số lượng trong báo cáo dùng CHUNG bộ hiển thị của kho: cắt về 2 chữ số lẻ như
+ * bản cũ thì tồn 5,123 kg ra "5,12 kg" trong khi màn Kho ghi "5,123 kg" — cùng
+ * một con số mà hai màn lệch nhau.
+ */
 function formatNumber(value: number) {
-  return Number(value.toFixed(2)).toLocaleString('vi-VN')
+  return formatQuantity(value)
 }
 
 function formatKg(value: number) {

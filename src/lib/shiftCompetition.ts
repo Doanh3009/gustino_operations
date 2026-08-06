@@ -1,5 +1,6 @@
 import type { BagShiftSession } from '../types'
 import type { SalesReceipt } from './salesReceipts'
+import { sessionScopeWindow, timestampInScopeWindow } from './shiftReportScope'
 
 export interface ShiftLeaderRevenueRow {
   leaderKey: string
@@ -121,21 +122,12 @@ function scopedSessionReceipts(
     receiptsByDay.set(key, [...(receiptsByDay.get(key) || []), receipt])
   })
 
-  return scopedSessions.map((session, sessionIndex) => {
-    const nextSession = scopedSessions.slice(sessionIndex + 1).find((candidate) =>
-      candidate.branchId === session.branchId
-      && candidate.businessDate === session.businessDate
-      && candidate.startedAt > session.startedAt,
-    )
-    const startedAt = Date.parse(session.startedAt)
-    const endedAt = session.endedAt
-      ? Date.parse(session.endedAt) + 1
-      : nextSession ? Date.parse(nextSession.startedAt) : Number.POSITIVE_INFINITY
+  return scopedSessions.map((session) => {
+    // Vùng doanh thu không hở/không chồng (BUG-117): hóa đơn trước giờ mở ca đầu,
+    // trong khoảng trống giữa hai ca hay sau giờ đóng ca cuối vẫn thuộc về một ca.
+    const scopeWindow = sessionScopeWindow(session, scopedSessions)
     const shiftReceipts = (receiptsByDay.get(`${session.branchId}|${session.businessDate}`) || [])
-      .filter((receipt) => {
-        const createdAt = Date.parse(receipt.createdAt)
-        return Number.isFinite(createdAt) && createdAt >= startedAt && createdAt < endedAt
-      })
+      .filter((receipt) => timestampInScopeWindow(receipt.createdAt, scopeWindow))
     return { session, receipts: shiftReceipts }
   })
 }

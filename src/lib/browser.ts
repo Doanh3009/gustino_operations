@@ -14,6 +14,22 @@ export function createId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+/**
+ * Gộp một chuỗi sự kiện realtime dồn dập thành MỘT lượt tải lại.
+ * Supabase bắn `postgres_changes` theo từng DÒNG: bán một hoá đơn POS là 1 event
+ * `sales_receipts` + n event `sales_receipt_items`, mà bảng items không có
+ * `branch_id` nên máy của MỌI chi nhánh đều nhận. Không gộp thì mỗi lần bán là
+ * vài lượt tải lại toàn trang — đúng cảm giác "giật" lúc đông khách.
+ */
+export function burstGuard(run: () => void, delayMs = 600): (() => void) & { cancel: () => void } {
+  let timer: number | undefined
+  const trigger = () => {
+    window.clearTimeout(timer)
+    timer = window.setTimeout(run, delayMs)
+  }
+  return Object.assign(trigger, { cancel: () => window.clearTimeout(timer) })
+}
+
 export function downloadBlob(blob: Blob, name: string) {
   const link = document.createElement('a')
   link.href = URL.createObjectURL(blob)

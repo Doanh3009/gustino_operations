@@ -1,5 +1,494 @@
 # Bug Tracker
 
+## 2026-08-05 — "Dữ liệu kho không đồng bộ sau khi chỉnh sửa"
+
+### BUG-134 — Bản vá BUG-133 chỉ nâng độ chính xác hiển thị ở màn Kho nên mỗi màn đọc ra một con số khác nhau
+
+- Severity: High (chủ quán không tin được số tồn nào là đúng). Status: **Đã sửa và deploy production 2026-08-05** (`dpl_ARZoTemEtDAhnRwJrsirL3SkQnWM`, alias `gustino-operations.vercel.app`, main `index-DtrbyXjx.js`).
+
+**Hiện tượng (chủ quán mô tả):** "dữ liệu kho không đồng bộ sau khi tôi chỉnh sửa" — màn Kho hiện số mới, các màn khác vẫn số cũ.
+
+**Root cause:** không phải lỗi đồng bộ dữ liệu. Mọi màn đều đọc chung một mảng `movements` từ `App.tsx` và chung `calculateStock` — dữ liệu giống hệt nhau, chỉ có CÁCH VIẾT SỐ là khác. BUG-133 thay bộ hiển thị của riêng `InventoryPage` (`formatQuantity` = `String(Number(...))`, 3 chữ số lẻ) mà không đụng tới các màn còn lại, nên cùng một tồn 5,123 kg đọc ra 4 kiểu: Kho `5.123 kg` (dấu CHẤM — tiếng Việt đọc thành "năm nghìn một trăm hai mươi ba"), Quản trị → Kho `5,123 kg` (`Intl` vi-VN, 4 số lẻ cho kg / 2 cho đơn vị khác, dấu nhóm nghìn đổi thành khoảng trắng), Báo cáo + Bàn giao `5,12 kg` / `5,1234` (`toFixed(2)` / `toFixed(4)`), Nhà hàng `5.1 kg` (`toFixed(1)`, lại dấu chấm).
+
+**Bản vá:** một bộ hiển thị dùng chung trong `src/lib/inventoryEntry.ts` — `formatQuantity` chuyển sang `Intl.NumberFormat('vi-VN')` giữ đủ 3 chữ số lẻ như `numeric(14,3)` (`5,123` · `1.234,5` · `5`), `formatStockAmount` giữ nguyên quy tắc dưới 1 kg đọc theo gram. Tách thêm `quantityInputValue` cho số ĐỔ VÀO Ô NHẬP (nút *Xuất hết* / *Đúng tồn*): bản hiển thị không dùng lại được vì `sanitizeQuantityInput` sẽ bóp `"1.234,5"` thành `1,2345` — bẫy này được khoá bằng assert riêng. Các màn chuyển sang gọi bộ dùng chung: `AdminPage` (`formatInventoryQuantity`, kể cả cột số lượng Excel hạ từ 4 xuống đúng 3 số lẻ của DB), `ReportPage`, `ShiftHandoverPage`, `ControlCenterPage` (định mức trừ kho), `admin/DashboardPage` (hao hụt), `RestaurantPage` (cảnh báo tồn thấp). `HistoryPage` vốn đã đúng 3 số lẻ vi-VN nên giữ nguyên; các màn chỉ hiện số túi/đơn/% không đổi.
+
+**Kiểm chứng:** `scripts/test-inventory-display-consistency.mjs` (mới) khoá cách viết số, vòng quay ô nhập cho 5 mức số lượng, và hợp đồng nguồn "mọi màn kho gọi bộ hiển thị dùng chung, không tự `toFixed`". Chạy đỏ với bản cũ (`formatQuantity(5.123)` ra `"5.123"`). `test-inventory-entry-redesign` cập nhật theo hợp đồng mới và Passed; `test-report-inventory-ux`, `test-stock-and-sync-performance`, `test-shift-close-report-realtime` Passed; `tsc -b` + `npm run build` 723 modules + `PRODUCTION_SUPABASE_BUNDLE_OK`.
+
+**Dọn thêm:** `test-owner-ux-inventory-admin-20260720` đang ĐỎ SẴN từ đợt BUG-133 (vẫn đòi nhóm "Món trong menu bán" trên bảng tồn, trong khi bản vá sáng nay đã loại hẳn món menu khỏi `calculateStock` vì POS ghi hóa đơn chứ không ghi movement). Đã sửa assert đó theo hiện trạng đã chốt, không đụng mã nguồn.
+
+### BUG-135 — Phiếu sửa tồn không xuất hiện ở cột nhập/xuất nào nên sổ kho không cân; mốc kiểm kê cuối ca đóng dấu bằng đồng hồ điện thoại
+
+- Severity: High. Status: **Đã sửa và deploy production 2026-08-05** (`dpl_ARZoTemEtDAhnRwJrsirL3SkQnWM`, alias `gustino-operations.vercel.app`). Bốn lỗi tìm ra khi truy vết BUG-134, chủ quán yêu cầu xử lý hết.
+
+**(1) Sổ kho theo kỳ không cân sau khi sửa tồn.** `count` là mốc reset nên có mặt trong tồn đầu/tồn cuối, nhưng không thuộc cột Nhập lẫn cột Xuất ⇒ `Tồn đầu + Nhập − Xuất − Hao ≠ Tồn cuối`. Thêm `stockAdjustmentDeltas` / `sumStockAdjustments` (`lib/store.ts`): độ lệch của mỗi phiếu `count` = số khai − tồn cộng dồn ngay trước phiếu (tính trên TOÀN BỘ lịch sử chi nhánh, lọc theo kỳ bằng `shiftDate` ở phía gọi). `buildInventoryRows` có thêm cột `adjust`; hiện ở thẻ chi nhánh ("Sửa tồn trong kỳ") và sheet Excel "Tổng hợp kho" (cột *Điều chỉnh kiểm kê*).
+
+**(2) Đối soát ca báo lệch POS oan.** `officialOut = opening + additions − closing − waste` bỏ qua `count` nên phần sửa tồn giữa ca bị tính thành hàng bán ra. Công thức đổi thành `opening + additions + adjust − closing − waste`, thêm cột *Sửa tồn* trên màn và trong Excel "Đối chiếu ca". Phiếu kiểm đếm CUỐI ca (`documentId` = id phiên) bị loại khỏi `adjust` — số của nó chính là `closing`, cộng vào là tự triệt tiêu đúng phần lệch mà bảng sinh ra để soi.
+
+**(3) Mốc kiểm kê cuối ca lấy đồng hồ điện thoại.** `ShiftHandoverPage` đóng dấu `createdAt: now + index` rồi gửi kèm `created_at` xuống `closeBagShift`; máy ca trưởng lệch giờ là mốc reset nhảy sai vị trí trên trục thời gian ⇒ tồn tính sai, thậm chí nuốt luôn phiếu sửa tồn ghi sau nó. Bỏ hẳn dấu thời gian phía máy: RPC `close_bag_shift_safe` vốn dùng `coalesce(x.created_at, now())`, còn đường ghi thẳng (`closeBagShiftDirect`) nay bỏ trống trường để DB dùng `default now()` thay vì `endedAt` (cũng là đồng hồ máy).
+
+**(4) `calculateStock` bỏ rơi dòng trùng đúng mốc kiểm kê.** Vòng lặp chia trước/sau bằng `<` và `>`, không có nhánh `===`, nên dòng nào trùng micro-giây với mốc `count` rơi khỏi cả hai vế và biến mất khỏi bảng tồn — trùng dấu thời gian là chuyện thường vì một lệnh INSERT nhiều dòng được Postgres gán `now()` giống hệt nhau (dữ liệu prod có batch 60 dòng `[AUTO-CLOSE]` cùng một dấu). Đổi sang `<=` (coi là TRƯỚC kiểm kê — số đếm thực tế đã bao gồm nó). Tái hiện: phiếu bán 4 kg trùng mốc làm `variance` ra −8 thay vì −4.
+
+**Kiểm chứng:** `scripts/test-stock-adjustment-consistency.mjs` (mới) khoá delta từng phiếu (kể cả hai phiếu kiểm kê liên tiếp), bất biến `Tồn đầu + Nhập − Xuất − Hao + Điều chỉnh = Tồn cuối` (và khẳng định thiếu cột Điều chỉnh thì KHÔNG cân), dòng trùng dấu thời gian, cùng hợp đồng nguồn cho cả 4 điểm. 9/9 test kho/báo cáo/bàn giao Passed; `tsc -b` + `npm run build` + `PRODUCTION_SUPABASE_BUNDLE_OK`. `qa-handover-cross-shift` cần app đang chạy (Playwright) nên không chạy được ở phiên này.
+
+**Không đụng tới:** dữ liệu/schema production, công thức hoa hồng/KPI, phân quyền. Không migration.
+
+**Đã truy đến cùng và KẾT LUẬN KHÔNG PHẢI LỖI:** nghi vấn "`closeBagShift` gọi RPC với `p_movements: []` nên phiếu kiểm đếm cuối ca không được ghi" là báo động nhầm. `close_bag_shift_safe` bản đang chạy (`20260702_close_bag_shift_idempotent.sql`, kế thừa ghi chú tiếng Việt của `20260701_shift_overlap_delta_posting.sql`) **tự sinh phiếu `count` phía máy chủ** từ `closing_balances` + số nhân viên đang giữ, ghi chú `[AUTO-CLOSE] [ca] Kiểm đếm bàn giao: tại quầy X, nhân viên đang giữ Y`, kèm chặn trùng. Xác minh trên DB prod bằng `pg_get_functiondef`: `close_bag_shift_safe` có sinh `[AUTO-CLOSE]`, `reopen_bag_shift` có `delete ... movement_type = 'count'` để hoàn tác. Truyền danh sách rỗng từ client là ĐÚNG — gửi lên chỉ tạo đường ghi thứ hai. Danh sách phía client chỉ còn phục vụ nhánh dự phòng `closeBagShiftDirect` (RPC vắng mặt / LAN), và nhánh đó nay cũng để máy chủ đóng dấu thời gian.
+
+## 2026-08-05 — Kho: xuất hết mãi vẫn dư vài gram, phải xuất nhiều lần
+
+### BUG-133 — Màn kho cắt số lẻ thứ ba nên không bao giờ xuất hết được tồn; không có đường sửa tồn khi sổ sai
+
+- Severity: High (chặn thao tác sửa kho hằng ngày của ca trưởng). Status: **Đã sửa trên nhánh làm việc, ĐÃ build + test đơn vị, CHƯA deploy production.**
+
+**Hiện tượng (chủ quán mô tả):** kho sai số, ca trưởng muốn xuất hết ra để nhập lại nhưng "bị hiển thị thiếu số 0.000 mấy nên phải xuất nhiều lần".
+
+**Root cause (2 tầng, cả hai đều tái hiện được):** (1) `stock_movements.quantity` là `numeric(14,3)` nên tồn có tới 3 chữ số lẻ, trong khi `formatNumber` của `InventoryPage` dùng `toFixed(2)` ⇒ tồn 5.123 kg hiện "5.12 kg"; gõ theo số nhìn thấy thì kho còn dư 0.003 kg, dòng vẫn "còn hàng" (`stockAvailability` lấy mốc 0.0001) nên phải lập phiếu xuất lần nữa, và lần nữa. (2) Không có chức năng đặt lại tồn: cách duy nhất để sửa sổ sai là xuất hết rồi nhập lại — chính là vòng lặp ở (1).
+
+**Bản vá:** tách `src/lib/inventoryEntry.ts` (hàm thuần, test được) làm lớp số học kho — hiển thị đủ 3 chữ số như DB (`formatQuantity`/`formatStockAmount`), mốc "coi như hết" `STOCK_EPSILON = 0.0005` (nửa đơn vị cuối của DB), `planOutbound` tự khớp về đúng tồn khi số gõ chỉ lệch ±0,005 (5 g) ⇒ tồn về 0 tuyệt đối trong MỘT phiếu và không còn bị hỏi "không đủ tồn" chỉ vì gõ thừa vài gram, `planStockReset` ghi movement `count` (mốc reset của `calculateStock`) cho chức năng sửa tồn mới. `InventoryPage` thay 2 trình soạn phiếu kiểu "thêm dòng + chọn dropdown" bằng một bảng nhập theo SKU dùng chung cho Nhập / Xuất / Sửa tồn: có ô tìm kiếm không dấu, lọc nhóm hàng, nút **Xuất hết** (đổ đúng số tồn thật), **Hết sạch/Đúng tồn** ở tab sửa tồn, và nút xuất hết/khai hết hàng loạt cho các dòng đang xem.
+
+**Kiểm chứng:** `scripts/test-inventory-entry-redesign.mjs` (mới) khoá đủ: hiển thị 3 số lẻ, xuất hết một lần là sạch, gõ theo số hiển thị CŨ "5.12" vẫn về 0, thiếu tồn THẬT vẫn cảnh báo, đổi kg/g, quy cách bao 25 kg, sửa tồn ghi `count` đúng số khai và ô trống thì tuyệt đối không đụng tới SKU đó. `tsc -b` + `npm run build` + `PRODUCTION_SUPABASE_BUNDLE_OK`. Kiểm tra giao diện thật bằng Edge headless (chỉ đọc, không lưu phiếu): bấm "Xuất hết" → ô nhập nhận đúng số tồn, dòng báo "Còn lại sau phiếu: 0 kg · Kho về 0"; gõ 59,99 khi tồn 60 kg vẫn báo còn 10 g (chỉ khớp trong mức làm tròn, không nuốt chênh lệch thật); tìm "bao bi" ra đúng 2 SKU; mobile 390px không tràn ngang.
+
+**Đợt 2 cùng ngày — bỏ giao diện thẻ, chuyển sang bảng dày (theo yêu cầu chủ quán "dạng card chiếm chỗ mà không hiệu quả"):** mỗi SKU giờ đúng MỘT dòng ~54px trên desktop (trước ~150px) và ~101px trên điện thoại (trước ~180px) — desktop 10 dòng/màn thay vì 4. Hàng tiêu đề cột (Mặt hàng · Đang có · Số lượng · Kết quả) thay cho nhãn lặp trong từng thẻ; ghi chú dòng ẩn sau nút ✎; hai khối hướng dẫn gộp còn một dòng; ô tìm kiếm + lọc nhóm + ghi chú phiếu nằm chung một hàng. Đầu màn kho cũng ép lại: 4 thẻ chức năng từ `min-height:150px` xuống ~90px, thẻ chi nhánh bớt padding ⇒ toàn bộ chỗ nhập liệu lọt trong màn hình đầu tiên.
+
+**Còn lại:** phiếu sửa tồn ghi `count` nên nó cũng thay mốc kiểm kê gần nhất của SKU đó (đúng bản chất, nhưng cần nói rõ khi hướng dẫn ca trưởng).
+
+## 2026-08-04 — Địa chỉ chấm công "lệch thành phố" + hardening chống treo mạng chậm + dọn giao diện
+
+### BUG-132 — Sáp nhập hành chính 2025 làm bản đồ trả "Thành phố Hồ Chí Minh" cho điểm Vũng Tàu; hai gate mạng-chậm còn khóa/treo màn chấm công; giao diện thừa nút
+
+- Severity: High. Status: **Đã sửa và deploy production 2026-08-04** (alias → `gustino-operations-3j2lwfgzo`, main `index-DLxi15Xk.js`, Attendance `AttendancePage-CurPze7b.js`). Không migration; chủ quán tiếp tục miễn quy trình test.
+
+**Địa chỉ (xác minh bằng tọa độ thật từ bản ghi):** điểm lotte-vt `10.34993,107.09401` — Nominatim và BigDataCloud đều chỉ còn `Phường Tam Thắng / Thành phố Hồ Chí Minh` (Bà Rịa–Vũng Tàu đã nhập vào TP.HCM 2025, dữ liệu bản đồ mất hẳn chữ "Vũng Tàu") ⇒ địa chỉ lưu "…Thi Sách, Phường Tam Thắng, Thành phố Hồ Chí Minh" — đúng tên đường nhưng "lệch thành phố" như chủ quán mô tả. Fix `api/reverse-geocode.ts`: bảng `WARD_LOCALITY` ánh xạ các phường mới của hai đô thị có chi nhánh (Vũng Tàu/Tam Thắng/Rạch Dừa/Phước Thắng/Long Sơn → "Vũng Tàu"; Nha Trang/Bắc/Tây/Nam Nha Trang → "Nha Trang"), chèn địa danh sau phường và bỏ "Thành phố Hồ Chí Minh" thừa khi đã có địa danh (địa chỉ TP.HCM thật không đổi). Verify live: VT → `Lotteria, Thi Sách, Phường Tam Thắng, Vũng Tàu`; 23/10 → `PNJ, 23 Tháng 10, Phường Tây Nha Trang, Nha Trang, Khánh Hòa`. CDN cache cũ tự hết hiệu lực theo deployment mới.
+
+**Chống treo (nghi ngờ "treo web rồi dùng tiếp bị lỗi" — xác nhận đúng, 3 điểm):** (1) sau khi ghi DB thành công, code `await onChanged()` (tải lại toàn bộ) rồi mới báo "thành công" — mạng chậm là nút treo "Đang xử lý" dù đã lưu, bấm tiếp gây lỗi trùng ⇒ đổi thành fire-and-forget, optimistic record đã cập nhật UI ngay; (2) đọc bảng công lỗi/chậm đặt `recordsLoaded=false` → thay cả màn bằng "CHƯA ĐỒNG BỘ… Tuyệt đối chưa check-in" ⇒ bỏ hẳn màn khóa (DB unique một-phiên-mở + read-back idempotent đã chặn trùng tuyệt đối; bấm lại khi đã có bản ghi trả về thành công); (3) `verifyExistingCheckIn`/`verifyCompletedCheckout` không có hạn chót ⇒ bọc `withAttendanceDeadline` 408.
+
+**Dọn giao diện theo yêu cầu:** bỏ nút `Thoát` (trùng `← Trở lại`), bỏ nút `Gửi lại ngay` + `handleFlushOutbox` (flush nền 45s/focus tự chạy), bỏ thẻ `AttendanceDeviceCheck` (nhiều nút/câu hướng dẫn BUG-107; GPS/ảnh không còn chặn chấm công nên hết vai trò), bỏ màn khóa "CHƯA ĐỒNG BỘ". Verify live chunk: `Thoát`/`Gửi lại ngay`/`Chưa tải được dữ liệu chấm công`/`CHƯA ĐỒNG BỘ`/`Kiểm tra` đều = 0.
+
+## 2026-08-04 — Nhân viên lotte-vt + lotte-2310 chụp ảnh xong bấm Check-in không thành công
+
+### BUG-131 — Gate outbox fail-closed (BUG-122) khóa Check-in vĩnh viễn trên máy không đọc được IndexedDB
+
+- Severity: Critical (nhiều nhân viên 2 chi nhánh Lotte không thể check-in từ ca sáng 04/08; đăng nhập lại vẫn lỗi). Status: **Đã sửa và deploy production 2026-08-04** (alias → `gustino-operations-f79kcasjh`, main `index-IDozCMk1.js`, Attendance `AttendancePage-B2i4s03m.js`). Chủ quán yêu cầu bỏ quy trình test cho bản vá khẩn này — chỉ có tsc + build + bundle guard + verify live.
+
+**Bằng chứng (chỉ đọc):** hai nhân viên ca 07:15 lotte-2310 và lotte-vt đăng nhập lại lúc 08:41/08:43 nhưng 0 bản ghi, 0 ảnh trong `storage.objects` (4 ảnh hôm nay đều của 4 người check-in thành công) ⇒ luồng chết TRƯỚC bước upload, ngay trên máy. Auth/API/Storage/quota đều bình thường; 4 người khác check-in thành công trên cùng bundle. Hôm qua ca sáng chạy bundle cũ (chưa có gate BUG-122 fail-closed vì deploy chiều 03/08) nên không ai bị — sáng 04/08 là ca sáng đầu tiên chạy gate này.
+
+**Root cause:** BUG-122 chọn fail-closed: `inspectAttendanceOutbox` trả `authoritative=false` (IndexedDB bị chặn/lỗi — WebView trong app Google/Zalo như hồ sơ BUG-107 tại đúng các chi nhánh Lotte) ⇒ `outboxLoaded` không bao giờ true ⇒ `canCheckIn=false` vĩnh viễn, thẻ ca chỉ hiện "Đang kiểm tra… Chưa mở Check-in để tránh tạo phiên trùng", banner nói "Check-in đang được khóa". Đăng nhập lại không đổi được vì là đặc tính thiết bị. Trong khi đó lưới chống trùng phiên THẬT đã nằm ở DB từ lâu: unique index `attendance_records_one_open_per_user` (xác minh có trên prod) + dedupe 23505/read-back của chính BUG-122.
+
+**Fix (fail-open có thông báo, đúng luật BUG-121 "chấm công phải LUÔN thành công"):** `AttendancePage` thêm `outboxReadFailed`; `outboxReady = outboxLoaded || outboxReadFailed` dùng cho cả nút và guard — chỉ chặn khi CÒN ĐANG đọc, không chặn khi đã biết đọc lỗi. Máy degraded thấy cảnh báo "máy không đọc được bộ nhớ lưu tạm… vẫn chấm công được, lượt chấm gửi thẳng máy chủ, nên mở Safari/Chrome"; banner đổi lời tương ứng. `AppShell` đổi `listAttendanceOutboxOps` (throw khi degraded, làm chết popup nhắc chấm công) sang `inspectAttendanceOutbox` không-throw. Module outbox giữ nguyên semantics `authoritative=false`; `flushAttendanceOutbox` vốn đã flush op RAM khi degraded.
+
+**Kiểm chứng/an toàn:** tsc + build 723 modules + `PRODUCTION_SUPABASE_BUNDLE_OK`; prebuild gate 128 file/7 function/cron nguyên/0 artifact cấm; live chunk chứa marker fail-open; `/api/server-time` 200. Không migration (đối tượng DB cần thiết đã tồn tại trên prod — `supabase migration list` lệch format local/remote là hiện trạng cũ, các migration sau 24/06 áp tay bằng `db query`). Worst-case fail-open: op ẩn replay sau này đụng unique một-phiên-mở/23505 → read-back dedupe hoặc `needs-review`, không thể tạo phiên trùng.
+
+**Vận hành:** tab đang mở KHÔNG bị ép reload — hai nhân viên bị kẹt cần ĐÓNG HẲN tab/app rồi mở lại `gustino-operations.vercel.app` (khuyến nghị mở bằng Safari/Chrome thay vì trong app Google/Zalo) rồi chấm công lại; giờ vào thực tế sai lệch thì Admin chỉnh công có audit. Test contract cho hành vi mới sẽ bổ sung ở phiên sau (chủ quán yêu cầu bỏ test trong đợt khẩn).
+
+**Chốt dứt điểm cùng ngày (đợt 3 — theo chỉ đạo trực tiếp của chủ quán):** "không vá tạm, không hiển thị câu hướng dẫn/báo lỗi, mọi dữ liệu phải vào DB, không lưu tạm". Trả lời "vì sao 1 tháng ổn giờ mới lỗi": luồng chấm công NGUYÊN THỦY ghi thẳng máy chủ; các bản 01–03/08 (BUG-118 outbox, BUG-122 gate fail-closed) chèn tầng lưu-tạm-trên-máy vào TRƯỚC nút Check-in — máy nào tầng đó trục trặc (IndexedDB hỏng/treo trong WebView) là kẹt toàn phần dù mạng và máy chủ bình thường. **Kiến trúc mới:** (1) `checkIn`/`checkOut` không tạo/lưu outbox op nữa — upload ảnh + ghi DB trực tiếp, dedupe bằng read-back + unique `attendance_records_one_open_per_user`; (2) đóng dấu ảnh best-effort — máy không xử lý được ảnh thì âm thầm dùng ảnh gốc (giờ/GPS/địa chỉ vẫn đủ trong bản ghi DB); (3) GPS có hạn chót bao ngoài chống WebView không gọi callback, rơi về nhánh không-GPS của BUG-121; (4) UI bỏ toàn bộ gate/thông báo outbox quanh Check-in (`outboxLoaded/hasPendingCheckIn` không còn chặn); outbox chỉ còn là hàng gửi-lại-nền cho các lượt CŨ đã nằm sẵn trên máy (App.tsx 45s giữ nguyên, `AppShell` dùng bản đọc không-throw). Deploy `gustino-operations-jat2t7m6o`, alias phục vụ `index-DPyvDn6E.js` + `AttendancePage-CNyv8X-J.js`; verify live: chuỗi gate "Đang kiểm tra các lượt chấm công còn chờ trên máy"/"CHƯA XÁC MINH" = 0, thông điệp một-phiên-mở ngắn mới có mặt, server-time 200. Regression sau refactor: 7/8 Passed (outbox module, single-open, gps/address-fallback, late-checkout, auto-close, LAN); riêng `test-attendance-realtime-next-day` ĐỎ CÓ CHỦ ĐÍCH tại hợp đồng "conflict một-phiên-mở phải quarantine vào outbox" — hợp đồng này thuộc kiến trúc outbox-trong-đường-chấm đã bị chủ quán bãi bỏ; cần viết lại test này ở phiên sau (phiên này chủ quán cấm viết test).
+
+**Hotfix bổ sung cùng ngày (đợt 2):** chủ quán báo Thanh Ngân (lotte-2310) + Thảo Nguyên (lotte-vt) refresh cứng bản `index-IDozCMk1.js` vẫn kẹt, trong khi 3 người ca 10:00 chấm được ngay sau deploy đợt 1 ⇒ trên các máy đó IndexedDB không REJECT mà **TREO vô hạn** (`indexedDB.open()` không bắn success/error — lỗi WebKit/WebView đã biết), nên `outboxReadFailed` không bao giờ được set và cả `saveAttendanceOutboxOp` cũng đứng hình. Vá tầng gốc `attendanceOutbox.ts`: `withIdbDeadline` 4s cho `openDb` (kèm `onblocked`) và cả ba giao dịch đọc/ghi/xóa — quá hạn rơi về đúng đường lỗi/RAM hiện có, UI fail-open tự mở Check-in sau tối đa ~4s. `ATTENDANCE_OUTBOX_OK` (test cũ) + tsc + build + bundle guard Passed; deploy `gustino-operations-gk3d4btu9`, alias phục vụ `index-DDqarjjL.js` (Attendance `AttendancePage-Oki_avR_.js`), marker deadline xác nhận có trong bundle live. Nhân viên kẹt cần tải lại app MỘT lần nữa để nhận bản này.
+
+## 2026-08-04 — "Lỗi chấm công": check-in sau giờ tan ca tạo phiên treo vĩnh viễn, khóa Check-in các ngày sau
+
+### BUG-130 — Auto-close skip ca có check-in muộn hơn giờ tan ca (và ca mở >18h) nên phiên ngày cũ không bao giờ đóng
+
+- Severity: Critical (nhân viên lotte-vt bị khóa Check-in liên tiếp 02–03/08; UI chỉ hiện "Chờ hệ thống tự đóng… tải lại sau ít phút" nhưng hệ thống không bao giờ đóng). Status: **Đã sửa, kiểm chứng và deploy production 2026-08-04** (`dpl_JCQhMp3FpM46KTpWgk2Ha86bxyrW`).
+
+**Bằng chứng production (chỉ đọc):** bản ghi `e521f366` lotte-vt check-in **18:19 ngày 01/08** cho registration `9d552665` ca **10:00–18:00** (shift_id null, ca bổ sung) còn `check_out_time is null` tới sáng 04/08. Người này có đăng ký ca 02/08 và 03/08 nhưng **0 bản ghi chấm công từ sau 01/08** — khớp thiếu hụt 5/7 (02/08) và 7/8 (03/08) của lotte-vt. Log Vercel sáng 04/08 không có lỗi API thật (`/api/reverse-geocode` mức "error" chỉ là DeprecationWarning DEP0169 trên stderr, response 200); 3 check-in hôm 04/08 đều lưu bình thường ⇒ không phải hỏng đường chấm công chung.
+
+**Root cause:** `closeForgottenCheckouts` (api/auto-close-day.ts) và `autoCloseStaleAttendanceRecords` (scripts/lan-server.mjs) skip mọi row có `scheduledEnd <= checkIn` hoặc `scheduledEnd - checkIn > 18h`. Check-in SAU giờ tan ca (hợp lệ theo nghiệp vụ — được chấm suốt đúng ngày đăng ký, xem BUG-122) rơi vào nhánh đầu ⇒ phiên treo **vĩnh viễn** ⇒ luật một-phiên-mở (BUG-122) khóa Check-in mọi ngày sau, trái quyết định chủ quán ở BUG-123 ("sang ngày mới hệ thống tự đóng, ghi lỗi cho Admin").
+
+**Fix:** bỏ nhánh skip vĩnh viễn ở cả cloud + LAN. Check-in ≥ giờ tan ca ⇒ đóng bằng **đúng thời điểm check-in** (0 giờ công, không bịa giờ làm; constraint `check_out_time >= check_in_time` cho phép bằng nhau) với lý do "Check-in sau giờ tan ca…". Ca mở dài >18h ⇒ đóng theo giờ tan ca với lý do "Ca mở dài bất thường…". Cả hai giữ tiền tố `[CHỐT HÀNH CHÍNH] [LỖI QUÊN CHECK-OUT]` nên danh sách lỗi Admin (`isAttendanceAutoClosedError` match theo prefix) và ghi chú Excel bắt được như cũ. Không đổi schema, RPC, công thức giờ/lương hay UI.
+
+**Kiểm chứng:** mở rộng `test-attendance-auto-close-admin-errors.mjs` red-first (2 row mới `stale-late` 18:19/ca 10:00–18:00 và `stale-long` 21,5h; trước fix eligible dừng ở 14 ⇒ đỏ đúng chỗ) — sau fix Passed 16 eligible/15 closed/1 failed cô lập, giờ đóng đúng từng row. `test-attendance-late-checkout.mjs` đổi hợp đồng `scheduledEnd.toISOString()` → `closeAt.toISOString()` + marker mới. Batch liên quan Passed: auto-close-day, LAN integration, single-open, outbox, realtime-next-day, late-checkout + `tsc -b` + build 723 modules với `PRODUCTION_SUPABASE_BUNDLE_OK` (`index-AE9Zy8n_.js` — frontend KHÔNG đổi, bản vá chỉ nằm ở serverless function + LAN).
+
+**Prebuild/deploy/live:** gate Passed 128 file/7 function/cron `0 17 * * *` không đổi/0 artifact cấm; cả 2 marker lý do mới có trong `auto-close-day.func`. Lưu ý quy trình: `.vercel/.env.production.local` chứa giá trị bị che `"[SENSITIVE]"` làm bundle-guard vỡ (`Invalid URL`) — làm đúng `TESTING_CONFIG.md`: export 2 biến Vite public từ `.env.local` khi chạy `vercel build --prod`. Deploy `dpl_JCQhMp3FpM46KTpWgk2Ha86bxyrW` READY + alias chính; index/server-time 200, auto-close không auth 401, live phục vụ đúng `index-AE9Zy8n_.js`. Audit SELECT-only sau deploy: 41/647/825/3593/3846/6286/87/174 — không bảng nào giảm so với baseline BUG-129, phần tăng là vận hành thật.
+
+**Còn lại:** phiên treo `e521f366` sẽ được cron 00:00 đêm 04→05/08 (code mới) tự đóng — TRƯỚC ca kế tiếp 14:15 ngày 05/08 của nhân viên bị ảnh hưởng, nên không bắt buộc can thiệp tay. Hai lệnh can thiệp sớm (lấy CRON_SECRET để invoke cron; UPDATE hành chính 1 dòng có guard `check_out_time is null`) đều bị permission classifier chặn nên KHÔNG thực hiện — chủ quán muốn gỡ ngay có thể tự chạy SQL đóng hành chính dòng này trong Supabase dashboard, hoặc chờ cron đêm nay rồi kiểm tra lại sáng 05/08. Sau khi phiên đóng, dòng này xuất hiện trong danh sách "LỖI CHẤM CÔNG TỰ ĐÓNG" để Admin chỉnh giờ thật (có audit) nếu cần.
+
+## 2026-08-03 — Nút "Xóa dòng" cho dòng Vắng/Chưa có bản ghi trong Lọc & chỉnh công
+
+### BUG-129 — Dòng chỉ có đăng ký ca (chưa chấm công) không có thao tác xóa tại chỗ
+
+- Severity: Medium. Status: **Đã xây dựng, kiểm chứng và deploy production 2026-08-03** (`dpl_CPCmpEeWLM8E4gRG5ydNVpX8LivH`).
+
+**Bằng chứng:** ảnh chủ quán chỉ dòng `Vắng / Chưa có bản ghi`; nút `Xóa ca` cũ chỉ nhận `attendance_records` nên dòng chỉ có `shift_registrations` không xóa được. FK `attendance_records.shift_registration_id` là `on delete cascade`, nghĩa là xóa registration mà không kiểm tra sẽ xóa lan bằng chứng chấm công — bắt buộc RPC riêng có kiểm tra.
+
+**Giải pháp:** migration `20260803_admin_delete_empty_shift_registration.sql` tạo RPC `admin_delete_empty_shift_registration` (security definer): chỉ Admin còn hoạt động, khóa `for update` đúng registration, **chặn nếu đã tồn tại attendance record**, audit đầy đủ `to_jsonb(registration)` vào `control_audit_entries` trước khi xóa đúng một dòng `shift_registrations`. Client `deleteEmptyShiftRegistrationByAdmin` (online-only, lý do ≥3 ký tự). UI: dòng `Chưa có bản ghi` có thêm `Xem các ca của nhân viên` + `Xóa dòng`; form xác nhận dùng chung với `Xóa ca`, tiêu đề/nút đổi theo ngữ cảnh, match theo `registrationId`. Quyết định phạm vi theo yêu cầu mới nhất của chủ quán: áp dụng cho **mọi** dòng đăng ký chưa chấm công (không giới hạn marker bổ sung như dự kiến ban đầu ở BUG-125), vì đã có lý do bắt buộc + audit + chặn cascade.
+
+**Checkpoint:** `ADMIN_ATTENDANCE_DELETE_OK` (test đã được mở rộng trước khi hiện thực — red-first từ phiên trước); 8/8 regression chấm công/Admin liên quan Passed; TypeScript + build 723 modules + `PRODUCTION_SUPABASE_BUNDLE_OK` (`index-AE9Zy8n_.js`; Admin `AdminPage-COLbI6Sg.js`; CSS `index-r-PpBySF.css`).
+
+**Migration production:** đã áp bằng `supabase db query --linked` (chỉ tạo function + grant, không đổi dữ liệu); `pg_proc` xác nhận cả hai RPC xóa đều tồn tại với `security definer`.
+
+**Deploy/live/bảo toàn dữ liệu:** prebuilt 128 file/7 function/cron `0 17 * * *` không đổi/không artifact cấm; `dpl_CPCmpEeWLM8E4gRG5ydNVpX8LivH` READY + alias chính; asset live chứa đủ marker `Xóa dòng`, câu chốt phạm vi và chuỗi RPC; index/server-time 200. Audit SELECT-only trước/sau: 41/636/811/3547/3800/6209/87/173 → 41/638/813/3550/3803/6215/87/173 — không bảng nào giảm, phần tăng là vận hành thật trong lúc deploy. Không ép tải lại tab đang nhập.
+
+**Còn lại:** chủ quán đăng nhập kiểm tra trực quan và tự quyết định xóa dòng mồ côi cụ thể (ví dụ dòng 01/07/2026) qua UI mới — hệ thống không tự xóa dữ liệu thật.
+
+## 2026-08-03 — Bộ lọc chỉnh công tự đổi chế độ và làm mất ngữ cảnh
+
+### BUG-128 — Chỉnh một dòng công ép sang “Theo nhân viên”, thiếu bộ lọc chi nhánh cục bộ
+
+- Severity: Medium. Status: **Fixed, verified and deployed production 2026-08-03** (`dpl_CuLBRp2irftLEya4r2c8jt6Rgj1v`).
+
+**Bằng chứng:** `beginAttendanceCorrection()` luôn gọi `setAttendanceListMode('employee')`, chọn lại nhân viên, xóa `attendanceEmployeeSearch` và tính lại trang dù dòng cần sửa đang hiển thị trong chế độ “Theo ngày”. Effect theo `from/to/branchId` còn xóa `attendanceListEmployeeId` mỗi lần chuyển tháng. Vùng `attendance-correction-filters` chỉ có ô tìm tên dùng kiêm tìm chi nhánh, không có lựa chọn chi nhánh độc lập.
+
+**Phạm vi sửa:** giữ nguyên mode/ngày/chi nhánh/từ khóa khi mở form của một dòng đang nhìn thấy; chỉ tự đưa đến đúng ngày/chi nhánh khi mở từ danh sách lỗi bên ngoài; thêm filter chi nhánh cục bộ dùng chung cho cả hai mode; thêm thao tác riêng “Xem các ca của nhân viên”. Không đổi RPC, dữ liệu công, công thức giờ/lương, audit hay phân quyền.
+
+**Regression:** pre-fix `node scripts/test-admin-attendance-filter-context.mjs` exits 1 at the missing `revealTarget = false` contract. Output includes the unconditional `setAttendanceListMode('employee')`, proving the reported context loss before implementation.
+
+**Checkpoint:** `ADMIN_ATTENDANCE_FILTER_CONTEXT_OK`. `Chỉnh công` trong danh sách đang xem chỉ mở form tại chỗ và giữ mode/ngày/chi nhánh/từ khóa. `Chỉnh công ngay` từ bảng lỗi mới chủ động đưa về đúng ngày + chi nhánh. Bộ lọc có selector chi nhánh riêng ở cả hai mode; đổi tháng giữ nhân viên/từ khóa; “Xem các ca của nhân viên” là nút riêng. Không đổi RPC/dữ liệu/công thức/audit/phân quyền.
+
+**Regression/build:** six focused attendance/Admin/UI checks plus TypeScript Passed; UI contract is 253 total/247 reachable controls. `test-admin-attendance-delete` remains the already-recorded BUG-125 migration blocker and is unrelated. `git diff --check` Passed. First build stopped only at sandbox `node_modules/.vite-temp` EPERM; approved retry Passed 723 modules with `PRODUCTION_SUPABASE_BUNDLE_OK` (`index-Cvwp_dRu.js`, Admin `AdminPage-5oDwtGdj.js`, CSS `index-DMh4vtZt.css`). Built assets contain the branch/history markers. Browser discovery returned `[]`, so signed-in visual confirmation remains pending. No deploy/schema/data action occurred.
+
+**Production gate under owner data-preservation instruction:** fresh Vercel prebuild Passed with 128 files, seven expected functions, unchanged `/api/auto-close-day 0 17 * * *` cron, all three filter markers and zero SQL/migration/env/document/LAN/seed/purge/repair/backfill artifact. Package scripts contain no deploy/database hook. A linked SELECT-only baseline recorded profiles 41, attendance 632, registrations 806, receipts/items 3545/3798, stock movements 6207, reports 87 and sessions 173. No write occurred; prebuilt deployment and postdeploy comparison are next.
+
+**Deploy/live/data preservation:** prebuilt deployment `dpl_CuLBRp2irftLEya4r2c8jt6Rgj1v` is READY and aliased to `https://gustino-operations.vercel.app`. Uncached index/main/Admin/CSS/server-time all return 200; index serves `index-Cvwp_dRu.js` + `index-DMh4vtZt.css`, and live Admin/CSS contain the branch-filter and explicit employee-history markers. The identical postdeploy SELECT-only audit matches every baseline exactly: profiles 41, attendance 632, registrations 806, receipts/items 3545/3798, movements 6207, reports 87, sessions 173. No migration, cron invocation, webhook, seed/restore or business-data write occurred; the deployment does not force-refresh an already-open data-entry tab.
+
+## 2026-08-03 — Admin khó tìm Thi đua nhân viên; Excel bằng chứng dài và thiếu bảng ngày/tháng
+
+### BUG-127 — Nhãn điều hướng không khớp nghiệp vụ và workbook chưa phục vụ đối chiếu trực quan
+
+- Severity: Medium. Status: **Fixed, verified and deployed production 2026-08-03** (`dpl_D15LGnaenGLd2qW48hiUcgoFGh1Q`).
+
+**Bằng chứng UI:** route `commission` đã có bảng thi đua nhưng sidebar gọi là `KPI nhân viên`, route map gọi `Hiệu suất bán hàng`, page heading gọi `Tổng kết bán hàng`; Overview không có lối tắt. Red-first test fails on missing direct `Thi đua nhân viên` label.
+
+**Bằng chứng Excel:** current evidence workbook visibly exports `Mã nhân sự`, `Mã chi nhánh`, `Mã nguồn` and lacks a per-day/employee sheet. Required output is three concise tables: month summary, daily employee detail and readable revenue evidence; technical IDs may remain hidden only for exact reconciliation formulas.
+
+**Phạm vi:** presentation/export shape only. Preserve source attribution, employee/branch scope, revenue, target, reward formulas, RLS and write paths.
+
+**Checkpoint:** Admin has consistent navigation/title plus an Overview shortcut. The generated XLSX contains exactly `Tổng hợp tháng`, `Theo ngày nhân viên`, and `Chi tiết doanh thu`; visible columns carry business content only, while hidden employee/branch keys preserve exact COUNTIFS/SUMIFS reconciliation. Real buffer generation, typed dates/numbers, frozen panes, filters and format assertions Passed.
+
+**Regression:** 12 applicable UI/workbook/KPI/reward/fairness/role/POS/revenue checks plus TypeScript Passed. The only stopped harness is the pre-existing `competition-drilldown` data-URL inability to resolve `./shiftReportScope`; the real TypeScript graph passes and neither module was edited here.
+
+**Build:** 723-module production build and Supabase bundle guard Passed (`index-BYmME4Ho.js`; Admin `AdminPage-DNPzF1Af.js`; CSS `index-B89Mtnsu.css`).
+
+**Prebuild:** 128 files, seven functions, unchanged cron, valid public Supabase config, all requested markers and zero forbidden artifact.
+
+**Deploy/live:** production alias serves the expected main/Admin/CSS assets; all competition navigation, Overview shortcut, three workbook sheet names and export-label markers are present and `/api/server-time` is 200. Signed-in visual/open-in-desktop-Excel confirmation remains because Browser/artifact renderer were unavailable.
+
+## 2026-08-03 — Tổng quan báo 0 lịch sử dù đã có bill
+
+### BUG-126 — Thẻ lịch sử Admin nối nhầm nguồn phiếu kiểm kê thay vì POS receipts
+
+- Severity: Medium. Status: **Fixed, verified and deployed production 2026-08-03** (`dpl_D15LGnaenGLd2qW48hiUcgoFGh1Q`).
+
+**Bằng chứng:** `DashboardPage` renders `archiveRows`, and `AdminPage` builds that array exclusively from `periodInventoryReports`. The Overview loader/realtime already includes `sales_receipts`, but those rows are not passed to the card. Red-first `node scripts/test-admin-overview-bill-history.mjs` exits 1 at missing `overviewBillRows`.
+
+**Phạm vi sửa:** replace the card feed with selected-date/selected-branch `salesReceipts`, sort by `createdAt` descending and display timestamp, code, branch, employee, item count and bill total. Preserve all receipt writes, RLS, revenue/KPI formulas and other Overview cards.
+
+**Checkpoint:** `ADMIN_OVERVIEW_BILL_HISTORY_OK`, `ADMIN_ERP_WORKSPACES_OK`, TypeScript Passed. Dashboard no longer accepts `archiveRows`; it displays `recentBills` with UTC+7 time and a bill-specific empty state. Broader POS/revenue/UI regression and build/deploy remain.
+
+**Regression:** 9/9 related POS/revenue/realtime/pagination/error/role/button/attendance-month checks Passed; button audit remains 252 total/246 reachable.
+
+**Deploy/live:** production Admin asset contains `Lịch sử bill gần đây` and CSS contains the bill-history styling; index/Admin/CSS/server-time are 200. No POS/history data was changed.
+
+## 2026-08-03 — Xóa ca bổ sung nhập nhầm vẫn còn dòng Vắng
+
+### BUG-125 — Xóa attendance record nhưng giữ lại supplemental registration
+
+- Severity: High. Status: **Resolved via BUG-129 (2026-08-03)** — chủ quán yêu cầu trực tiếp nút xóa trên dòng trống, mở quyền cho RPC hẹp `admin_delete_empty_shift_registration`; dòng mồ côi giờ xóa được qua UI Admin có lý do + audit. Việc xóa dòng 01/07/2026 cụ thể do chủ quán tự thao tác trên UI.
+
+**Bằng chứng:** UI hiện nói “Chỉ bản ghi này bị xóa; lịch đăng ký ca vẫn được giữ lại”; migration `20260717_admin_delete_attendance_record.sql` và regression cũ cố ý cấm xóa `shift_registrations`. Ca do `admin_add_attendance_supplement` tạo có `shift_id=null` và note bắt đầu `Admin bổ sung công do lỗi hệ thống`; khi record bị xóa, registration này trở thành dòng Vắng như ảnh chủ quán.
+
+**Quyết định/phạm vi:** chỉ registration mang marker bổ sung hệ thống, `shift_id is null` và không còn attendance record mới được xóa. Ca đăng ký thường vẫn giữ nguyên. Cần nút dọn dòng bổ sung mồ côi, audit đầy đủ, và xóa một lần cả record+registration cho các lần sau. Production RPC/migration chưa được phép áp dụng tự động.
+
+**Blocker an toàn:** repository gate từ chối tạo migration khi chưa có xác nhận trực tiếp. Phần giao diện khóa ngày tương lai đã Passed test/TypeScript nhưng chưa deploy riêng. Cần chủ quán cho phép rõ việc tạo + apply RPC Supabase; nếu muốn Codex xóa luôn dòng mồ côi 01/07/2026 của Đặng Thị Khánh Linh thì cần cho phép riêng production data delete sau khi đọc/xác định đúng registration.
+
+## 2026-08-03 — Admin không chọn được tháng cũ để chỉnh công
+
+### BUG-124 — Ô ngày chỉnh công bị khóa trong tháng của bộ lọc chung
+
+- Severity: High. Status: **Đã sửa, kiểm chứng và deploy production 2026-08-03** (`dpl_5ey5DqMEitLPwswkMFzqL2rKUSHg`).
+
+**Bằng chứng:** `attendanceListDate` dùng `<input type="date" min={from} max={to}>`; `from/to` mặc định là tháng hiện tại, còn khối `attendance-correction-filters` không có bộ chọn tháng. `node scripts/test-admin-attendance-history-month.mjs` thoát 1 trước sửa tại assertion thiếu `type="month"`.
+
+**Phạm vi được phép:** thêm điều hướng tháng ngay tại danh sách công, cho phép chọn mọi tháng quá khứ, đồng bộ khoảng tải dữ liệu và ngày đang xem; giữ nguyên RPC chỉnh công, audit, phân quyền, giờ công và dữ liệu lịch sử.
+
+**Checkpoint sau sửa:** `ADMIN_ATTENDANCE_HISTORY_MONTH_OK` cùng sáu regression Admin/attendance/UI/TypeScript liên quan Passed. Bộ chọn tháng không có `min`, chỉ `max` tháng hiện tại; hai nút chuyển tháng dùng cùng nguồn range, giữ ngày trong tháng khi có thể và reset trang/form sửa cũ an toàn.
+
+**Follow-up UX trước deploy:** ảnh thật cho thấy hai bộ chọn `Giờ vào`/`Giờ ra` của Bổ sung công bị tách hai hàng. Regression 24h đã được mở rộng và đỏ tại wrapper cặp giờ còn thiếu; fix phải giữ hai giờ cùng một hàng trên desktop và chỉ xếp dọc trên mobile.
+
+**Checkpoint cặp giờ:** Passed regression 24h + tháng cũ + button contract + TypeScript. Form Bổ sung công dùng grid riêng bốn cột; cặp giờ chiếm hai cột và tự chia đôi, nên Giờ vào/Giờ ra nằm cùng hàng trên desktop. Chỉ media phone mới chuyển cặp thành một cột; không đổi dữ liệu gửi RPC.
+
+**Build kết hợp:** 723 modules và bundle guard Passed (`index-BHsywUyW.js`, Admin `AdminPage-CkYvI2mp.js`, AdjustmentArchive `AttendanceAdjustmentArchive-CF3cf7HI.js`, CSS `index-CGZG1R4c.css`).
+
+**Prebuild gate:** Passed with 128 files/seven functions/unchanged cron, valid public Supabase config, both month-navigation and time-pair markers, and zero SQL/migration/env/document/LAN-data artifact. Ready to redeploy.
+
+**Deploy/live:** production alias serves `index-BHsywUyW.js`/`index-CGZG1R4c.css`; Admin/Archive/CSS live markers confirm unrestricted-past month selection, previous/next navigation and the desktop paired-time row. `/api/server-time` 200. No migration or production data mutation.
+
+## 2026-08-03 — Nhân viên vẫn thấy chấm bù; auto-close chưa phủ hết LAN/>200 người; KPI thiếu Excel ngày
+
+### BUG-123 — Luồng quên check-out còn gây hoang mang và báo cáo KPI chưa có bản Excel thưởng theo ngày
+
+- Severity: High. Status: **Đã sửa, kiểm chứng và deploy production 2026-08-03** (`dpl_2FJLJyP4RqkmpxEzGv2vXHchkv6S`).
+
+**Bằng chứng tái hiện:** `node scripts/test-attendance-auto-close-admin-errors.mjs` thoát 1 ngay tại assertion cấm chuỗi `Check-out bù`; source còn import/gọi `lateCheckOut`, ô tự khai giờ ra, nút gửi đơn `missing_checkout`, và thông báo chặn ca mới hướng người dùng quay lại luồng này. Cloud cron đã có close ca cũ nhưng query cứng `limit=200`; LAN chưa auto-close và vẫn trả lỗi khuyên `Check-out bù`. Admin chỉ có danh sách công/đơn, chưa có danh sách riêng nhận diện ca hệ thống tự đóng. KPI có bảng chi tiết ngày trên màn hình nhưng chưa có nút/workbook Excel riêng chứa ngày × nhân viên × doanh thu × thưởng ngày.
+
+**Quyết định nghiệp vụ được phép:** chủ quán yêu cầu bỏ hoàn toàn lựa chọn chấm bù ở phía nhân viên; sau khi sang ngày mới, hệ thống tự đóng theo giờ tan ca đã đăng ký và ghi nhận lỗi để Admin sửa. KPI Excel phải xuất cụ thể ngày, nhân viên, doanh thu và số thưởng. Công thức hiện hữu `dailyKpiBonus`, cách gom doanh thu và phân quyền chỉnh công được giữ nguyên.
+
+**Phạm vi bản vá:** hoàn thiện phân trang/idempotency cloud auto-close, bổ sung tương đương cho LAN; marker máy đọc được để dựng danh sách lỗi Admin không cần đổi schema; thay thẻ quá hạn phía nhân viên bằng thông báo chỉ đọc; bỏ loại đơn quên check-out khỏi form nhân viên; thêm workbook KPI ngày dùng chính `dailyKpiRows`, ô ngày/số tiền dạng dữ liệu Excel thật, bộ lọc/freeze/summary rõ ràng. Không sửa dữ liệu lịch sử và không deploy trong batch này nếu chưa được yêu cầu.
+
+**Checkpoint sau sửa:** `ATTENDANCE_AUTO_CLOSE_ADMIN_ERRORS_OK` và `KPI_DAILY_EXCEL_OK`. Test cloud thực thi 201 row qua hai trang, chạy 14 row đủ điều kiện theo batch tối đa 12, cô lập một PATCH lỗi và vẫn đóng 13 row còn lại đúng scheduled end UTC+7/marker; workbook giữ Date/number thật, format tiền/phần trăm, freeze/filter, tổng doanh thu/tổng thưởng và xuất được buffer XLSX. Admin dùng marker dẫn tới form chỉnh công audit hiện có; RPC thay địa chỉ auto-close bằng lý do Admin nên row đã sửa tự rời danh sách, không cần migration/trạng thái mới.
+
+**Bổ sung UX/ghi chú từ chủ quán:** form chỉnh công và bổ sung công phải thao tác nhanh, đẹp, chọn giờ 24h rõ ràng thay picker desktop 12h. Đơn nhân viên đi trễ/về sớm phải được ghép đúng ngày/ca và ghi người làm đơn + thời điểm gửi vào cột Ghi chú của bảng công/Excel. `test-admin-attendance-24h-notes.mjs` hiện đỏ trước sửa tại việc chưa có bộ chọn 24h.
+
+**Checkpoint UX/ghi chú:** `ADMIN_ATTENDANCE_24H_NOTES_OK` + TypeScript Passed. Bộ chọn tách ngày và giờ 00–23/00–59, chỉnh công có nút điền giờ ca, bổ sung công tìm tên/chi nhánh không dấu. Đơn được phân trang và ghép bằng `userId|branchId|workDate`; ghi chú chứa loại đơn, người gửi, giờ gửi UTC+7, giờ ca→giờ xin, lý do và chứng từ. Admin UI và Excel dùng cùng `AttendanceDetailRow.note`.
+
+**Focused integration sau khi cập nhật test cũ:** Passed 8/8 gồm single-open, hợp đồng bỏ chấm bù, auto-close/error list, Admin 24h/ghi chú đơn, KPI Excel, handler cron, LAN integration và TypeScript. Hai regression cũ được đổi assertion để khóa luật mới trực tiếp từ chủ quán; không đưa nút/loại đơn chấm bù trở lại sản phẩm. Hồi quy rộng chấm công/load tiếp theo Passed 22/22, bao phủ outbox, realtime ngày mới, phân trang, LAN, GPS/camera/address, idempotency, business date và critical-load visibility.
+
+**Kiểm chứng kết thúc:** 10 kiểm tra KPI/Admin/business UI liên quan Passed; syntax và scoped whitespace review Passed. Production build cục bộ Passed 723 modules cùng bundle guard (`index-I-j_zW9M.js`, Attendance `AttendancePage-DXRI7P4s.js`, Admin `AdminPage-BoX8M-qt.js`). Hai baseline rộng ngoài phạm vi vẫn được giữ nguyên và ghi rõ: test tồn kho còn kỳ vọng nhóm `sale` đã được thay đổi có chủ đích trong worktree, còn deploy-polish harness không resolve relative import từ data URL; không sửa Inventory/shift-report để che các baseline này. Chưa deploy, chưa query/write production, chưa chạy migration.
+
+**Cổng phát hành theo yêu cầu chủ quán:** build cuối sau chỉnh nhãn workbook Passed với main `index-W_K4MjaO.js`; Vercel prebuild có 128 file, bảy function, cron nửa đêm giữ nguyên và zero forbidden artifact. Bundle chứa Supabase public config, danh sách lỗi, nút KPI Excel, giờ 24h, ghi chú đơn và không còn `Check-out bù`. Không kèm/không chạy migration hay sửa dữ liệu lịch sử.
+
+**Deploy/live:** deployment `dpl_2FJLJyP4RqkmpxEzGv2vXHchkv6S` READY, alias chính phục vụ main `index-W_K4MjaO.js`, Admin `AdminPage-CSY7Tt7z.js`, Attendance `AttendancePage-Bm0rcaPP.js`, AdjustmentArchive `AttendanceAdjustmentArchive-Tfq2FpPG.js`. Live marker xác nhận danh sách lỗi/KPI Excel/24h/ghi chú đơn và vắng `Check-out bù`; `/api/server-time` 200, auto-close không auth 401. Không invoke cron có secret, không migration, không chỉnh dòng công hay dữ liệu production.
+
+## 2026-08-03 — Check-in đã thực hiện nhưng hôm sau giao diện lại yêu cầu Check-in
+
+### BUG-122 — Trạng thái ngày/realtime/outbox có thể hiển thị Check-in sai sau khi đã chấm
+
+- Severity: Critical. Status: **Đã sửa/kiểm chứng và deploy trong bản kết hợp 2026-08-03** (`dpl_2FJLJyP4RqkmpxEzGv2vXHchkv6S`).
+
+**Bằng chứng tái hiện:** `node scripts/test-attendance-realtime-next-day.mjs` thoát 1 trước bản vá với 26 vi phạm. Fixture `2026-08-02T17:30:00Z` là `2026-08-03 00:30` tại Việt Nam nhưng helper riêng trong `AttendancePage` cho thiết bị UTC trả `2026-08-02`. `AttendancePage` vẫn vẽ `canCheckIn` chỉ từ `today && !record`; phiên cũ đang mở và check-in nằm trong outbox chỉ bị chặn sau khi người dùng đã chụp ảnh/bấm hoặc chỉ được hiện ghi chú. `AppShell` chỉ đọc đúng ngày hôm nay, cho phép nhiều request 30 giây chồng nhau và giữ reminder cũ khi request lỗi. Realtime nghe toàn bộ hai bảng không filter, mỗi event gọi lại full refresh.
+
+**Phạm vi fix được phép:** hợp nhất ngày nghiệp vụ UTC+7; khóa hành động Check-in ngay khi có own-open/pending-check-in; chống response cũ ghi đè; phát event sau write/outbox; filter + burst-coalesce realtime; phân trang đọc dữ liệu và dùng đường dẫn ảnh outbox ổn định. Giữ nguyên công thức, role, bằng chứng selfie/GPS, quy trình check-in/check-out và quy tắc một phiên mở.
+
+**Bản vá cục bộ:** `AttendancePage` dùng helper ngày Việt Nam, tải tab cá nhân theo `userId`, không vẽ Check-in khi có own-open/pending-check-in và lọc realtime theo user/authorized branch; `AppShell` đọc ngày trước→hôm nay, có deadline/request generation, đọc outbox và realtime own-user; các read cloud phân trang 500 dòng và bảng công lọc theo `shift_registrations.work_date`; write/flush phát sự kiện hội tụ; outbox fallback bộ nhớ nếu IndexedDB lỗi và retry ảnh theo path cố định. Toàn bộ focused/static attendance batch Passed 15/15; performance/pagination/realtime regressions và TypeScript Passed; production build 719 modules + bundle guard Passed.
+
+**Race reload đã khóa:** `outboxLoaded` khởi tạo false; màn chỉ mở Check-in sau khi đọc xong IndexedDB/memory. Optimistic row được dọn sau khi server xác nhận cùng timestamp theo instant, tránh khác cách viết ISO làm local state che realtime mãi.
+
+**Rà soát độc lập và hardening lần 2:** không còn biến lỗi đọc IndexedDB thành danh sách rỗng (`authoritative=false` khóa Check-in); fallback RAM được gắn `durability=memory` và UI/lỗi nói rõ sẽ mất khi đóng tab; bỏ hoàn toàn tự xóa bằng chứng sau 7 ngày; `23505` chỉ xóa op sau read-back đúng `registrationId`. Conflict một-phiên-mở hoặc phát hiện ca mới hơn chuyển thành `needs-review`, giữ bằng chứng nhưng không tự replay giờ cũ. Refresh records thất bại đặt lại fail-safe `recordsLoaded=false`; tab Bảng lịch không tải attendance records; AppShell bỏ watcher trùng khi đang ở trang Chấm công và dùng query nhỏ chỉ lấy phiên mở.
+
+**Kiểm chứng sau hardening:** `ATTENDANCE_OUTBOX_OK`, `ATTENDANCE_REALTIME_NEXT_DAY_OK`, `ATTENDANCE_SINGLE_OPEN_SESSION_OK` và TypeScript Passed. Batch đầy đủ sau mọi hardening Passed 19/19: 15 regression chấm công + LAN integration + performance/sync + pagination + shift realtime reminder. Production build cuối Passed 719 modules với bundle guard xanh (`index-NBfg362C.js`, `AttendancePage-Cs_zPtp1.js`).
+
+**Đồng bộ lại qua LAN:** trước bản vá, `scripts/lan-server.mjs` luôn thay `capturedAt` của outbox bằng giờ kết nối lại, nên một lượt chấm lúc mất mạng có thể bị dời sang ngày hôm sau. Client nay đánh dấu riêng replay từ outbox; LAN chỉ giữ timestamp gốc khi timestamp hợp lệ, không ở tương lai và check-in thuộc đúng ngày đăng ký theo UTC+7. Check-in/check-out bình thường vẫn dùng giờ máy chủ. `LAN_ATTENDANCE_API_INTEGRATION_OK`, `ATTENDANCE_REALTIME_NEXT_DAY_OK` và TypeScript Passed; integration cũng chứng minh timestamp replay ở tương lai bị từ chối. Validation không tự thêm cửa sổ giờ ca vì UI/business hiện cho check-in suốt đúng ngày đăng ký. Lỗi replay 400 được giữ thành `needs-review`, không retry vô hạn và không xóa bằng chứng.
+
+**Ảnh retry LAN:** client truyền cùng `selfiePath` theo operation ID; server làm phẳng/lọc tên rồi ghi đè cùng file. Retry không còn dùng `Date.now()` để tạo ảnh mồ côi mới. Integration gửi cùng payload hai lần và xác nhận cùng URL; cloud vẫn giữ cơ chế path cố định đã có.
+
+**Rà soát cuối — tái hiện đỏ trước hardening:** regression mở rộng thất bại đúng 12 hợp đồng: IndexedDB `put().onsuccess` rồi transaction abort vẫn bị báo `persistent`; check-out outbox thiếu/không tìm thấy `recordId` bị xóa; op lỗi vĩnh viễn chặn các op sau; LAN POST/PATCH tin field danh tính/chi nhánh/giờ vào do client gửi; tên selfie chưa namespace theo session; tab Bảng lịch query toàn lịch sử và nghe `attendance_records` dù không dùng. `ATTENDANCE_OUTBOX_FAIL`, `ATTENDANCE_REALTIME_NEXT_DAY_FAIL` và LAN integration assertion đều đỏ trước bản vá. Các điểm này là lỗi implementation/an toàn bằng chứng, không phải thay đổi quy tắc nghiệp vụ.
+
+**Hardening sau tái hiện:** IndexedDB nay đợi transaction `complete/abort/error` thật trước khi báo `persistent` hoặc xóa RAM; check-out thiếu/mất record và lỗi ghi vĩnh viễn chuyển `needs-review` thay vì xóa, đồng thời không chặn các op độc lập phía sau. LAN dựng record từ session+registration, whitelist PATCH, namespace ảnh theo user/registration. Bảng lịch đưa range 7 ngày lên refresh context và không subscribe bảng công. `ATTENDANCE_OUTBOX_OK`, `ATTENDANCE_REALTIME_NEXT_DAY_OK`, `LAN_ATTENDANCE_API_INTEGRATION_OK` và TypeScript Passed sau vá.
+
+**Regression đầy đủ sau hardening:** Passed 19/19 lệnh — 15 test chấm công trọng tâm, LAN integration, performance/sync, pagination và shift realtime reminder. Production build cuối Passed 719 modules với bundle guard xanh (`index-NBfg362C.js`, `AttendancePage-Cs_zPtp1.js`); chưa deploy.
+
+**Rà soát kết thúc:** scoped diff check và syntax check Passed; không còn pattern xóa check-out thiếu đích, tự hết hạn bằng chứng hoặc raw attendance POST/PATCH tin toàn bộ payload. Trạng thái BUG-122 là **đã sửa, kiểm chứng và phát hành cùng BUG-123**. Live alias phục vụ Attendance `AttendancePage-Bm0rcaPP.js`; kiểm tra nhiều thiết bị thật vẫn pending vì Browser không khả dụng. Không có schema/data migration trong release.
+
+**Không tự làm trong batch này:** không query/write production, không apply migration. Audit nguồn phát hiện migration unique-open hiện còn untracked và legacy schedule RPC có nguy cơ cascade attendance; catalog production/schema chỉ được kiểm tra hoặc sửa khi chủ quán cho phép trực tiếp. In-app Browser đã làm đúng bootstrap/troubleshooting nhưng discovery trả `[]`, nên QA nhiều context/thiết bị thật còn pending.
+
+## 2026-08-01 (chiều, đợt 2) — "Chấm công không thành công": gỡ nốt mọi tầng vị trí có thể chặn
+
+### BUG-121 — GPS sai số >150m hoặc không lấy được GPS là chấm công thất bại; yêu cầu chủ quán: chấm công phải LUÔN thành công
+
+- Severity: Critical. Status: **Đã sửa + ĐÃ DEPLOY 2026-08-01** (`gustino-operations-m3oibsu2d`, bundle `index-Cl_wrddw.js`; migration `20260801_checkout_no_gps_selfdeclared.sql` ĐÃ APPLY prod, verify constraint có nhánh mới + giữ nhánh cũ, NOT VALID — không quét/không sửa dòng dữ liệu nào).
+
+**Bối cảnh:** sau BUG-120 (địa chỉ không còn chặn), vẫn còn 2 tầng chặn: (1) `getBestGeolocationPosition` NÉM lỗi khi sai số >150m — đứng TRONG Lotte Mart (lotte-vt/23-10) GPS vài trăm mét là bình thường, khớp nhóm trượt lặp lại ở lotte-vt; (2) không lấy được GPS (WebView trong app Google/Zalo, quyền bị chặn, hết 25s) → chặn hẳn, và outbox không cứu được vì op chỉ tạo SAU bước vị trí. Chủ quán chốt: không bắt nhân viên đổi trình duyệt/thao tác lại — hệ thống phải tự thành công.
+
+**Fix — thang hạ cấp CÓ ĐÓNG DẤU (ảnh selfie vẫn bắt buộc, không bịa toạ độ):**
+- GPS ≤150m: như cũ.
+- GPS >150m: vẫn ghi toạ độ thật, địa chỉ mang tiền tố **`[GPS SAI SỐ LỚN] ±Xm`** — quản lý biết độ tin cậy.
+- Không GPS: toạ độ để TRỐNG, địa chỉ **`[KHÔNG CÓ GPS] Chấm công không kèm định vị (<lý do>)`**; dấu trên ảnh in "GPS: máy không lấy được vị trí lúc chấm công". Check-out diện này hợp lệ nhờ nhánh 3 mới của `attendance_records_checkout_evidence_required` (ảnh CÓ + GPS null + tiền tố tự khai); check-in vốn không có ràng buộc GPS.
+- `finalizeAttendanceLocation()` (export, test được) là nguồn quyết định duy nhất; `probeAttendanceLocation` (thẻ kiểm tra thiết bị) vẫn CẢNH BÁO máy thiếu GPS dù chấm công không còn bị chặn. Outbox nhận toạ độ null.
+
+**Kiểm chứng:** `scripts/test-attendance-gps-fallback.mjs` → `ATTENDANCE_GPS_FALLBACK_OK` (3 tầng + cấm chốt chặn cũ quay lại + soi nội dung migration). Toàn bộ test chấm công xanh (address-fallback, native-camera-location, outbox, single-open, late-checkout, geocode-race); `tsc -b` + `npm run build` pass. Verify live: bundle chứa cả 2 tiền tố, chuỗi chặn cũ = 0, alias 200.
+
+## 2026-08-01 (chiều) — "Lỗi chấm công": dịch địa chỉ hỏng là chặn đứng check-in
+
+### BUG-120 — Chốt chặn "địa chỉ cụ thể bắt buộc" biến sự cố nhà cung cấp bản đồ thành sự cố chấm công toàn hệ thống
+
+- Severity: Critical (nhân viên không thể check-in/check-out khi Nominatim/BigDataCloud chập chờn; nhóm lotte-vt trượt lặp lại nhiều ngày).
+- Status: **Đã sửa + ĐÃ DEPLOY 2026-08-01** (`gustino-operations-dlur4t0zr`, alias https://gustino-operations.vercel.app; bundle `index-fd1Ey3ux.js`).
+
+**Bằng chứng:** chủ quán báo "lỗi chấm công" ~16:00; log Vercel ghi `GET /api/reverse-geocode` mức **error** lúc 16:02:20 — đúng cửa sổ check-in ca 16:00 của Nguyễn Thị Thuỳ Trang (lotte-vt). Cùng ngày: Thạch Thái Hoàn Vy (lotte-vt, có hoạt động app 13:43 nhưng 0 bản ghi, 0 ảnh — máy iPhone mở trong WebView app Google), Phan Thị Thanh Ngân (lotte-2310, tài khoản MỚI tạo 14:59, đăng nhập 15:39, đăng ký ca 15:40, không có bản ghi), Huỳnh Phương Anh (lotte-vt, trượt 28–29–31/07 + 01/08, từng hoạt động trong app giữa ca 31/07 mà không có bản ghi). Chấm công của những người khác trên bản mới vẫn lưu bình thường (check-in 13:52–14:14, check-out 15:16–15:22) ⇒ không phải hỏng toàn hệ thống, mà là đường địa chỉ.
+
+**Root cause:** `getAttendanceLocation()` bắt buộc địa chỉ "cụ thể": `/api/reverse-geocode` lỗi/thô + fallback BigDataCloud trượt ⇒ `requireConcreteAttendanceAddress` NÉM `AttendanceLocationError` ⇒ check-in/check-out dừng hẳn, outbox (BUG-118) cũng không cứu được vì op chỉ được tạo SAU khi có vị trí. Hai nhà cung cấp bản đồ miễn phí (rate-limit Nominatim) trở thành single point of failure của chấm công.
+
+**Fix — đúng pattern "tự khai có đóng dấu" (như `[CHỐT HÀNH CHÍNH]`):** bằng chứng gốc là ẢNH + TOẠ ĐỘ GPS + SAI SỐ; địa chỉ chỉ là bản dịch. `resolveAttendanceAddress()` mới: có địa chỉ cụ thể thì dùng như cũ; cả hai nguồn cùng hỏng thì ghi `[CHƯA DỊCH ĐƯỢC ĐỊA CHỈ] GPS <lat>, <lng> (±Xm)` và CHO chấm công tiếp. Quản lý nhìn báo cáo/Excel biết ngay bản ghi nào chưa dịch được địa chỉ nhưng vẫn có đủ toạ độ thật để đối chiếu. Gỡ `requireConcreteAttendanceAddress`. Không đổi ràng buộc DB (địa chỉ vẫn non-empty), không đổi quy tắc ảnh/GPS ≤150m.
+
+**Kiểm chứng:** `scripts/test-attendance-address-fallback.mjs` → `ATTENDANCE_ADDRESS_FALLBACK_OK` (địa chỉ cụ thể giữ nguyên, gọt đuôi GPS, 3 kiểu hỏng đều ra tự khai đủ toạ độ + sai số, không ném lỗi); cập nhật `test-attendance-native-camera-location.mjs` sang hợp đồng mới (cấm chốt chặn cũ quay lại). `ATTENDANCE_REVERSE_GEOCODE_RACE_OK`, outbox/single-open/late-checkout xanh; `tsc -b` + `npm run build` pass. Verify live: bundle chứa tiền tố tự khai, chuỗi lỗi chặn cũ = 0.
+
+**Ghi chú vận hành:** Thạch Thái Hoàn Vy còn thêm yếu tố mở app trong WebView Google trên iPhone (BUG-107) — thẻ kiểm tra thiết bị đã cảnh báo, cần mở bằng Safari. Các ca bị chặn hôm nay: nhân viên chấm lại bình thường; giờ vào trễ hơn thực tế thì dùng đơn chỉnh công/Admin sửa có audit.
+
+## 2026-08-01 — Dashboard cộng LẶP doanh thu Ca 2: 29/07 hiện 13,17tr trong khi POS thật 8,42tr
+
+### BUG-119 — Snapshot bị ghi đè lúc chốt Tổng ngày nhưng mốc "hóa đơn sau snapshot" vẫn là `created_at` (giờ chốt Ca 1)
+
+- Severity: Critical (chủ quán báo "29/7 tới 13 triệu mấy nhưng số thực tế thấp hơn nhiều" — mọi ngày từ 25/07 đều bị thổi ~+doanh thu Ca 2).
+- Status: **Đã sửa + ĐÃ DEPLOY 2026-08-01** (`gustino-operations-qwq0r32ix`, alias https://gustino-operations.vercel.app).
+
+**Bằng chứng production (chỉ đọc):** với cả 12 ngày×chi nhánh 28–31/07: `APP_HIỂN_THỊ = snapshot + hóa_đơn_sau(created_at)` đều lớn hơn POS thật đúng bằng doanh thu Ca 2. Ngày 29/07: app 6.480.000+4.200.000+2.490.000 = **13.170.000đ**, POS thật 8.424.000đ — khớp từng đồng với lời chủ quán.
+
+**Chuỗi nhân quả:** (1) từ bản 25/07 (BUG-116), chốt báo cáo **Ca 1** tạo dòng `report_snapshots` lúc ~15:17; (2) chốt **Tổng ngày** ~22:16 chỉ UPSERT payload — bảng không có `updated_at`, `created_at` đứng nguyên 15:17; (3) lớp bù BUG-104 trong `revenue.ts` cộng "hóa đơn tạo sau snapshot" so với `created_at` → toàn bộ hóa đơn Ca 2 (15:17→22:16) bị cộng LẶP lên trên summary vốn đã là CẢ NGÀY.
+
+**Fix (chỉ hiển thị, tự lành cho mọi ngày cũ, KHÔNG đụng DB):** mọi đường ghi snapshot đều đóng dấu `payload.finalizedAt` tại thời điểm ghi → `revenue.ts` thêm `snapshotStatementAt()` = max(`created_at`, `payload.finalizedAt`, các `finalizedAt`/`n8nDelivery.updatedAt` trong `shiftReports`) và dùng mốc này cho lớp bù BUG-104. Ngày đã chốt: delta = hóa đơn sau 22:16 = 0 → hiện đúng POS; hóa đơn bán SAU khi chốt vẫn được cộng thêm (BUG-104 giữ nguyên); payload kiểu cũ không có `finalizedAt` rơi về `created_at` (hành vi cũ).
+
+**Kiểm chứng:** `scripts/test-revenue-snapshot-statement-time.mjs` → `REVENUE_SNAPSHOT_STATEMENT_TIME_OK` (4 kịch bản, dùng đúng số thật 29/07 Gold Coast). **Đã kiểm tra ngược:** trả mốc về `created_at` là test đỏ với ĐÚNG số sai trên production (6.480.000). `tsc -b` + `npm run build` pass.
+
+**Deploy & an toàn dữ liệu:** deploy frontend thuần — không migration, không ghi một dòng dữ liệu nào (cả phiên chỉ chạy SQL SELECT); alias chuyển nguyên tử, deployment cũ (`iust3h2vj`) còn nguyên để rollback tức thì. Verify live: `index-Ci89EB3M.js` khớp build local, `revenue-DmIf2ZO5.js` chứa mốc `finalizedAt`, `AttendancePage-DouwRAT7.js` chứa banner outbox, chunk `shiftReportScope` được phục vụ, `/api/server-time` + `/api/reverse-geocode` HTTP 200.
+
+## 2026-08-01 — Doanh thu TỪNG CA sai số (ảnh Zalo Ca 1 + Ca 2 lệch Tổng ngày)
+
+### BUG-117 — Báo cáo từng ca lọc hóa đơn theo cửa sổ giờ của phiên ca: hở khoảng trống, hở trước giờ mở, đếm trùng khi chồng giờ
+
+- Severity: Critical (chủ quán đối chiếu 2 ảnh Zalo với tổng ngày thấy "sai số nặng, lỗi đồng bộ doanh thu").
+- Status: **Đã sửa + ĐÃ DEPLOY 2026-08-01** (cùng lô BUG-118/119).
+
+**Bằng chứng production (chỉ đọc, `scripts` chẩn đoán trong phiên 01/08):**
+- Tổng NGÀY luôn đúng: 14 ngày gần nhất snapshot khớp POS 100%, không lệch business_date, không hóa đơn trùng.
+- Nhưng số TỪNG CA trong `report_snapshots.payload.shiftReports` (nguồn 2 ảnh Zalo + kho báo cáo) lệch:
+  - 31/07 `lotte-2310`: Ca 2 mở 17:17 (trễ 121 phút sau khi Ca 1 đóng 15:16) → **122.000đ bán trong khoảng trống biến mất khỏi CẢ HAI ảnh** (Ca 1 = Ca 2 = 681.000đ, ngày = 1.484.000đ).
+  - 28/07 `gold-coast`: khoảng trống 20 phút (15:24→15:44) nuốt **662.000đ** (4 hóa đơn 15:32–15:43).
+  - 29/07 `gold-coast`: hóa đơn HD2907-001 (89.000đ) tạo 09:01 **trước giờ mở phiên Ca 1** → không thuộc ca nào.
+  - 28/07 `lotte-2310`: hóa đơn HD2807-010 (89.000đ) bị xóa 15:34 **sau khi ảnh Ca 1 đã chốt** → tổng 2 ca lớn hơn ngày 89.000đ (bản chất "báo cáo là ảnh chụp tại thời điểm chốt", không phải lỗi code — ghi nhận, không sửa hồi tố).
+
+**Root cause:** `isTimestampInShift()` (ReportPage) + các bộ lọc tương tự (shiftCompetition, ShiftHandoverPage) chỉ nhận hóa đơn có `createdAt` nằm TRONG `startedAt..endedAt` của phiên ca. POS bán liên tục còn phiên ca do người bấm mở/đóng → mọi phút không có phiên nào mở là doanh thu "vô chủ".
+
+**Fix — `src/lib/shiftReportScope.ts` (mới):** ngày được chia bằng đúng MỘT điểm cắt giữa hai ca kề nhau = `min(giờ đóng ca trước, giờ mở ca sau)`; ca đầu nhận từ đầu ngày, ca cuối nhận tới cuối ngày ⇒ **tổng các ca luôn bằng tổng ngày**. Áp tại: `ReportPage` (poster/scope UI + `reportModelForScope` + `saveCloud` — nơi sinh ảnh Zalo và snapshot ca), `shiftCompetition.ts` (doanh thu ca trưởng ở Dashboard/AdminPage), `ShiftHandoverPage.receiptsInSession` (khối "doanh thu trong ca"). **Màn Đối chiếu ca của AdminPage GIỮ NGUYÊN cửa sổ vật lý** — số liệu kho ở đó neo theo 2 lần kiểm đếm đầu/cuối ca, đổi sang phân vùng sẽ làm sai cột chênh lệch.
+
+**Kiểm chứng:** `scripts/test-shift-report-scope.mjs` → `SHIFT_REPORT_SCOPE_OK` (7 kịch bản, tái hiện ĐÚNG số thật 31/07: trước vá Ca 2 = 681k, sau vá = 803k). **Đã kiểm tra ngược:** khôi phục hành vi cũ là test đỏ đúng 3 kịch bản với đúng số production. `tsc -b` + `npm run build` pass; `REPORT_DUAL_IMAGE_CONSISTENCY_OK`, `DAILY_REPORT_EMPLOYEE_ATTENDANCE_FLOW_OK`, `HANDOVER_SHIFT_RECOVERY_OK` (đã cập nhật 1 marker stale từ đợt 28/07), `test-shift-owner-must-be-leader`, `test-stock-and-sync-performance` xanh.
+
+**Tồn đọng dữ liệu cũ (cần chủ quán duyệt):** snapshot ca của 28–29/07 và 31/07 nêu trên vẫn giữ số cũ trong `payload.shiftReports` (ảnh đã gửi không rút lại được). Tổng ngày không sai nên KHÔNG bắt buộc vá; muốn kho báo cáo hiển thị lại đúng từng ca thì phải tính lại và ghi đè payload — chỉ làm khi được duyệt.
+
+## 2026-08-01 — Chấm công "không lưu": mất bằng chứng khi luồng chết giữa chừng
+
+### BUG-118 — Check-in/check-out thất bại giữa chừng là mất luôn bằng chứng; nhân viên tưởng đã chấm, vài tiếng sau bị đòi chấm lại
+
+- Severity: Critical (mất ngày công thật; tái diễn dù BUG-106/111/113/114 đã live từ 28/07 — vẫn còn 2 ca quên check-out 29–30/07 và các ca không có bản ghi check-in của cùng nhóm tài khoản hay gặp sự cố).
+- Status: **Đã sửa + ĐÃ DEPLOY 2026-08-01** (cùng lô BUG-117/119).
+
+**Bản chất còn sót sau BUG-114:** mọi hạn chót/retry chỉ cứu được khi nhân viên còn đứng chờ ở màn chấm công. Quầy đông → bấm nút xong nhét máy vào túi/chuyển sang Zalo; nếu GPS/upload/ghi DB chết sau đó thì thông báo lỗi không ai đọc và **bộ bằng chứng (ảnh đóng dấu + GPS + giờ thật) mất theo phiên trang**. DB xác nhận: các ca treo đều `updated_at = created_at` — lệnh chưa từng tới máy chủ.
+
+**Fix — hộp thư đi chấm công:**
+- `src/lib/attendanceOutbox.ts` (mới): lưu bằng chứng vào IndexedDB NGAY khi chụp/định vị xong, TRƯỚC khi upload/ghi DB; op chỉ bị xóa khi máy chủ xác nhận. Không có IndexedDB (Safari private) → fallback bộ nhớ phiên. **Lịch sử:** bản 01/08 từng tự dọn op quá 7 ngày; BUG-122 ngày 03/08 đã bỏ age-cap vì trái cam kết không mất bằng chứng. Đếm nhanh qua localStorage hiện chỉ là hint, không phải nguồn authoritative.
+- `attendance.ts`: `checkIn`/`checkOut` ghi op trước, xóa op ở MỌI nhánh thành công (kể cả read-back trùng); lỗi thì op ở lại và thông báo nói rõ *"Bằng chứng đã được lưu trên máy — app sẽ TỰ GỬI LẠI khi có mạng, giữ nguyên giờ chấm công gốc."* `flushAttendanceOutbox()` gửi lại idempotent: kiểm tra máy chủ trước (đã có bản ghi/đã check-out → bỏ op), ghi bằng **giờ chấm gốc `capturedAt`** chứ không phải giờ gửi lại, đủ ảnh + GPS nên không đụng ràng buộc bằng chứng.
+- `App.tsx`: flush nền mỗi 45s + khi `online`/`focus` từ BẤT KỲ trang nào (staff mở app là vào Bán hàng, không phải Chấm công).
+- `AttendancePage`: banner vàng "N lượt chấm công chưa lên máy chủ" + nút **Gửi lại ngay** + ghi chú ⏳ trên từng thẻ ca đang chờ.
+- Chống "bị bắt chấm công lại" phía ĐỌC: `fetchAttendanceRecords`/`fetchShiftRegistrations` **không bao giờ lọc bản ghi/ca của chính mình** theo bộ lọc active-branch — trục trặc tra cứu chi nhánh không còn làm màn chấm công tưởng "chưa check-in".
+
+**Kiểm chứng lịch sử 01/08:** `scripts/test-attendance-outbox.mjs` → `ATTENDANCE_OUTBOX_OK` (khi đó còn age-cap 7 ngày). **Hợp đồng hiện tại sau BUG-122:** giữ cả op cũ cho tới xác nhận/rà soát, đồng thời test lỗi IndexedDB và độ bền RAM. `tsc -b` + `npm run build` pass; `ATTENDANCE_SINGLE_OPEN_SESSION_OK`, `ATTENDANCE_LATE_CHECKOUT_OK`, `DAILY_REPORT_EMPLOYEE_ATTENDANCE_FLOW_OK` xanh.
+
+## 2026-07-26 — Vì sao không check-out được: ảnh vừa chụp bị xoá âm thầm
+
+### BUG-114 — "Tải lại" xoá ảnh check-out, nút tắt bấm không phản hồi, thông báo cũ nằm lại
+
+- Severity: Critical (mất ngày công thật, nhân viên tin là đã check-out).
+- Status: **Đã sửa, chờ deploy.**
+- Đây là câu trả lời cho "đã check-out đúng giờ nhưng sáng vô lại báo chưa check-out" — trước đó BUG-113 mới chỉ gỡ được phần *kẹt*, chưa giải thích được phần *vì sao không check-out được*.
+
+**Bằng chứng thu hẹp (không phải suy đoán):**
+1. 5 bản ghi treo đều có `updated_at = created_at` ⇒ không có lệnh UPDATE nào tới máy chủ.
+2. Trong `storage.objects` bucket `attendance-selfies`, cả 5 ca treo **chỉ có 1 file** (ảnh check-in), trong khi mọi ca check-out thành công đều có **2 file**. ⇒ Luồng check-out **chết trước bước `uploadSelfie`**, tức trước cả GPS/ảnh — không phải lỗi mạng lúc ghi DB.
+3. Mọi nhánh hỏng trong khoảng đó (GPS, địa chỉ, ảnh) đều hiện lỗi đỏ. Chỉ còn **đúng một đường thất bại im lặng**: nút Check-out đang bị `disabled` thì bấm vào không chạy handler, không báo gì.
+
+**Tái hiện được 100%** (`scripts/qa-attendance-selfie-persistence.mjs`, trình duyệt thật):
+```
+SAU KHI CHỤP  → nút Check-out bật: true    (nhãn "Chụp lại ảnh check-out")
+SAU "TẢI LẠI" → nút Check-out bật: false   (nhãn về lại "Chụp ảnh check-out")
+BẤM NÚT TẮT   → thông báo: "Check-in thành công. Chúc bạn một ca làm việc tốt!"
+```
+
+**Root cause — ba lỗi cộng dồn:**
+1. `selfies` là state của `SchedulePanel`, mà panel render dưới điều kiện `{!loading && …}`. Nút **"Tải lại"** (thêm ở BUG-111, deploy 22/07) gọi `refresh(true)` → `loading=true` → **panel bị tháo** → ảnh vừa chụp mất sạch, không cảnh báo.
+2. Nút Check-out `disabled` khi chưa có ảnh. Nút tắt thì `onClick` không chạy, nên thông điệp "Bạn cần chụp ảnh bàn giao trước khi check-out" đã có sẵn trong code **không bao giờ hiện ra**.
+3. Thanh feedback giữ nguyên dòng cũ. Nhân viên bấm Check-out, nhìn xuống thấy **"Check-in thành công"** màu xanh còn nằm đó → hiểu là xong → đi về.
+
+**Fix:**
+- `AttendancePage`: thêm cờ `ready` (đã tải xong lần đầu). Khung chờ chỉ hiện ở lần tải ĐẦU (`loading && !ready`); các panel render theo `ready` nên **tải lại không bao giờ tháo panel** ⇒ ảnh sống sót.
+- Bỏ `!selfies[...]` khỏi `disabled` của cả Check-in lẫn Check-out: cho bấm để handler nói thẳng còn thiếu gì.
+- `onFeedback('')` ngay đầu `handleCheckIn`/`handleCheckOut` để thông báo cũ không nằm lại.
+- Thông điệp thiếu ảnh viết lại theo hành động: "Chưa có ảnh bàn giao nên chưa check-out được. Hãy bấm 'Chụp ảnh check-out' trước, rồi bấm Check-out lại."
+
+**QA:** `scripts/qa-attendance-selfie-persistence.mjs` → `ATTENDANCE_SELFIE_PERSISTENCE_QA_OK`; đã thử khôi phục `{!loading && …}` để chắc test bắt được lỗi cũ (fail đúng chỗ). Toàn bộ `qa-attendance`, `qa-roles`, `qa-attendance-late-checkout`, `test-attendance-*`, `test-daily-report-employee-attendance-flow` xanh; `tsc -b` + `npm run build` pass.
+
+**Còn lại:** đây là đường im lặng DUY NHẤT tìm được, và nó khớp mọi bằng chứng, nhưng không có log phía máy khách nên không khẳng định được 100% cả 5 ca đều đi đúng đường này. Hai ca trưởng (Phương, Thảo Nguyên) còn có thể vướng thêm chốt chặn bàn giao.
+
+## 2026-07-26 — Quên check-out thành ngõ cụt: nhân viên không tự đóng được ca
+
+### BUG-113 — Chặn cứng check-out quá hạn làm ca treo vĩnh viễn
+
+- Severity: High (nhân viên mất ngày công, không có đường tự sửa).
+- Status: **Đã sửa, chờ deploy** (bản đang chạy trên production vẫn là bản chặn cứng).
+- Triệu chứng chủ quán báo: "nó không cho checkout sau giờ nữa… hồi đó còn check bù được, bây giờ kẹt cứng luôn"; và "đã check-out đúng giờ nhưng sáng vô lại thì báo chưa check-out".
+
+**Đã kiểm chứng trên DB production (25–26/07):**
+- 5 bản ghi treo: Uyên Thư + Huỳnh Phương Anh (24/07), Trương Thị Phương + Nguyễn Bình Thảo Nguyên + Nguyễn Ngọc Bảo Linh (25/07).
+- Cả 5 đều có `updated_at = created_at` ⇒ **lệnh check-out chưa từng tới máy chủ**. Không phải hệ thống xoá mất giờ ra đã lưu; giờ ra chưa bao giờ được ghi.
+- Không có bản ghi trùng cho cùng một đăng ký ca, không có trigger nào trên `attendance_records` ⇒ loại trừ giả thuyết "ghép nhầm bản ghi" và "bị reset".
+- Chưa xác định được vì sao 3 bản ghi của nhân viên thường không gửi được lệnh check-out. 2/5 là ca trưởng nên có thể vướng chốt chặn bàn giao mới thêm (bấm check-out → hiện bảng "còn Ca X chưa bàn giao" → không ai bấm tiếp).
+
+**Root cause của phần "kẹt cứng":** `isCheckOutOverdue()` (ân hạn 6 giờ sau giờ tan ca) biến ca quên check-out thành **ngõ cụt** — thẻ đỏ chỉ mời "gửi đơn khai giờ về" rồi chờ Admin duyệt. Mục tiêu ban đầu đúng (bấm nút sau nhiều ngày sẽ đóng dấu giờ hiện tại, đẻ ra ca 24h/96h/238h trên bảng công), nhưng cách chặn thì bỏ rơi người dùng.
+
+**Fix — cho tự khai bù, chặn ở trần thay vì chặn cửa:**
+- `src/lib/lateCheckOut.ts` (mới, không phụ thuộc Supabase nên test được bằng dữ liệu thật): `resolveLateCheckOutAt()` đổi giờ khai (HH:MM) thành mốc thời gian, chặn giờ trước/bằng giờ vào, giờ tương lai, và **không bao giờ cho vượt giờ tan ca theo lịch** ⇒ nhân viên khai bằng hoặc ít hơn lịch, không tự cộng giờ. Xử lý đúng ca qua đêm.
+- `attendance.ts::lateCheckOut()`: đóng ca theo diện **hành chính** — không ảnh, không GPS, `check_out_address` mở đầu `[CHỐT HÀNH CHÍNH]` đúng nhánh 2 của ràng buộc `attendance_records_checkout_evidence_required` (không bịa bằng chứng có mặt). Vẫn `.is('check_out_time', null)` + read-back như check-out thường.
+- `AttendancePage`: thẻ "Quên check-out" nay có ô giờ (mặc định = giờ tan ca, `max` = giờ tan ca) + nút **"Check-out bù"**; nút gửi đơn lùi về vai trò phụ cho trường hợp về SAU giờ tan ca (tăng ca) cần Admin duyệt.
+- `lan-server.mjs`: nhận `lateCheckOutTime` và **tự kẹp lại trần một lần nữa** — client không được là nơi duy nhất quyết định số giờ vào bảng công.
+
+**Dữ liệu đang treo:** để chính nhân viên tự đóng bằng nút mới (họ mới biết thực sự về lúc mấy giờ). `scripts/db_close_stale_attendance_20260726.sql` chỉ dùng khi họ không tự làm được — nó đóng theo giờ tan ca của lịch, tức giả định làm đủ ca, phải xác nhận với quản lý trước.
+
+**QA:** `scripts/test-attendance-late-checkout.mjs` → `ATTENDANCE_LATE_CHECKOUT_OK` (12 ca giờ chạy thật qua esbuild, gồm ca qua đêm; đã thử phá trần để chắc test bắt được lỗi). `scripts/qa-attendance-late-checkout.mjs` → `ATTENDANCE_LATE_CHECKOUT_QA_OK` (trình duyệt thật: thẻ hiện đúng, mặc định 16:00, chặn khai 18:30, không ghi gì khi từ chối). `qa-attendance`, `test-attendance-idempotent-write`, `-intermittent-recovery`, `-duration-search`, `-native-camera-location`, `-reverse-geocode-race`, `test-daily-report-employee-attendance-flow` đều xanh; `tsc -b` + `npm run build` pass (`PRODUCTION_SUPABASE_BUNDLE_OK`).
+
+## 2026-07-25 — Quên gửi báo cáo Tổng ngày + bấm nhầm bàn giao ca tối làm lệch doanh thu
+
+### BUG-116 — Báo cáo Tổng ngày là bước ngầm dễ quên; bấm nhầm bàn giao ca tối rồi mở lại ngày làm ca tối 0đ
+
+- Severity: High (lệch doanh thu hiển thị + báo cáo Zalo sai số).
+- Status: **Deployed 2026-07-25** (`dpl_CMo51LVBbN8rLqQ7TngTJCcBrVeT`, https://gustino-operations.vercel.app), kèm cả lô 24/07 còn treo. Dữ liệu ngày cũ: chủ quán chọn bỏ qua (qua ngày rồi).
+- Triệu chứng chủ quán báo: (1) hay quên "nhấn báo cáo tổng ngày" — tưởng bấm bàn giao là gửi 2 ảnh (Ca tối + Tổng ngày) nhưng thực ra phải làm tay nên quên; (2) một nhân viên bấm nhầm bàn giao ca tối, mở lại ngày thì "kết ca tối 0đ" và lệch doanh thu chi nhánh.
+
+**Root cause (một chuỗi):**
+1. Nút "Chốt & bàn giao ca" (`ShiftHandoverPage.tsx:649`) **một chạm là chốt**, không xác nhận → dễ bấm nhầm.
+2. Việc tạo + gửi 2 ảnh báo cáo nằm ở `useEffect` tự động trong `ReportPage.tsx:626`, **chỉ chạy khi ca trưởng còn ở màn Báo cáo đủ lâu để poster render + `saveCloud()` xong**. Rời màn/tắt app sớm → Tổng ngày không gửi, không có lời nhắc → "phải làm thủ công nên quên".
+3. Bấm nhầm ca tối → tự chốt ngày + gửi báo cáo dở dang (ca tối 0đ). "Mở lại ngày" chỉ mở `operation_days`, **không xoá snapshot đã lưu**; `revenue.ts` coi snapshot có `summary.revenue` là nguồn chuẩn (BUG-104/111) → ảnh đã gửi + kho báo cáo giữ số lệch cho tới khi có người nhớ chốt lại (đúng lỗi #1).
+
+**Fix (không đổi ngữ nghĩa doanh thu):**
+- `handoverReportRequest.ts`: `sessionStorage → localStorage` (yêu cầu chốt sống qua lần tắt app) + sự kiện `REPORT_PENDING_EVENT` + `pendingHandoverReportForToday()` (tự dọn ngày cũ).
+- `ShiftHandoverPage`: thêm bước xác nhận `closeArmed` (bảng `.handover-close-confirm` kiểu capybara hỏi lại); ca tối cảnh báo rõ "sẽ CHỐT NGÀY và gửi Ca tối + Tổng ngày".
+- `AppShell`: popup `report-pending-popup` nhắc "báo cáo chưa gửi" ở mọi trang cho ca trưởng, ẩn ở màn `report`, đọc cờ localStorage (không fetch).
+- `ReportPage.reopenDay()`: mở lại ngày thì ghi lại cờ nhắc để buộc chốt & gửi lại bản đã sửa (không tự gửi ngay).
+
+**Định vị chấm công (mục 3 chủ quán hỏi):** giữ nguyên theo lựa chọn của chủ quán — địa chỉ đã tới số nhà, GPS ≤150m/25s, **chưa chặn theo khoảng cách tới chi nhánh**. Máy Samsung (SM-A235F) lỗi do mở trong WebView Zalo (BUG-107) — đã có phát hiện + hướng dẫn "mở bằng Chrome" từ 21/07; cách chấm được: **mở bằng Chrome/Safari, đừng mở trong Zalo**.
+
+**Dữ liệu đã lệch:** `scripts/db_diag_report_revenue_mismatch_20260725.sql` (chỉ đọc) tìm ngày lệch; `scripts/db_repair_stale_daily_report_20260725.sql` gỡ snapshot lệch + mở lại ngày để app chốt/gửi lại.
+
+**QA:** `scripts/test-handover-report-reminder.mjs` → `HANDOVER_REPORT_REMINDER_OK`; `tsc -b` + `npm run build` pass (`PRODUCTION_SUPABASE_BUNDLE_OK`).
+
+## 2026-07-22 — Nhân viên bán hàng mất tên trong báo cáo và màn chấm công quay vô tận
+
+### BUG-111 — Doanh thu POS bị gắn vào đăng ký ca, và đường đọc chấm công không có hạn chót
+
+- Severity: High.
+- Status: Deployed — đã kiểm tra asset live; còn chờ xác nhận trên máy nhân viên đã đăng nhập.
+- Triệu chứng chủ quán báo: (1) Cao Bảo Trân bán hàng nhưng không có tên trong báo cáo; (2) cùng nhân viên đó bấm chấm công thì màn hình cứ quay.
+
+**Phần 1 — mất tên trong báo cáo.**
+
+- Bằng chứng dữ liệu prod (chỉ đọc), tài khoản `24efd4c4-…ad23` (gold-coast, staff): có hóa đơn POS ở 12 ngày, nhưng 8 ngày trong đó **không có dòng `shift_registrations`** — 22/07, 20/07, 19/07, 18/07, 17/07, 16/07, 14/07, 13/07. Các ngày có đăng ký (21/07, 12/07, 11/07, 10/07) thì tên hiện bình thường.
+- Root cause: `buildEmployeeRows()` trong `src/pages/ReportPage.tsx` dựng xong dòng nhân viên từ hóa đơn POS rồi **lọc bỏ lại bằng `registeredRowKeys`**, tức gắn quy kết doanh thu vào đăng ký ca. Tổng doanh thu vẫn đúng (tính từ `productRows`) nên lỗi không lộ ra ở con số tổng — chỉ mất tên và mất hoa hồng của người bán.
+- Đây là tái phát của kết luận BUG-082: bản vá cũ không còn trong lịch sử repo hiện tại, còn regression `scripts/test-daily-report-employee-attendance-flow.mjs` thì vẫn nằm nguyên và **đang đỏ đúng dòng đó**.
+- Fix: bỏ hoàn toàn bộ lọc theo đăng ký; dòng nhân viên chỉ còn được lọc bởi `hasSalesActivity` (có phát sinh bán hàng thật).
+
+**Phần 2 — màn chấm công quay vô tận.**
+
+- BUG-106 đã đặt hạn chót cứng cho mọi bước GHI (định vị 25s, ảnh 20s, upload 25s, insert 20s), nên nút Check-in không còn treo. Nhưng đường **ĐỌC** bị bỏ sót: `AttendancePage.refresh()` gọi `Promise.allSettled` 5 lệnh Supabase mà không lệnh nào có timeout, và supabase-js không tự đặt. Một request kẹt trên mạng chập chờn là `loading` không bao giờ tắt → cả trang đứng ở khối "Đang đồng bộ dữ liệu cần thiết", không có ca nào để bấm.
+- Fix: `withAttendanceReadDeadline()` (`src/lib/attendance.ts`) đặt hạn 20 giây cho từng lệnh đọc và **báo lỗi rõ ràng** khi hết hạn thay vì nuốt; thêm nút "↻ Tải lại" ở đầu màn chấm công để không phải thoát app vào lại.
+- Phân biệt với BUG-107: WebView Zalo trên SM-A235F là một lỗi khác, đã vá và đã live từ 21/07. Phiên gần nhất của tài khoản này là Chrome thật, nên lần báo lỗi ngày 22/07 không thuộc diện WebView.
+
+- Verification: `DAILY_REPORT_EMPLOYEE_ATTENDANCE_FLOW_OK`, `ATTENDANCE_QA_OK`, `DEVICE_READINESS_QA_OK` (4/4 ca), cùng các regression báo cáo/chấm công khác đều xanh, gồm cả `test-shift-close-report-realtime` (test này đỏ trước đó là do phần bàn giao xuyên ca chưa commit, không phải do bản vá). `npx tsc -b` sạch; build pass `PRODUCTION_SUPABASE_BUNDLE_OK (index-qsAOlxms.js; revenue-04RjszTG.js)`.
+- Production: deployment `gustino-operations-n3hwsotae` READY và đã trỏ alias `https://gustino-operations.vercel.app`. Live `index-qsAOlxms.js` chứa chuỗi hạn chót đọc; `AttendancePage-DrLlWSpU.js` chứa nút "Tải lại"; `ReportPage-DxkLKw6e.js` không còn `registeredRowKeys`.
+- Phạm vi deploy: chỉ hai bản vá này. Phần bàn giao xuyên ca đang dở (`handoverReportRequest.ts`, `resolveLeaderShiftSession`) được giữ lại trong cây làm việc, KHÔNG lên production.
+- Business/data safety: không sửa hàng dữ liệu nào, không chạy migration, không đổi công thức doanh thu/hoa hồng, không nới quy tắc ảnh/GPS/địa chỉ của chấm công.
+- Tồn đọng: bản ghi chấm công `check_in 2026-07-21 07:56` của tài khoản này vẫn đang mở (`check_out_time` null); địa chỉ check-in là Tân Tạo, TP.HCM chứ không phải chi nhánh Nha Trang — nghi là lượt test, cần chủ quán xác nhận trước khi đóng hoặc xoá.
+
+## 2026-07-22 — Order report table vertical text on phones
+
+### BUG-110 — Six-column order report is squeezed into vertical character columns on phones
+
+- Severity: High.
+- Status: Deployed — live assets/API verified; signed-in phone confirmation pending.
+- Evidence: the owner's signed-in phone screenshot shows the visible `order-report-table` squeezing `Tên hàng`, `Ngày đặt / nhận`, and `Người đặt` into one-character columns. Source confirms that this printable table always renders six columns at `width: 100%` with no mobile treatment, while the late global `.page td, .page th { overflow-wrap: anywhere; }` rule lowers every cell's minimum width to one character. BUG-105 protected only the separate compact history list below the report and did not cover this table.
+- Reproduction: new `node scripts/test-orders-report-mobile-layout.mjs` exits 1 at the first missing mobile field label (`STT`) before implementation.
+- Required fix: on narrow screens, render the visible table rows as readable label/value records with normal word wrapping and horizontal writing; explicitly exclude the temporary `order-report-sheet-export` class so the existing 1080×1350 image export remains a six-column table. Order data, statuses, permissions, workflow, and export dimensions must remain unchanged.
+- Fix: each live request cell now carries its semantic mobile label. At ≤720px, only the on-screen report changes to stacked label/value records; its headings are hidden, labels are generated from `data-label`, normal word wrapping and `horizontal-tb` override the unsafe global minimum, and the quantity cell no longer forces a single line. The selector explicitly excludes `.order-report-sheet-export`.
+- Verification: `ORDERS_REPORT_MOBILE_LAYOUT_OK`, `DASHBOARD_ORDERS_MOBILE_RECOVERY_OK`, `SITEWIDE_HORIZONTAL_TEXT_AUDIT_OK (72 source files)`, `SECTION_TITLE_MOBILE_WRAP_OK`, supply delivery, report toolbar and handover/report mobile overflow regressions all pass. The 225-button contract, business guards, owner UX, role/sidebar/deploy/pagination regressions, TypeScript and diff check also pass. The isolated 714-module production build passes `PRODUCTION_SUPABASE_BUNDLE_OK (index-C-_zOd5P.js; revenue-BmeCb_ZO.js)`; Orders/CSS are `OrdersPage-Dye4rRXr.js` / `index-B0QqMGy2.css`.
+- Production: inspected prebuilt output contains 129 files, seven expected API functions, the existing cron and zero ZIP/SQL/env/migration/seed/purge/repair artifact. Deployment `dpl_6B9dCSaYLtfQSXPQ5L7PT6asvHUu` is READY and aliased to `https://gustino-operations.vercel.app`. Uncached live index, CSS, Orders chunk and `/api/server-time` all return HTTP 200; live assets contain the export exclusion, mobile `data-label` records, horizontal writing rule and `STT`/`Người đặt` labels.
+- Visual limitation: in-app Browser discovery returned `[]`, so the live signed-in phone rendering is not inferred from static/asset evidence. One hard refresh and device confirmation remain.
+- Business/data safety: no order value, state transition, permission, export dimension, API contract, schema, migration, webhook or production business row changed.
+
 ## 2026-07-22 — Manager sidebar color and vertical KPI/revenue text
 
 ### BUG-109 — Production Manager sidebar stays navy and narrow KPI headings collapse into vertical text
@@ -481,3 +970,98 @@ Check-in **không kiểm tra khoảng cách tới chi nhánh**, chỉ yêu cầu
 **Kiểm chứng — `scripts/qa-inventory-export.mjs` (MỚI, marker `INVENTORY_EXPORT_QA_OK`):** bấm đúng nút "Xuất Excel" của màn Báo cáo kho, tải file .xlsx thật rồi mở lại bằng exceljs, khẳng định mọi cột số lượng là `General`, không mã định dạng nào kết thúc bằng `.#*` (mẫu in dấu chấm thừa), và mọi ô số đã làm tròn 4 số lẻ → `FORMAT_OK 12 cột số lượng · 476 ô số`. **Đã kiểm tra ngược:** đặt lại `'0.####'` thì script FAIL đúng chỗ (`Tổng hợp kho · Tồn đầu kỳ: mã định dạng "0.####" in dấu chấm thừa`) — test không rỗng.
 
 `npx tsc -b` exit 0; `npm run build` pass. QA cùng lượt: `MANAGEMENT_QA_OK`, `ROLE_ACCESS_QA_OK`, `APP_NAVIGATION_QA_OK`, `ATTENDANCE_QA_OK`, `HANDOVER_QA_OK`, `DEVICE_READINESS_QA_OK`.
+
+# 2026-07-23 — BUG-112 Critical: Vũng Tàu kẹt "chưa nhận được ca", không bàn giao được
+
+**Không có dòng code nào dành riêng cho Vũng Tàu.** Chi nhánh này vỡ vì *hình dạng dữ liệu lịch*: VT chỉ có **2 ca trưởng** (Gold Coast 3, Lotte 23/10 4), nên thường xuyên rơi vào các tình huống mà code ngầm giả định "mỗi ca một người khác nhau".
+
+**Bằng chứng production (chỉ đọc):**
+- 23/07: Lưu Thị Thanh Ngân check-in 07:14 với đăng ký Ca 1 đã duyệt; `operation_days` của `lotte-vt` được tạo lúc `00:14:28.824Z` (3,5 giây sau check-in) nhưng **không có `bag_shift_sessions` nào**. Gold Coast và Lotte 23/10 cùng luồng, cùng thời điểm đều mở ca bình thường. → `ensureOperationDay()` chạy xong, `startBagShift()` ném lỗi rồi **không bao giờ được thử lại**.
+- Dựng lại đúng câu INSERT dưới danh tính của Ngân trong transaction *luôn rollback*: kết quả `INSERT WOULD SUCCEED`. Vậy **không phải** lỗi RLS, FK, ràng buộc, trigger hay cấu hình chi nhánh — schema/`shifts`/`profiles` của VT giống hệt 2 chi nhánh kia.
+- 21/07, 22/07, 04/08: VT phải **tự tay tạo đăng ký `shift_id = NULL` 07:15–22:15** để một người ôm cả 2 ca — đó là cách lách tay cho giới hạn của code (BUG-101), 2 chi nhánh kia không bao giờ cần.
+- 06/08, 07/08, 08/08 chỉ xếp Ca 1; 03/08, 09/08 chỉ xếp Ca 2 → sequence còn lại **không ai mở được**, ngày không thể bàn giao/chốt.
+
+**Nguyên nhân gốc (3 lỗi, đều ở code dùng chung):**
+1. `ShiftHandoverPage` lấy `myAttendance.find(r => !r.checkOutTime)` rồi chỉ nhận đăng ký gắn với **một** bản ghi đó. Ca trưởng giữ cả Ca 1 lẫn Ca 2 (2 đăng ký, 2 bản ghi chấm công) luôn bị đọc ra đăng ký Ca 1 → từ chối mở Ca 2.
+2. Mở ca tự động chỉ chạy **một lần** cho mỗi khóa và **không có nút nhận ca thủ công** — `handleStartShift()` tồn tại nhưng không nút nào gọi. Mạng chập chờn (điện thoại ngoài quầy) là ca trưởng kẹt cả ngày, màn hình chỉ hiện dòng chữ thụ động.
+3. Ngày chỉ xếp một ca trưởng thì sequence còn lại không có chủ và không có lối thoát nào.
+
+**Bản vá (không thêm nhánh riêng cho VT):**
+1. Xét **mọi** đăng ký đã duyệt mà ca trưởng đang check-in (`openAttendances` + `startableRegistration`), chọn đúng đăng ký khớp sequence kế tiếp. Quy tắc BUG-100 giữ nguyên: vẫn phải có lịch **và** đã check-in.
+2. Nút **"Nhận ca ngay"** hiện khi ca trưởng đủ điều kiện; khi tự mở lỗi thì bật cờ `autoStartFailed`, dừng vòng lặp tự động và đổi thông điệp sang hướng dẫn bấm nút. Thông báo check-in lỗi ở Chấm công chỉ đường sang màn Bàn giao.
+3. Nút **"Nhận tiếp Ca N" + xác nhận 2 bước** (chủ sở hữu chọn phương án này) — chỉ hiện khi **không ca trưởng nào khác được xếp** sequence đó (`anotherLeaderScheduledForNext`, lọc `employmentType === 'leader'`). Không tự động, nên **không tái phát BUG-100** (Ca 1 tự chiếm Ca 2).
+
+**Kiểm chứng:** `scripts/test-handover-shift-recovery.mjs` (MỚI, marker `HANDOVER_SHIFT_RECOVERY_OK`) — vừa khẳng định wiring nguồn, vừa chạy logic thật: Ca 1 mở được sequence 1, Ca 1 **không** mở được sequence 2, Ca 2 mở được sequence 2 kể cả khi cùng người, ca part-time không bao giờ được tính là ca trưởng, và vòng tự động chỉ gọi `handleStartShift()` không tham số. `AUTO_SECOND_SHIFT_START_OK`, `test-shift-realtime-reminders`, `test-handover-daily-report-access`, `test-auto-close-day`, `test-inventory-shift-reconciliation`, `test-mobile-handover-report-overflow` pass. `npx tsc -b` exit 0; `npm run build` pass (`PRODUCTION_SUPABASE_BUNDLE_OK`).
+
+**Chưa làm:** chưa deploy. Không ghi/sửa một dòng dữ liệu production nào trong lượt này.
+
+**Ghi chú Gold Coast 22/07 (liên quan, khác nguyên nhân):** báo cáo ngày của Gold Coast do **cron `/api/auto-close-day`** (`vercel.json`, `0 17 * * *` = 00:00 giờ VN) chốt lúc `17:53:50.9Z`, `finalizedByName = "Hệ thống tự động"`, payload thiếu `state`/`openingImage`/`closingImage`/`bagShiftSummary` và **chỉ có Ca 1**. Ca 2 (Trương Thị Phương) check-out chấm công lúc 22:17 giờ VN nhưng **không bấm "Chốt & bàn giao ca"**, nên phiên Ca 2 bị cron đóng hộ (`Auto closed by daily report.`). Cùng nhóm vấn đề: check-out chấm công không kéo theo chốt ca vận hành.
+
+## BUG-112 phần 2 — tự động hoá mở ca / chốt ca (2026-07-23)
+
+**Vì sao không ghép check-out với chốt ca (chủ sở hữu nêu đúng rủi ro):** check-out là việc *cá nhân* (GPS + selfie), chốt ca là việc *vận hành* cần **kiểm đếm tồn thành phẩm thật**. Ghép lại thì hoặc là ghi số tồn không ai đếm (hỏng số liệu kho), hoặc là chặn cứng khiến ca trưởng không kết ca được. Cả hai đều tệ hơn vấn đề ban đầu.
+
+**Lớp 1 — "Bộ dò ca" (`src/lib/shiftAutoOpen.ts`, mới):** trước đây ca vận hành chỉ mở được ở 2 chỗ (check-in ở Chấm công, effect ở Bàn giao). Mạng lỗi lúc check-in là hết đường vì không thể check-in lại. Giờ `reconcileOperationalShift()` chạy trong `App.tsx` mỗi 60 giây cho mọi `shift_leader`, ở **bất kỳ trang nào** (Bán hàng, Kho, Hôm nay…). Idempotent, dừng rất sớm nếu ca đã mở / đủ 2 ca / ngày đã chốt. Giữ nguyên BUG-100/101: phải đúng lịch **và** đang check-in.
+- Sửa kèm một lỗi tiềm ẩn: tồn đầu ca giờ đọc lại bằng `fetchMovements()` trong lib thay vì tin danh sách movement của trang gọi — trang Bán hàng không tải movement nên đường cũ sẽ ghi **tồn đầu ca = 0**.
+- `openShiftAfterLeaderCheckIn()` được gỡ khỏi `AttendancePage` và chuyển vào lib dùng chung (một nguồn sự thật, không còn 2 bản logic lệch nhau).
+
+**Lớp 2 — Chặn mềm ở check-out:** ca trưởng còn ca vận hành của chính mình đang mở thì check-out dừng lại, hiện `Ca N chưa bàn giao` + nút **"Sang Bàn giao chốt ca"**. Vẫn có nút **"Vẫn check-out"** cho sự cố thật; khi đó `markShiftLeftWithoutHandover()` chỉ ghi chú `[CHƯA KIỂM ĐẾM] <tên> check-out lúc HH:mm…` lên `discrepancy_note` của phiên ca. **Không đổi `status`, không ghi `closing_balances`.** Ca vẫn mở để người kế tiếp/quản lý chốt bằng số đếm thật; cron nửa đêm giữ nguyên ghi chú này.
+
+**Lớp 3 — giữ nguyên cron `/api/auto-close-day`** làm lưới an toàn cuối.
+
+**Kiểm chứng:** `HANDOVER_SHIFT_RECOVERY_OK` mở rộng — khẳng định bộ dò ca có đủ điều kiện dừng, giữ quy tắc lịch + check-in, đọc lại tồn từ kho; và khẳng định `AttendancePage` **không hề tham chiếu `closeBagShift`**, phần đánh dấu không đụng `closing_balances`/`status: 'closed'`. 7 test ca/bàn giao pass, `npx tsc -b` exit 0, `npm run build` pass.
+
+**Deploy (2026-07-23):** `dpl_Ee34wJdqjKmUzSqL9g2UspstniVJ` READY, target production. Alias `gustino-operations.vercel.app` trả HTTP 200 và phục vụ đúng bundle vừa build (`index-BFxkbMO_.js`). Xác minh trên bundle LIVE: `index.js` chứa `shift-already-open`/`day-complete`/`not-scheduled`/`CHƯA KIỂM ĐẾM`; `ShiftHandoverPage-CCbV2bSY.js` chứa `Nhận ca ngay`/`Nhận tiếp`/`Xác nhận nhận`. `/api/auto-close-day` vẫn trả 401 khi thiếu `CRON_SECRET` (lưới an toàn cuối không đổi). Không ghi/sửa dòng dữ liệu production nào.
+
+# 2026-07-24 — BUG-115 Critical: bán hàng POS không trừ kho
+
+- Severity: Critical (số tồn kho sai suốt ca ở cả 3 chi nhánh).
+- Status: **Code xong, chưa apply migration lên production** — xem mục "Còn lại".
+
+**Hiện tượng chủ quán báo:** thành phẩm bán ra không bị trừ, "do chưa liên kết với menu".
+
+**Bằng chứng nguồn:** `src/pages/ControlCenterPage.tsx` bắt buộc gán công thức "để hệ thống trừ tồn kho khi bán", nhưng `recipe` chỉ được đọc ở `getPackingOptionsByOutput()` (dropdown chia mẻ). `SalesPage.checkout()` → `saveSalesReceipt()` → RPC `create_cashier_pos_receipt` chỉ ghi `sales_receipts` + `sales_receipt_items`; grep toàn repo không có đường nào sinh `stock_movements` từ hóa đơn.
+
+**Bằng chứng dữ liệu prod (chỉ đọc):** 15/15 món đang bán **đã có** công thức trỏ đúng SKU tồn tại (`chestnut-330 → chestnut-cooked-kg × 0.33`, `cake-box → cake-ready × 4`…). Tức là dữ liệu cấu hình không thiếu gì — thiếu là phần thực thi. Vì vậy khi bật, cả 15 món trừ được ngay, không cần khai báo lại.
+
+**Đã sửa:**
+- `supabase/migrations/20260724_pos_sale_deducts_stock.sql`: thêm `post_pos_receipt_stock()`, gọi từ `create_cashier_pos_receipt` trong cùng transaction; `delete_pos_receipt` gỡ lại phiếu theo `document_id`. Có chốt chặn ghi đôi khi gọi lại. **Không** kiểm tra đủ tồn (kho không được chặn bán).
+- Món chưa gán công thức: **vẫn bán** (chủ quán chọn phương án này), và Control Center hiện khối cảnh báo + badge "Trừ kho khi bán: Chưa gán công thức" trên từng món.
+- `src/lib/revenue.ts` bỏ qua phiếu do POS sinh (`isPosGeneratedSaleMovement`) để không cộng đôi số lượng bán ở `RestaurantPage` (nơi gọi `buildDailyRevenueRows` không truyền receipts).
+- Đường LAN: client gửi kèm `stockMovements`, `scripts/lan-server.mjs` ghi khi tạo và gỡ khi xóa hóa đơn.
+
+**Kiểm chứng:** `POS_SALE_STOCK_DEDUCTION_OK` (mới) — 2×0,33 + 3×0,11 = 0,99 kg gom đúng một dòng, bao bì trừ theo số túi, món chưa gán không tự trừ chính nó. **Đã kiểm tra ngược:** bỏ bộ lọc doanh thu là test đỏ đúng dòng. Cùng lượt xanh: `HANDOVER_SHIFT_RECOVERY_OK`, `INVENTORY_SHIFT_RECONCILIATION_OK`, `CASHIER_POS_WORKSPACE_OK`, `CORE_BUSINESS_BUTTON_GUARDS_OK`, `AUTH_STATIC_OK`, `AUTO_CLOSE_DAY_OK`, `DAILY_REPORT_EMPLOYEE_ATTENDANCE_FLOW_OK`, `SHIFT_CLOSE_REPORT_REALTIME_OK`. `npx tsc -b` exit 0; `npm run build` pass `PRODUCTION_SUPABASE_BUNDLE_OK (index-DK7Yp2xB.js; revenue-BTkAbmE4.js)`.
+
+**Còn lại (cần chủ sở hữu quyết):**
+- Chạy `supabase/migrations/20260724_pos_sale_deducts_stock.sql` lên production. **Chưa chạy** vì lệnh bị chặn quyền trong phiên này. Trước khi apply, frontend mới vẫn an toàn: không có migration thì hành vi y như cũ (chỉ thêm cảnh báo món chưa gán).
+- **Không back-fill** hóa đơn cũ: hóa đơn trước thời điểm apply sẽ không sinh phiếu kho. Muốn dựng lại lịch sử phải có yêu cầu riêng vì nó viết lại số tồn quá khứ.
+
+# 2026-07-24 — Kẹt ca: ca trưởng trước bỏ ca đang mở
+
+- Severity: High. Status: đã sửa ở giao diện, chưa deploy.
+- Audit production hôm nay: **0 ca vận hành treo, 0 ngày vận hành treo** — hai migration 24/07 (`reopen_bag_shift`, kind `missing_checkout`) đã có trên DB.
+- Lỗ hổng còn lại: ca trưởng ca trước về mà không bấm "Chốt & bàn giao ca" thì ca vẫn `open`; người của ca sau chỉ thấy dòng chữ "Đang chờ ca trưởng trước bàn giao" và **không có nút nào** để chốt hộ → chi nhánh treo tới nửa đêm. Máy chủ vốn đã cho phép (`can_manage_branch` gồm cả `shift_leader` cùng chi nhánh) — chặn nằm ở giao diện.
+- Fix: nút "Chốt thay <tên>" hiện cho manager/admin, hoặc ca trưởng đang check-in + có lịch hôm nay. Đi qua đúng biểu mẫu đếm tồn, bắt buộc lý do, đóng dấu `[CHỐT THAY … bởi …]` vào ghi chú ca. Không tự động (giữ BUG-100).
+
+# 2026-07-24 — Chấm công: định vị tới số nhà + khép vòng đơn quên check-out
+
+- `api/reverse-geocode.ts`: trước đây hai nguồn chạy đua bằng `Promise.any` và nguồn thô BigDataCloud (chỉ có phường/thành phố) thường thắng, chỉ nhường 800ms → địa chỉ chấm công hay dừng ở "Nha Trang, Khánh Hòa". Nay phân loại `precision` street/area, ưu tiên nguồn có số nhà trong 3 giây, thêm toà nhà/cửa hàng (Lotte Mart, Gold Coast) lên đầu chuỗi địa chỉ, và **chỉ cache 1 ngày cho địa chỉ đã tới số nhà** (bản thô `s-maxage=60`, trước đây cache thô 1 ngày làm mọi lần chấm công sau tại đúng toạ độ đó cũng thô theo).
+- Vòng "quên check-out" trước đây hở: nhân viên gửi đơn xong thì đơn chỉ nằm im trong kho chứng từ, bản ghi vẫn treo, bảng công vẫn thiếu. Nay `AttendanceAdjustmentArchive` nối đơn với đúng ca còn treo và cho Admin bấm "Chốt giờ ra HH:MM" — dùng lại RPC `admin_update_attendance_record` nên vẫn ghi audit, vẫn chặn giờ tương lai và ca quá 18 giờ.
+- Tồn đọng dữ liệu: **7 bản ghi chấm công còn treo** (5 thật + 2 ở chi nhánh test `moi`/`hhhh`), cũ nhất 11/07 (Mã Thị Thanh Trúc, lotte-vt). Cần chủ quán xác nhận giờ về thật rồi Admin chốt — không tự ý ghi giờ thay người dùng.
+
+# 2026-07-24 — Đã thực thi trên production (chủ sở hữu duyệt)
+
+**Deploy:** `gustino-operations.vercel.app` phục vụ `index-B1e3n5Jf.js` = đúng bundle vừa build. Marker đã xác minh trên asset LIVE: `ShiftHandoverPage-BT-_4GlB.js` có "CHỐT THAY" + "Mở lại ca"; `ControlCenterPage-CKwDXaxK.js` có "Chưa gán công thức"; `AttendancePage-D_RbCTm7.js` có "Quá hạn check-out"; `AttendanceAdjustmentArchive-BZshC3GC.js` có "Chốt giờ ra".
+
+**Migration đã apply:** `20260724_pos_sale_deducts_stock.sql`, `20260724_admin_close_missing_checkout.sql`. Đã xác minh `post_pos_receipt_stock` tồn tại và `create_cashier_pos_receipt` thực sự gọi nó.
+
+**Back-fill trừ kho (`scripts/db_backfill_pos_stock_20260724.sql`):** 1.924 phiếu `sale_out` cho toàn bộ hóa đơn POS đang có (09/07–24/07). Đã dry-run một hóa đơn trong transaction rollback trước (HD2307-001 → 0,33 kg hạt dẻ rang). Tổng trừ: gold-coast 163,33 kg rang · 40,51 kg nướng · 18 kg khoai · 2,21 kg tuyết · 140 cái bánh; lotte-2310 79,34 kg rang · 13,86 kg nướng · 12 kg khoai · 7,21 kg tuyết · 112 cái bánh; lotte-vt 117,10 kg rang · 4,19 kg nướng · 22,5 kg khoai · 2,43 kg tuyết · 636 cái bánh.
+- **Không xóa/sửa dòng nào**, chỉ thêm. Đảo ngược toàn bộ: `delete from public.stock_movements where movement_type='sale_out' and note like '[POS %';`
+- Còn đúng **1 hóa đơn không trừ được: HD1407-009 (lotte-2310, 14/07)** — header ghi 1 túi/33.000đ nhưng **không có dòng chi tiết nào**. Đây là dữ liệu hỏng có sẵn từ trước, không phải do bản vá. Chưa đụng tới vì sửa nó là viết lại số liệu bán hàng.
+
+**Chốt ca chấm công treo (`scripts/db_close_stale_attendance_20260724.sql`):** 7 bản ghi ngày cũ đã đóng, `cham_cong_treo_ngay_cu = 0`. Ca của hôm nay không bị đụng tới.
+- 5 ca lấy **giờ tan ca theo lịch**: h (hhhh) 20/07 6,67h · Huỳnh Phương Anh 13/07 1,90h · Mã Thị Thanh Trúc 13/07 8,05h · Võ Thảo Quyên 13/07 8,15h · Mã Thị Thanh Trúc 11/07 7,61h.
+- 2 ca dữ liệu lệch (check-in muộn hơn cả giờ tan ca) lấy **giờ vào + 1 phút**, cố tình không bịa thêm giờ công: **Cao Bảo Trân 21/07** và tài khoản test `moi` 20/07. Hai ca này chủ quán cần chỉnh giờ thật trước.
+- Tất cả đóng theo diện **`[CHỐT HÀNH CHÍNH]`**: không ảnh, không GPS — không bịa bằng chứng có mặt. Trạng thái trước khi sửa lưu ở `public._attendance_closed_20260724` (đã bật RLS + revoke để không lộ qua API); đảo ngược bằng `update ... set check_out_time = null from _attendance_closed_20260724`.
+
+**Xác minh cuối:** ca vận hành treo = 0, ngày vận hành treo = 0, chấm công treo ngày cũ = 0.

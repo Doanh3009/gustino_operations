@@ -1,4 +1,4 @@
-export type Role = 'admin' | 'manager' | 'shift_leader' | 'staff' | 'cashier' | 'kitchen'
+export type Role = 'admin' | 'manager' | 'supmt' | 'shift_leader' | 'staff' | 'cashier' | 'kitchen'
 export type EmploymentType = 'leader' | 'full_time' | 'part_time'
 export type EmploymentStatus = 'probation' | 'working' | 'ended'
 
@@ -124,7 +124,7 @@ export interface AttendanceReportRow {
   missingCheckoutCount: number
 }
 
-export type AttendanceAdjustmentKind = 'late_arrival' | 'early_leave'
+export type AttendanceAdjustmentKind = 'late_arrival' | 'early_leave' | 'missing_checkout'
 
 export interface AttendanceAdjustmentRequest {
   id: string
@@ -270,6 +270,8 @@ export interface InventoryCountLine {
   orderNeeded: number
   varianceReason?: string
   note: string
+  /** true = dòng này ĐÃ được kiểm đếm (kể cả khi số lượng = 0). Thiếu = dữ liệu cũ, suy ra từ quantity > 0. */
+  counted?: boolean
 }
 
 export interface InventoryReport {

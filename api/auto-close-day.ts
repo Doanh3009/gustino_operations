@@ -40,6 +40,20 @@ interface SalesReceiptRow {
   total_amount?: number | string | null
 }
 
+interface OpenAttendanceRow {
+  id: string
+  user_id: string
+  check_in_time: string
+  shift_registrations: {
+    work_date: string
+    start_time: string
+    end_time: string
+  } | null
+}
+
+const ATTENDANCE_AUTO_CLOSE_ADDRESS_PREFIX = '[CHỐT HÀNH CHÍNH] [LỖI QUÊN CHECK-OUT]'
+const ATTENDANCE_AUTO_CLOSE_PAGE_SIZE = 200
+
 export default async function handler(request: any, response: any) {
   if (request.method !== 'GET') return response.status(405).json({ ok: false, error: 'Method not allowed.' })
 
@@ -72,12 +86,23 @@ export default async function handler(request: any, response: any) {
     for (const day of days) {
       results.push(await closeOperationDay(client, day))
     }
+    // Ca quên check-out của các ngày TRƯỚC hôm nay: tự đóng theo giờ tan ca của
+    // lịch (chốt hành chính, không bịa ảnh/GPS) để bảng công không treo và ràng
+    // buộc một-phiên-mở không chặn oan check-in sáng hôm sau. Lỗi ở bước này
+    // không được làm hỏng việc đóng ngày — bắt riêng và báo trong response.
+    let attendanceAutoClose: Record<string, unknown>
+    try {
+      attendanceAutoClose = await closeForgottenCheckouts(client, checkedAt)
+    } catch (error) {
+      attendanceAutoClose = { error: error instanceof Error ? error.message : 'Không tự đóng được ca quên check-out.' }
+    }
     response.setHeader('Cache-Control', 'no-store')
     return response.status(200).json({
       ok: true,
       checkedAt: checkedAt.toISOString(),
       throughBusinessDate: cutoffBusinessDate,
       closed: results,
+      attendanceAutoClose,
     })
   } catch (error) {
     return response.status(500).json({
@@ -239,6 +264,109 @@ async function buildCompletedDayPayload(
   }
 }
 
+/**
+ * Tự đóng ca chấm công quên check-out của các ngày TRƯỚC hôm nay.
+ *
+ * Quy tắc (khớp script tay db_close_stale_attendance đã dùng 24 & 26/07):
+ *   - Giờ ra = giờ tan ca theo LỊCH ĐĂNG KÝ (không phải giờ cron chạy) — giả
+ *     định làm đủ ca; nhân viên về sớm hơn thì admin sửa qua luồng chỉnh công.
+ *   - Đóng theo diện HÀNH CHÍNH: không ảnh, không GPS, địa chỉ mở đầu
+ *     '[CHỐT HÀNH CHÍNH]' (nhánh 2 của attendance_records_checkout_evidence_required)
+ *     — Excel bảng công tự hiện ghi chú "QUÊN CHECK-OUT" cho admin.
+ *   - An toàn: chỉ ngày < hôm nay và giờ tan ca theo lịch phải đã qua.
+ *   - BUG-130: KHÔNG có nhánh skip vĩnh viễn — một phiên ngày cũ còn mở sẽ khóa
+ *     Check-in của nhân viên đó mãi mãi (luật một-phiên-mở). Check-in SAU giờ
+ *     tan ca (vd 18:19 cho ca 10:00–18:00) đóng bằng đúng thời điểm check-in
+ *     (0 giờ công, không bịa giờ làm); ca mở dài bất thường (>18h) vẫn đóng
+ *     theo giờ tan ca — cả hai đều mang lý do riêng để Admin rà soát.
+ *   - PATCH kèm điều kiện check_out_time=is.null nên không bao giờ đè một
+ *     check-out thật vừa được ghi.
+ */
+async function closeForgottenCheckouts(client: ReturnType<typeof createServiceClient>, checkedAt: Date) {
+  const today = dateKeyInTimeZone(checkedAt, 'Asia/Bangkok')
+  const rows: OpenAttendanceRow[] = []
+  for (let offset = 0; ; offset += ATTENDANCE_AUTO_CLOSE_PAGE_SIZE) {
+    const page = await client.get<OpenAttendanceRow[]>(
+      '/rest/v1/attendance_records?check_out_time=is.null'
+      + '&select=id,user_id,check_in_time,shift_registrations!attendance_records_shift_registration_id_fkey(work_date,start_time,end_time)'
+      + `&order=check_in_time.asc,id.asc&limit=${ATTENDANCE_AUTO_CLOSE_PAGE_SIZE}&offset=${offset}`,
+    )
+    rows.push(...page)
+    if (page.length < ATTENDANCE_AUTO_CLOSE_PAGE_SIZE) break
+  }
+  let closed = 0
+  let skipped = 0
+  let failed = 0
+  const eligible: Array<{ row: OpenAttendanceRow; closeAt: Date; reasonText: string }> = []
+  for (const row of rows) {
+    const registration = row.shift_registrations
+    if (!registration || registration.work_date >= today) {
+      skipped += 1
+      continue
+    }
+    const overnight = registration.end_time <= registration.start_time
+    const endDateKey = overnight ? nextDateKey(registration.work_date) : registration.work_date
+    const scheduledEnd = new Date(`${endDateKey}T${normalizeTime(registration.end_time)}+07:00`)
+    const checkIn = new Date(row.check_in_time)
+    if (!Number.isFinite(scheduledEnd.getTime())
+      || !Number.isFinite(checkIn.getTime())
+      || scheduledEnd.getTime() > checkedAt.getTime()) {
+      skipped += 1
+      continue
+    }
+    if (checkIn.getTime() >= scheduledEnd.getTime()) {
+      eligible.push({
+        row,
+        closeAt: checkIn,
+        reasonText: 'Check-in sau giờ tan ca của lịch đăng ký nên hệ thống đóng ngay tại thời điểm check-in (0 giờ công); Admin cần rà soát và chỉnh lại nếu giờ thực tế khác.',
+      })
+    } else if (scheduledEnd.getTime() - checkIn.getTime() > 18 * 60 * 60 * 1000) {
+      eligible.push({
+        row,
+        closeAt: scheduledEnd,
+        reasonText: 'Ca mở dài bất thường (hơn 18 giờ) nên hệ thống đóng theo giờ tan ca của lịch đăng ký; Admin cần rà soát và chỉnh lại nếu giờ thực tế khác.',
+      })
+    } else {
+      eligible.push({
+        row,
+        closeAt: scheduledEnd,
+        reasonText: 'Hệ thống tự đóng theo giờ tan ca của lịch đăng ký; Admin cần rà soát và chỉnh lại nếu giờ thực tế khác.',
+      })
+    }
+  }
+  // Giới hạn đồng thời để hàng trăm nhân viên không bị xử lý tuần tự nhưng cũng
+  // không tạo một đợt request quá lớn lên Supabase. Một row lỗi được cô lập để
+  // các ca hợp lệ còn lại vẫn tự đóng.
+  await inBatches(eligible, 12, async ({ row, closeAt, reasonText }) => {
+    try {
+      const updated = await client.patchReturning<Array<{ id: string }>>(`/rest/v1/attendance_records?id=eq.${encodeURIComponent(row.id)}&check_out_time=is.null&select=id`, {
+        check_out_time: closeAt.toISOString(),
+        check_out_selfie_url: null,
+        check_out_latitude: null,
+        check_out_longitude: null,
+        check_out_accuracy: null,
+        check_out_address: `${ATTENDANCE_AUTO_CLOSE_ADDRESS_PREFIX} ${reasonText}`,
+        updated_at: checkedAt.toISOString(),
+      })
+      if (updated.length) closed += 1
+      else skipped += 1
+    } catch {
+      failed += 1
+    }
+  })
+  return { scanned: rows.length, eligible: eligible.length, closed, skipped, failed }
+}
+
+function normalizeTime(value: string) {
+  // time của Postgres trả 'HH:MM:SS'; lịch cũ có thể chỉ 'HH:MM'.
+  return /^\d{2}:\d{2}$/.test(value) ? `${value}:00` : value
+}
+
+function nextDateKey(dateKey: string) {
+  const [year, month, day] = dateKey.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10)
+}
+
 function createServiceClient(baseUrl: string, serviceRoleKey: string) {
   const baseHeaders = {
     apikey: serviceRoleKey,
@@ -263,6 +391,11 @@ function createServiceClient(baseUrl: string, serviceRoleKey: string) {
     patch: (path: string, body: Record<string, unknown>) => request<void>(path, {
       method: 'PATCH',
       headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify(body),
+    }),
+    patchReturning: <T>(path: string, body: Record<string, unknown>) => request<T>(path, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
       body: JSON.stringify(body),
     }),
     post: (path: string, body: Record<string, unknown>, prefer = 'return=minimal') => request<void>(path, {

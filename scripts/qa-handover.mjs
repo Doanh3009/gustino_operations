@@ -52,7 +52,10 @@ try {
   await firstPage.reload({ waitUntil: 'networkidle' })
   await firstPage.locator('.handover-count-grid input').first().waitFor()
   await firstPage.locator('.handover-count-grid input').first().fill('12')
+  // Từ 2026-07-25 nút bàn giao mở BƯỚC XÁC NHẬN (chống bấm nhầm) — phải bấm
+  // tiếp "Đồng ý..." trong panel .handover-close-confirm mới thật sự chốt.
   await firstPage.getByRole('button', { name: 'Chốt & bàn giao ca' }).click()
+  await firstPage.getByRole('button', { name: 'Đồng ý, bàn giao ca' }).click()
   await firstPage.locator('.report-page').waitFor()
   await waitForFinalizedSnapshot(firstPage, [1], 'open')
 
@@ -71,6 +74,8 @@ try {
 
   await secondPage.locator('.handover-count-grid input').first().waitFor()
   await secondPage.getByRole('button', { name: 'Chốt & bàn giao ca' }).click()
+  // Ca tối: nút xác nhận cảnh báo chốt ngày + tự gửi báo cáo.
+  await secondPage.getByRole('button', { name: 'Đồng ý, chốt ngày & gửi báo cáo' }).click()
   await secondPage.locator('.report-page').waitFor()
   await waitForFinalizedSnapshot(secondPage, [1, 2], 'closed')
 

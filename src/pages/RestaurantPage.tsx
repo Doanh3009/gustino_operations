@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { MOVEMENT_LABELS, PRODUCTS } from '../lib/constants'
 import { useConfiguredBranches } from '../lib/branches'
 import { calculateStock, fetchMovements, fetchReportSnapshots } from '../lib/store'
+import { formatStockAmount } from '../lib/inventoryEntry'
 import { fetchBagAllocations } from '../lib/shiftLedger'
 import { buildDailyRevenueRows } from '../lib/revenue'
 import type { AppUser, BagAllocation, ReportSnapshot, StockMovement } from '../types'
@@ -74,7 +75,7 @@ export function RestaurantPage({ user, movements }: { user: AppUser; movements: 
         <section className="section-card">
           <div className="section-title"><div><span className="eyebrow dark">CẢNH BÁO KHO</span><h2>Cần xử lý</h2></div><span className="alert-count">{lowStock.length}</span></div>
           <div className="alert-list">
-            {lowStock.slice(0, 6).map((line) => <div key={line.product.id}><span><strong>{line.product.name}</strong><small>Ngưỡng tối thiểu {line.product.lowStock} {line.product.unit}</small></span><b>{line.expected.toFixed(1)} {line.product.unit}</b></div>)}
+            {lowStock.slice(0, 6).map((line) => <div key={line.product.id}><span><strong>{line.product.name}</strong><small>Ngưỡng tối thiểu {line.product.lowStock} {line.product.unit}</small></span><b>{formatStockAmount(line.expected, line.product.unit)}</b></div>)}
             {!lowStock.length && <p className="empty-copy">Không có cảnh báo tồn thấp.</p>}
           </div>
         </section>
