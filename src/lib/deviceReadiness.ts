@@ -110,6 +110,57 @@ export function detectDeviceEnvironment(): DeviceEnvironment {
   }
 }
 
+/**
+ * Kết quả một hộp thoại xác nhận. `suppressed` = máy KHÔNG hiện hộp thoại chứ
+ * không phải người dùng bấm Hủy.
+ */
+export type ConfirmOutcome = 'accepted' | 'declined' | 'suppressed'
+
+/**
+ * Người thật không thể đọc xong một hộp xác nhận nhiều dòng rồi bấm Hủy trong
+ * ngần này. Trả `false` nhanh hơn mốc này = máy tự đóng, không phải người bấm.
+ */
+const DIALOG_MIN_HUMAN_MS = 250
+
+/**
+ * `window.confirm` AN TOÀN — dùng cho mọi thao tác ghi/xoá kho.
+ *
+ * Vì sao cần (BUG-137): trong Android WebView, `window.confirm()` chỉ hoạt động
+ * khi app chủ tự cài `WebChromeClient.onJsConfirm()`. Zalo/Facebook không cài,
+ * nên hàm **trả `false` ngay lập tức mà không hiện gì cả** — đúng cùng cơ chế đã
+ * làm `getCurrentPosition()` chết câm ở BUG-107, trên cùng nhóm máy đó
+ * (`auth.sessions.user_agent` cho thấy SM-A235F chạy WebView trong Zalo).
+ *
+ * Hậu quả với `if (!window.confirm(...)) return`: ca trưởng bấm Lưu, KHÔNG có
+ * hộp thoại, KHÔNG có thông báo, KHÔNG gọi mạng, không ghi gì — mà màn hình vẫn
+ * yên như đã lưu. Đây là kiểu hỏng tệ nhất vì nó vô hình.
+ *
+ * Hàm này phân biệt "người bấm Hủy" với "máy nuốt hộp thoại" để lớp gọi LUÔN
+ * nói được điều gì đó. Không bao giờ tự ý coi `suppressed` là đồng ý.
+ */
+export function confirmRisky(message: string): ConfirmOutcome {
+  if (typeof window === 'undefined' || typeof window.confirm !== 'function') return 'suppressed'
+  const startedAt = Date.now()
+  let accepted = false
+  try {
+    accepted = window.confirm(message)
+  } catch {
+    // Một số WebView ném thẳng thay vì trả false.
+    return 'suppressed'
+  }
+  if (accepted) return 'accepted'
+  const instant = Date.now() - startedAt < DIALOG_MIN_HUMAN_MS
+  return instant && detectDeviceEnvironment().isInAppBrowser ? 'suppressed' : 'declined'
+}
+
+/** Câu thông báo cho lớp UI khi thao tác KHÔNG được thực hiện. Không bao giờ rỗng. */
+export function confirmBlockedMessage(outcome: Exclude<ConfirmOutcome, 'accepted'>, action = 'Thao tác'): string {
+  if (outcome === 'declined') return `${action} đã hủy — chưa có gì được lưu.`
+  const label = detectDeviceEnvironment().browserLabel.toLowerCase()
+  return `${action} CHƯA được thực hiện: thiết bị không hiện được hộp xác nhận vì bạn đang mở bằng ${label}.`
+    + ' Hãy mở app bằng Chrome hoặc Safari rồi làm lại.'
+}
+
 function browserLabelFor(kind: BrowserKind, hostApp: string) {
   if (kind === 'in-app') return hostApp ? `Trình duyệt trong ${hostApp}` : 'Trình duyệt trong ứng dụng'
   if (kind === 'samsung-internet') return 'Samsung Internet'

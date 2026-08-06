@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useMemo, useRef, useState } from 'react'
 import { INBOUND_PRODUCTS, MOVEMENT_LABELS, PACKING_OPTIONS_BY_OUTPUT, PRODUCTS, getInboundProducts, getProcessInputProducts, getProcessingOutputOptions, getProducts, isWarehouseProduct, productById } from '../lib/constants'
 import { canvasToBlob, createId, shareOrDownloadBlob } from '../lib/browser'
+import { confirmBlockedMessage, confirmRisky } from '../lib/deviceReadiness'
 import {
   STOCK_EPSILON,
   convertEntryToStockQuantity,
@@ -235,7 +236,11 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
       const detail = plan.shortages
         .map((item) => `${item.product.name}: cần ${formatStockAmount(item.requested, item.product.unit)}, tồn ${formatStockAmount(item.available, item.product.unit)}`)
         .join('\n')
-      if (!window.confirm(`Tồn kho chưa đủ cho phiếu xuất:\n\n${detail}\n\nVẫn tiếp tục lập phiếu?`)) return
+      const proceed = confirmRisky(`Tồn kho chưa đủ cho phiếu xuất:\n\n${detail}\n\nVẫn tiếp tục lập phiếu?`)
+      if (proceed !== 'accepted') {
+        setFeedback(confirmBlockedMessage(proceed, 'Phiếu xuất'))
+        return
+      }
       allowInsufficientStock = true
     }
     setSaving(true)
@@ -286,7 +291,13 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
     const detail = lines
       .map((line) => `• ${line.product.name}: ${formatStockAmount(line.current, line.product.unit)} → ${formatStockAmount(line.target, line.product.unit)} (${formatDeltaAmount(line.delta, line.product.unit)})`)
       .join('\n')
-    if (!window.confirm(`Đặt lại tồn kho cho ${lines.length} mặt hàng:\n\n${detail}\n\nSố khai sẽ thay cho số hệ thống đang tính. Xác nhận?`)) return
+    const confirmed = confirmRisky(`Đặt lại tồn kho cho ${lines.length} mặt hàng:\n\n${detail}\n\nSố khai sẽ thay cho số hệ thống đang tính. Xác nhận?`)
+    if (confirmed !== 'accepted') {
+      // Trước đây chỗ này `return` trắng: trong WebView Zalo hộp thoại không hiện,
+      // hàm thoát ra không ghi gì và KHÔNG báo gì — ca trưởng tưởng đã lưu.
+      setFeedback(confirmBlockedMessage(confirmed, 'Sửa tồn'))
+      return
+    }
     setSaving(true)
     const documentId = createId()
     const now = new Date().toISOString()
@@ -347,10 +358,13 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
       }
     }
     if (shortLines.length) {
-      const proceed = window.confirm(
+      const proceed = confirmRisky(
         `Tồn kho chưa đủ cho mẻ này (có thể do chưa ghi phiếu nhập):\n\n${shortLines.join('\n')}\n\nVẫn tiếp tục ghi nhận mẻ chế biến?`,
       )
-      if (!proceed) return
+      if (proceed !== 'accepted') {
+        setFeedback(confirmBlockedMessage(proceed, 'Mẻ chế biến'))
+        return
+      }
       allowInsufficientStock = true
     }
     if (batchDrafts.some(({ input, output }) => {
@@ -415,10 +429,17 @@ export function InventoryPage({ user, movements, onChanged, initialTab = 'overvi
     if (negative) {
       // Luôn cho phép xóa để sửa dữ liệu (ca trưởng chỉ xóa chứng từ chi nhánh mình).
       // Trước đây phiếu nhập/xuất bị chặn cứng khi sinh âm → user không xóa được.
-      const proceed = window.confirm(`Xóa ${label} sẽ làm ${negative.product.name} âm ${formatNumber(negative.expected)} ${negative.product.unit} do đã có giao dịch phát sinh sau đó.\n\nVẫn xóa để sửa dữ liệu và kiểm lại các phiếu sau?`)
-      if (!proceed) return
+      const proceed = confirmRisky(`Xóa ${label} sẽ làm ${negative.product.name} âm ${formatNumber(negative.expected)} ${negative.product.unit} do đã có giao dịch phát sinh sau đó.\n\nVẫn xóa để sửa dữ liệu và kiểm lại các phiếu sau?`)
+      if (proceed !== 'accepted') {
+        setFeedback(confirmBlockedMessage(proceed, `Xóa ${label}`))
+        return
+      }
     }
-    if (!window.confirm(`Xóa ${label}? Toàn bộ các dòng trong chứng từ này sẽ được xóa và tồn kho sẽ được tính lại.`)) return
+    const confirmed = confirmRisky(`Xóa ${label}? Toàn bộ các dòng trong chứng từ này sẽ được xóa và tồn kho sẽ được tính lại.`)
+    if (confirmed !== 'accepted') {
+      setFeedback(confirmBlockedMessage(confirmed, `Xóa ${label}`))
+      return
+    }
     setSaving(true)
     try {
       await deleteMovements(user.branchId, rows.map((item) => item.id), user)
