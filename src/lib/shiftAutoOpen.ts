@@ -125,9 +125,19 @@ function blockedAsDeputy(
 }
 
 /**
- * Ca đang mở nhưng chủ ca là ca phó: trả quyền chủ ca về ca trưởng được xếp
- * đúng phiên ca đó và đang trong ca. Chạy được từ vòng dò ca lẫn từ check-in,
- * nên ca trưởng check-in muộn hơn ca phó vài giây vẫn nhận lại đúng ca của mình.
+ * Ca đang mở nhưng người giữ ca KHÔNG phải chủ ca của chính phiên ca đó: trả quyền
+ * về ca trưởng được xếp đúng phiên ca và đang trong ca. Chạy được từ vòng dò ca lẫn
+ * từ check-in, nên ca trưởng check-in muộn vài giây vẫn nhận lại đúng ca của mình.
+ *
+ * 07/08/2026 — mở rộng khỏi "chỉ giành lại từ ca phó". Gold Coast 07/08: Ca 2 bị mở
+ * dưới tên Trần Minh Lý (ca trưởng CA 1, lịch chỉ có sequence 1) lúc 15:19. Trương
+ * Thị Phương mới là ca trưởng được xếp Ca 2, nhưng vì người giữ ca cũng là "ca
+ * trưởng" nên bản cũ bỏ qua ⇒ chị Phương KHÔNG bao giờ nhận được ca: màn Bàn giao
+ * báo "Chưa nhận ca" và không hiện nút chốt, ca treo tới nửa đêm.
+ *
+ * Luật mới: chỉ bỏ qua khi người giữ ca thực sự được xếp ĐÚNG phiên ca này. Ca 1
+ * chưa bàn giao vẫn tuyệt đối không bị chiếm — người giữ có lịch sequence 1 nên
+ * đúng chủ ca. Người giữ không có lịch hôm nay cũng là giữ nhầm.
  */
 async function reclaimShiftForPrimaryLeader(
   user: AppUser,
@@ -142,10 +152,15 @@ async function reclaimShiftForPrimaryLeader(
     fetchAttendanceRecords(user, { branchId: user.branchId, userId: user.id, from: workDate, to: workDate }),
     fetchWorkShifts(user),
   ])
-  // Chỉ giành lại ca từ ca phó. Ca trưởng khác đang giữ ca là chuyện bình
-  // thường (Ca 1 chưa bàn giao) — tuyệt đối không được chiếm.
+  // Chỉ bỏ qua khi người đang giữ ca ĐÚNG là chủ ca của phiên ca này: ca trưởng
+  // (không phải ca phó) và có lịch đúng sequence đó. Mọi trường hợp còn lại —
+  // ca phó mở hộ, ca trưởng ca khác giữ nhầm, người không có lịch hôm nay — đều
+  // là giữ nhầm và phải trả về đúng người.
   const holder = registrations.find((item) => item.userId === session.leaderId && item.workDate === workDate)
-  if (!holder || !isDeputyShiftLeader(holder)) return skip('shift-already-open')
+  const holderOwnsThisSequence = Boolean(holder)
+    && !isDeputyShiftLeader(holder)
+    && scheduledOperationalSequences(holder!, workShifts).includes(session.sequence)
+  if (holderOwnsThisSequence) return skip('shift-already-open')
 
   const openAttendances = attendance.filter((record) => !record.checkOutTime)
   const registration = registrations.find((item) =>
@@ -158,10 +173,11 @@ async function reclaimShiftForPrimaryLeader(
   if (!registration) return skip('shift-already-open')
 
   const stamp = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+  const holderRole = holder && isDeputyShiftLeader(holder) ? 'ca phó' : 'không có lịch ca này'
   await transferBagShiftLeadership(
     user,
     session,
-    `${session.leaderName} (ca phó) mở ca; ${user.name} (ca trưởng được xếp Ca ${session.sequence}) nhận quyền chủ ca lúc ${stamp}.`,
+    `${session.leaderName} (${holderRole}) mở ca; ${user.name} (ca trưởng được xếp Ca ${session.sequence}) nhận quyền chủ ca lúc ${stamp}.`,
   )
   return { status: 'reassigned', sequence: session.sequence }
 }

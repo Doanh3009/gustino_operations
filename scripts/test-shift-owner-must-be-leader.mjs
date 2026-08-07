@@ -77,8 +77,21 @@ assert.equal(primaryLeadersScheduledFor(1, '2026-07-28', deputyOnly, workShifts)
 assert.match(autoOpenSource, /deputy-not-owner/)
 assert.match(autoOpenSource, /blockedAsDeputy\(user, sequence, today, registrations, workShifts\)/)
 assert.match(autoOpenSource, /reclaimShiftForPrimaryLeader/)
-// Chỉ giành lại ca từ ca phó — ca trưởng khác đang giữ ca thì tuyệt đối không chiếm.
-assert.match(autoOpenSource, /if \(!holder \|\| !isDeputyShiftLeader\(holder\)\) return skip\('shift-already-open'\)/)
+// 07/08/2026 — chỉ bỏ qua khi người giữ ca ĐÚNG là chủ ca của phiên ca đó.
+// Gold Coast 07/08: Ca 2 mở dưới tên ca trưởng CA 1; vì người giữ cũng là "ca trưởng"
+// nên bản cũ bỏ qua ⇒ ca trưởng Ca 2 vĩnh viễn "Chưa nhận ca", không chốt được ca.
+// Ca 1 chưa bàn giao vẫn không bị chiếm: người giữ có lịch đúng sequence 1.
+assert.match(
+  autoOpenSource,
+  /const holderOwnsThisSequence = Boolean\(holder\)\s*\n\s*&& !isDeputyShiftLeader\(holder\)\s*\n\s*&& scheduledOperationalSequences\(holder!, workShifts\)\.includes\(session\.sequence\)/,
+  'Phải xét người giữ ca có lịch đúng phiên ca này hay không, không chỉ xét ca phó.',
+)
+assert.match(autoOpenSource, /if \(holderOwnsThisSequence\) return skip\('shift-already-open'\)/)
+assert.doesNotMatch(
+  autoOpenSource,
+  /if \(!holder \|\| !isDeputyShiftLeader\(holder\)\) return skip\('shift-already-open'\)/,
+  'Luật cũ chỉ giành lại từ ca phó — đã thay.',
+)
 assert.match(ledgerSource, /export async function transferBagShiftLeadership/)
 
 // 4. Màn Bàn giao: ca phó không tự nhận ca, nhưng vẫn mở thay được khi ca trưởng vắng.
