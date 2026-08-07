@@ -118,7 +118,11 @@ export function ShiftHandoverPage({
   const coveringSession = coverArmed && canCoverForeignShift ? foreignOpenSession : undefined
   const openSession = ownOpenSession || coveringSession
   const anotherLeaderOpenSession = foreignOpenSession && !coveringSession ? foreignOpenSession : undefined
-  const maxShiftsReached = !openSession && todaySessions.length >= 2
+  // "Đã đủ ca hôm nay" phải xét ca đang mở của CẢ CHI NHÁNH, không phải riêng ca của
+  // người đang xem. Bản cũ dùng `!openSession` nên khi ca trưởng khác còn giữ ca chưa
+  // bàn giao, người xem thấy CÙNG LÚC hai thẻ ngược nhau: "Đang chờ ca trưởng trước
+  // bàn giao" và "Ca sáng và Ca tối đã bàn giao" (Gold Coast 07/08/2026).
+  const maxShiftsReached = !branchOpenSession && todaySessions.length >= 2
   // Chi nhánh ít ca trưởng (vd Vũng Tàu chỉ có 2 người) hay xếp CÙNG một ca trưởng
   // cho cả Ca 1 lẫn Ca 2 trong ngày, tức là 2 đăng ký + 2 bản ghi chấm công.
   // Trước đây chỉ xét đăng ký gắn với bản ghi chấm công ĐẦU TIÊN còn mở, nên sau khi
