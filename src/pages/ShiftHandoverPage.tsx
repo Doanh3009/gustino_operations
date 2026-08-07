@@ -4,7 +4,7 @@ import { getProducts, getSaleProducts, isWarehouseProduct, productById, type Con
 import { burstGuard, createId, imageFileToDataUrl } from '../lib/browser'
 import { calculateStock, ensureOperationDay, getOperationDay } from '../lib/store'
 import { formatQuantity } from '../lib/inventoryEntry'
-import { hasCountInput, productsToCount, uncountedProducts } from '../lib/shiftCountScope'
+import { productsToCount } from '../lib/shiftCountScope'
 import { fetchAttendanceRecords, fetchShiftRegistrations, fetchWorkShifts, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { formatLocalDate, localDateKey } from '../lib/dates'
@@ -292,13 +292,17 @@ export function ShiftHandoverPage({
     setCloseArmed(false)
   }, [today, user.branchId, openSession?.id, openSession?.openingPhotoUrl, openSession?.closingPhotoUrl])
 
-  // KHÔNG điền sẵn tồn dự kiến vào ô đếm. Bản cũ đổ sẵn số hệ thống nên ca trưởng
-  // bấm chốt là con số SAI được đóng dấu thành "số đếm thật" và từ đó không bao giờ
-  // tự sửa được nữa (Gold Coast: 273,92 kg hạt dẻ rang chính là số đổ sẵn đã chốt).
-  // Đổi ca thì xoá sạch ô đếm để không mang số của ca trước sang.
+  // Ô đếm ĐƯỢC điền sẵn tồn dự kiến (khôi phục 07/08/2026). Bản bắt đếm tay từng mặt
+  // hàng đã chặn ca trưởng chốt ca ngoài quầy, mà chốt ca là việc KHÔNG được phép kẹt:
+  // kẹt một ca là kẹt luôn bàn giao, ca sau và chốt ngày. Muốn siết chất lượng số đếm
+  // thì nhắc, không chặn. Ca trưởng vẫn sửa được từng ô trước khi chốt.
   useEffect(() => {
-    setClosingBalances({})
-  }, [openSession?.id])
+    if (!openSession) return
+    setClosingBalances(Object.fromEntries(
+      visibleProducts(openSession, movements, countProducts, expectedBalances)
+        .map((product) => [product.id, String(availableBalances[product.id] || 0)]),
+    ))
+  }, [openSession?.id, JSON.stringify(availableBalances), countProducts])
 
   async function handleStartShift(options: { takeOver?: boolean; standIn?: boolean } = {}) {
     if (dayLocked) {
@@ -433,18 +437,14 @@ export function ShiftHandoverPage({
       return
     }
     const countableProducts = visibleProducts(openSession, movements, countProducts, expectedBalances)
-    // Ô trống KHÔNG còn được hiểu ngầm là "đúng bằng số hệ thống": phải đếm thật.
-    const notCounted = uncountedProducts(countableProducts, closingBalances)
-    if (notCounted.length) {
-      setFeedback(`Chưa đếm ${notCounted.length} mặt hàng: ${notCounted.map((product) => product.name).join(', ')}. Nhập số thực tế (gõ 0 nếu đã hết sạch) rồi mới bàn giao được.`)
-      return
-    }
+    // Ô trống = "đúng bằng số hệ thống" (khôi phục 07/08/2026). KHÔNG chặn chốt ca vì
+    // thiếu số đếm: ca trưởng đứng quầy không được phép kẹt ở màn bàn giao.
     const actual = Object.fromEntries(countableProducts.map((product) => [
       product.id,
-      Math.max(0, Number(closingBalances[product.id])),
+      Math.max(0, Number(closingBalances[product.id] ?? availableBalances[product.id] ?? 0)),
     ]))
     const hasDiscrepancy = countableProducts.some((product) =>
-      Math.abs((actual[product.id] || 0) - (expectedBalances[product.id] || 0)) > 0.001,
+      Math.abs((actual[product.id] || 0) - (availableBalances[product.id] || 0)) > 0.001,
     )
     if (hasDiscrepancy && !discrepancyNote.trim()) {
       setFeedback('Có lệch tồn thành phẩm. Hãy nhập lý do ngắn trước khi bàn giao.')
@@ -751,14 +751,13 @@ export function ShiftHandoverPage({
 
             <section className="section-card handover-close-card">
               <div className="section-title"><div><span className="eyebrow dark">CHỐT TỒN</span><h2>{`Bàn giao ${shiftLabel(openSession.sequence)}`}</h2></div><b>2</b></div>
-              <p className="handover-hint">Đếm tồn thành phẩm thực tế cuối ca — ô để trống là chưa đếm, gõ 0 nếu đã hết sạch. Số này kế thừa cho ca sau và là mốc chuẩn lại kho.</p>
+              <p className="handover-hint">Đếm tồn thành phẩm thực tế cuối ca. Ô đã điền sẵn số hệ thống — sửa lại ô nào đếm ra khác. Số này kế thừa cho ca sau và còn trong kho để ngày mai bán tiếp.</p>
               <div className="handover-count-grid">
                 {visibleProducts(openSession, movements, countProducts, expectedBalances).map((product) => {
-                  const expected = expectedBalances[product.id] || 0
-                  const counted = hasCountInput(closingBalances[product.id])
-                  const actual = counted ? Number(closingBalances[product.id]) : expected
+                  const expected = availableBalances[product.id] || 0
+                  const actual = Number(closingBalances[product.id] ?? expected)
                   return (
-                    <label className={counted && Math.abs(actual - expected) > 0.001 ? 'different' : ''} key={product.id}>
+                    <label className={actual !== expected ? 'different' : ''} key={product.id}>
                       <span>{product.name}</span>
                       <small>Dự kiến {formatNumber(expected)}</small>
                       <input
@@ -766,15 +765,9 @@ export function ShiftHandoverPage({
                         min="0"
                         step="0.0001"
                         inputMode="decimal"
-                        placeholder="Đếm thực tế"
-                        value={closingBalances[product.id] ?? ''}
+                        value={closingBalances[product.id] ?? String(expected)}
                         onChange={(event) => setClosingBalances((current) => ({ ...current, [product.id]: event.target.value }))}
                       />
-                      <button
-                        type="button"
-                        className="handover-count-same"
-                        onClick={() => setClosingBalances((current) => ({ ...current, [product.id]: String(Math.max(0, expected)) }))}
-                      >= dự kiến</button>
                     </label>
                   )
                 })}

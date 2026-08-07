@@ -97,19 +97,21 @@ assert.match(
 )
 assert.doesNotMatch(handover, /getFinishedBulkProducts/, 'Bản cũ chỉ lấy thành phẩm kg — đã bỏ.')
 assert.match(handover, /const expectedBalances = useMemo/, 'Phải có bản tồn giữ nguyên dấu để nhận hàng âm.')
+// 07/08/2026 — KHÔI PHỤC: ô đếm điền sẵn tồn dự kiến trở lại.
+// Bản bắt đếm tay từng mặt hàng (blank = chưa đếm, thiếu ô là CHẶN chốt ca) đã khiến
+// ca trưởng ngoài quầy không bàn giao được. Chốt ca không được phép kẹt: kẹt một ca là
+// kẹt luôn bàn giao, ca sau và chốt ngày. Chất lượng số đếm siết bằng nhắc, không chặn.
 assert.match(
   handover,
-  /setClosingBalances\(\{\}\)/,
-  'Ô đếm cuối ca không được điền sẵn tồn dự kiến (số sai sẽ bị đóng dấu thành số thật).',
-)
-assert.doesNotMatch(
-  handover,
   /closingBalances\[product\.id\] \?\? availableBalances\[product\.id\]/,
-  'Không được coi ô trống là "đúng bằng số hệ thống".',
+  'Ô trống phải hiểu là "đúng bằng số hệ thống" để chốt ca không bị chặn.',
 )
-assert.match(handover, /value=\{closingBalances\[product\.id\] \?\? ''\}/, 'Ô đếm mặc định phải trống.')
-assert.match(handover, /Chưa đếm \$\{notCounted\.length\} mặt hàng/, 'Thiếu chặn khi còn mặt hàng chưa đếm.')
-assert.match(handover, /handover-count-same/, 'Cần nút "= dự kiến" để bỏ điền sẵn không làm chậm ca trưởng.')
+assert.match(
+  handover,
+  /value=\{closingBalances\[product\.id\] \?\? String\(expected\)\}/,
+  'Ô đếm phải điền sẵn tồn dự kiến.',
+)
+assert.doesNotMatch(handover, /Chưa đếm \$\{notCounted\.length\} mặt hàng/, 'Không được chặn chốt ca vì thiếu số đếm.')
 
 // ── 4. Màn Kho: một tầng điều hướng, tối ưu điện thoại (namespace `wh-`) ─────
 // 07/08/2026: màn Kho được viết lại toàn bộ theo yêu cầu "không dùng dạng card".
