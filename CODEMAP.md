@@ -781,7 +781,9 @@ Hai kỳ dữ liệu khác nhau trong cùng một màn ⇒ khối 2 và khối 4
 - Không chạm DB, không migration.
 
 ### Deploy 2026-08-07
-`dpl_3HV6FrHNereRwtkAvymPy7nBVFG8` READY, alias https://gustino-operations.vercel.app HTTP 200.
+Commit `5161e3d` trên nhánh `fix/kho-dong-bo-du-lieu` (đã push lên `origin`), deploy `dpl_4wx8SDdKEQkuDp6eHapWefbH7xW2` READY, alias https://gustino-operations.vercel.app HTTP 200.
+
+> **BÀI HỌC — deploy từ cây làm việc CHƯA COMMIT là bẫy.** Lần deploy đầu (`dpl_3HV6FrHNere…`) lên đúng và verify đúng, nhưng **4 lượt deploy production khác đổ vào trong 15 phút sau đó và giành mất alias**; các lượt đó build từ code ĐÃ COMMIT (lúc ấy còn là bản cũ) nên trang thật quay về `index-tTzCsD6K.js`. Triệu chứng nhìn thấy: sidebar quản lý navy tối, chữ mờ. **Cách chữa gốc là commit trước rồi mới deploy** — khi đó mọi lượt deploy, kể cả nút *Redeploy* trên dashboard Vercel (nút này build lại từ nguồn cũ, không phải từ máy đang làm), đều ra đúng code.
 
 Lô này **cuốn theo toàn bộ cây làm việc còn treo của §50/§51/§52** (viết lại màn Kho namespace `wh-`, gỡ thành phẩm khỏi kho qua `warehouseScope`, `shiftCountScope` cho bàn giao, bỏ `count exact` toàn chi nhánh ở `store.ts`/`App.tsx`, danh mục SKU không ghi localStorage). Migration RLS của §52 đã áp trước đó, lần này **không có migration mới, không ghi/sửa dòng dữ liệu prod nào**.
 
