@@ -18,8 +18,31 @@ if (!admin.includes("const [inventoryDetailBranchId, setInventoryDetailBranchId]
 if (inventorySection.includes('<details className="loss-stock-item"')) {
   failures.push('Chi tiết SKU vẫn xổ dài ngay giữa danh sách và đẩy các chi nhánh còn lại khỏi màn hình.')
 }
-if (!inventorySection.includes('className="inventory-branch-grid"') || !inventorySection.includes('className={`inventory-branch-card')) {
-  failures.push('Các chi nhánh chưa được trình bày thành lưới thẻ kho cố định, dễ so sánh.')
+// 07/08/2026: bỏ lưới thẻ (`inventory-branch-grid`/`inventory-branch-card`) —
+// mỗi chi nhánh là MỘT DÒNG, cùng luật "không dùng card" với màn Kho ca trưởng.
+if (!inventorySection.includes('className="admin-stock-branches"') || !inventorySection.includes('className={`admin-stock-branch-row')) {
+  failures.push('Các chi nhánh chưa được trình bày thành bảng dòng kho, dễ so sánh.')
+}
+if (inventorySection.includes('inventory-branch-card')) {
+  failures.push('Thẻ chi nhánh dạng card đã bị gỡ — đừng dựng lại.')
+}
+// Bảng tồn của chi nhánh phải tìm được và lọc được, không bắt cuộn hết 30 SKU.
+if (!inventorySection.includes('aria-label="Tìm mặt hàng trong kho chi nhánh"')
+  || !inventorySection.includes('aria-label="Lọc trạng thái tồn"')) {
+  failures.push('Bảng tồn chi nhánh thiếu ô tìm không dấu hoặc chip lọc trạng thái.')
+}
+if (!admin.includes('const inventoryStockLines = useMemo(') || !admin.includes('severity(a) - severity(b)')) {
+  failures.push('Bảng tồn chưa xếp theo mức độ cần xử lý (hết → sắp hết → còn hàng).')
+}
+// Sổ phát sinh kho phải phân trang: một tháng là vài nghìn phiếu.
+if (!inventorySection.includes('aria-label="Tìm trong sổ phát sinh kho"')
+  || !inventorySection.includes('aria-label="Lọc loại phiếu kho"')
+  || !inventorySection.includes('<Pagination')) {
+  failures.push('Sổ phát sinh kho chưa có lọc loại phiếu, tìm kiếm và phân trang.')
+}
+// Đối chiếu ca mặc định chỉ hiện ca cần xem (đang mở hoặc lệch số).
+if (!admin.includes('const inventoryShiftIssueRows =') || !inventorySection.includes('inventoryShiftVisibleRows.map')) {
+  failures.push('Bảng đối chiếu ca chưa lọc sẵn về nhóm ca cần xem.')
 }
 if (!inventorySection.includes('aria-expanded={isSelected}') || !inventorySection.includes('aria-controls="inventory-branch-detail-panel"')) {
   failures.push('Nút mở chi tiết chi nhánh chưa công bố đúng trạng thái đóng/mở cho trình duyệt.')
@@ -57,8 +80,10 @@ if (!inventorySection.includes('Hao hụt cần chú ý') || !inventorySection.i
 
 for (const selector of [
   '.inventory-branch-section',
-  '.inventory-branch-grid',
-  '.inventory-branch-card',
+  '.admin-stock-branches',
+  '.admin-stock-branch-row',
+  '.admin-stock-chips',
+  '.admin-stock-search',
   '.inventory-branch-detail-shell',
   '.inventory-stock-table',
   '.inventory-loss-panel',
@@ -67,8 +92,11 @@ for (const selector of [
 ]) {
   if (!styles.includes(selector)) failures.push(`Thiếu CSS giao diện kho: ${selector}.`)
 }
-if (!/@media \(max-width: 680px\)[\s\S]*\.inventory-branch-grid[\s\S]*grid-template-columns:\s*1fr/.test(styles)) {
-  failures.push('Lưới chi nhánh chưa có khóa một cột an toàn trên điện thoại.')
+if (/^\.inventory-branch-card/m.test(styles)) {
+  failures.push('CSS thẻ chi nhánh cũ phải được dọn cùng lúc với markup.')
+}
+if (!/@media \(max-width: 680px\)[\s\S]*\.admin-stock-branch-row \{ grid-template-columns: minmax\(0, 1fr\)/.test(styles)) {
+  failures.push('Bảng chi nhánh chưa có khóa một cột an toàn trên điện thoại.')
 }
 if (!/@media \(max-width: 680px\)[\s\S]*\.inventory-stock-row/.test(styles)) {
   failures.push('Bảng SKU chưa có bố cục responsive riêng cho điện thoại.')

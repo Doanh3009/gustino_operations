@@ -78,7 +78,7 @@ Route lưu ở hash, danh sách hợp lệ trong `pageFromHash()`. Alias: `#hist
 | `handover` | `pages/ShiftHandoverPage.tsx` | leader | Bàn giao ca + phát túi (bag allocation) |
 | `orders` | `pages/OrdersPage.tsx` | leader | Đặt hàng / yêu cầu (supplyRequests) |
 | `attendance` | `pages/AttendancePage.tsx` | tất cả trừ kitchen | Chấm công + đăng ký lịch (selfie + GPS) |
-| `management` | `pages/AdminPage.tsx` (`ManagementPage`) | manager/admin | Trang quản trị đa-section (xem mục 4) |
+| `management` | `pages/AdminPage.tsx` (`ManagementPage`) | manager/admin | Trang quản trị đa-section (xem mục 4). Section `commission` = **Thi đua nhân viên**, đã gộp về một bảng duy nhất ở §53 |
 | `manager-*` | `AdminPage.tsx` với `focused` + section cố định | manager/admin | revenue/business/inventory/attendance/payroll/requests |
 | `admin-accounts` | `AdminPage.tsx` section `accounts` | admin | Quản lý tài khoản |
 | `control` | `pages/ControlCenterPage.tsx` | admin | Control center |
@@ -736,7 +736,179 @@ Chuỗi BUG-112 đã lo được ca *của chính mình* (bộ dò ca, nút "Nh�
   - **`test-attendance-realtime-next-day.mjs` VẪN ĐỎ và đã đỏ từ trước phiên này** (ở HEAD nó crash vì `addLocalDateKeyDays` không tồn tại). Test khoá hợp đồng outbox-chặn-check-in CŨ, mâu thuẫn với quyết định BUG-131 — cần viết lại, không phải lỗi app.
 - **Deploy:** `dpl_6CXZiVcVzfLiLxvTXC7WSaGhC4Yv` READY, alias https://gustino-operations.vercel.app HTTP 200, live bundle `index-BaDx8ix_.js` (khớp build local, có `my-timesheet`, 0 tham chiếu `my-payroll`). Không migration, không ghi/sửa dòng dữ liệu prod nào.
 
-## 49. Khả năng bán trung bình của nhân viên (2026-08-06) — CHƯA DEPLOY
+## 53. Thi đua nhân viên gộp về MỘT bảng + tối ưu màn Quản trị › Kho (2026-08-07) — ĐÃ DEPLOY
+> Chủ quán: "chức năng coi thi đua nhân viên đang bị tùm lum, quá nhiều danh sách nhưng chưa tối ưu và hiệu quả, hãy thiết kế lại cho chuẩn, tối ưu phần xem kho của bên admin".
+
+### Gốc của "tùm lum": 5 danh sách CÙNG một nhóm người, 2 khoảng ngày khác nhau
+Section `commission` (`#manager-business` / `#/admin/sales-performance`) trước bản này render liên tiếp:
+
+| # | Khối | Kỳ dữ liệu | Xếp theo |
+|---|---|---|---|
+| 1 | Poster TOP 10 (`EmployeeCompetitionPoster`) | tháng, **bỏ qua** bộ lọc vai trò/số ca | doanh thu |
+| 2 | Bảng phân loại (`CompetitionClassificationTable`) | kỳ thi đua (ngày/tháng) | doanh thu |
+| 3 | Danh sách năng suất đầy đủ (`capacity-list`) | kỳ thi đua | doanh thu/ca |
+| 4 | Thẻ thưởng KPI (`adm-list` ← `commissionRows`) | **bộ lọc ngày ĐẦU TRANG** | không xếp |
+| 5 | Bảng KPI × ngày toàn cục (panel `payroll-section`) | **bộ lọc ngày ĐẦU TRANG** | theo ngày |
+
+Hai kỳ dữ liệu khác nhau trong cùng một màn ⇒ khối 2 và khối 4 hiện **hai con số khác nhau cho cùng một nhân viên** mà không có gì giải thích. Khối 5 trộn mọi nhân viên × mọi ngày nên muốn đọc một người phải dò mắt qua hàng trăm dòng. Poster thì chụp tập chưa lọc nên ảnh gửi Zalo có cả người mà bảng trên màn đã lọc bỏ.
+
+### Đã gộp — một bộ lọc, một dải tổng, một bảng
+- **Thứ tự mới:** tiêu đề + 3 nút xuất → *Cách đọc KPI* → **thanh lọc duy nhất** (giữ nguyên `aria-label` cũ: Phân loại / Ngày xem / Vai trò / Loại ngày / Số ca) → dải `.competition-overview` (4 số) → **bảng xếp hạng** → biểu đồ năng suất → poster thu gọn.
+- **Chip "đạt KPI" và dải tổng nay đếm trên `competitionFilteredRows`** (đúng tập của bảng), không phải trên bộ lọc đầu trang. `commissionRows` bị **xoá hẳn**.
+- **Bảng xếp hạng là bảng DUY NHẤT.** Thêm cột **Năng suất** (giá trị + `±% so với TB đội`, tiêu đề đổi theo chỉ số đang chọn) — chính là nội dung của `capacity-list` cũ. Giờ công gộp vào dòng phụ cột *Kết quả*.
+- **Sắp xếp bằng cột, không đẻ bảng mới:** `.competition-sort-bar` với `CompetitionSortKey = revenue | capacity | progress | reward`. `'revenue'` **giữ nguyên thứ tự gốc** của `buildCompetitionRows` (doanh thu → tiến độ → SL → giờ → tên) nên ngữ nghĩa xếp hạng cũ không đổi.
+- **Xem thêm bằng nút:** mặc định 10 người (`COMPETITION_TOP_ROWS`), nút "Xem tất cả N người" thay cho việc bày sẵn danh sách toàn bộ.
+- **Drill-down một người có 2 thẻ:** *Nguồn doanh thu* (hoá đơn/phiếu túi, như cũ) và **KPI theo ngày** (`competitionDailyKpiByKey`, lọc `monthlyDailyKpiRows` về đúng `competitionRangeFrom..To`) — thay cho bảng KPI toàn cục.
+- **Khối năng suất chỉ còn biểu đồ** (`capacity-chart`): 4 thẻ tổng đã dời lên `.competition-overview`, danh sách đã thành cột của bảng. Đừng thêm lại.
+- **Poster chỉ để xuất ảnh:** ăn `competitionPosterRows = competitionExportRows` (đúng bộ lọc đang xem), mặc định thu gọn qua `.competition-poster-stage { position:absolute; left:-10000px }`. **KHÔNG được dùng `display:none`** — html2canvas không chụp được phần tử không có layout (cùng kỹ thuật với `.wh .inventory-infographic`).
+- **Hai nút Excel đứng cạnh nhau** ở tiêu đề; ghi chú nói thẳng "KPI theo ngày" xuất theo khoảng ngày ĐẦU TRANG, không theo kỳ thi đua — đây là khác biệt có chủ đích, không phải bug.
+
+### Đã tối ưu — Quản trị › Kho (`AdminPage` section `inventory`)
+- **Chi nhánh: bỏ lưới thẻ → bảng dòng** `.admin-stock-branches` / `.admin-stock-branch-row` (cùng luật "không dùng card" của §51). Thẻ cũ cao ~200px nên 3 chi nhánh chiếm trọn màn trước khi thấy được số nào. CSS `.inventory-branch-card*` đã **xoá hẳn**.
+- **Bảng tồn của chi nhánh: tìm + lọc + xếp theo mức độ cần xử lý.** `inventoryStockLines` xếp `hết → sắp hết → còn hàng` rồi mới tới tên (bản cũ xếp alphabet nên hàng đã hết nằm lẫn giữa 30 dòng). Ô tìm không dấu (`normalizeName`) + 3 chip *Tất cả / Cần chú ý / Đã hết* kèm số đếm.
+- **Đối chiếu ca: mặc định chỉ hiện ca CẦN XEM** (`inventoryShiftIssueRows` = ca đang mở **hoặc** có SKU lệch > 0,0005), chip đổi sang "Tất cả (N)". Chọn một tháng là hàng trăm ca mà ca khớp số thì không cần đọc.
+- **Sổ phát sinh kho: phân trang thật.** `Pagination` (25/50/100, mặc định 50) + chip lọc theo loại phiếu (chỉ hiện loại có dữ liệu, kèm số đếm) + tìm không dấu theo tên/SKU/ghi chú. Bản cũ render MỌI phiếu của kỳ trong một khối — một chi nhánh ~90 phiếu/ngày.
+- Thanh tìm/chip dùng chung: `.admin-stock-filterbar`, `.admin-stock-search`, `.admin-stock-chips`, `.admin-ledger-filterbar`.
+
+### QUY TẮC rút ra
+> **Một màn = một kỳ dữ liệu.** Nếu buộc phải có khối lấy khoảng ngày khác (ở đây là nút xuất Excel theo bộ lọc đầu trang) thì phải nói thẳng ra màn hình. Và **đừng liệt kê lại cùng một nhóm người bằng danh sách thứ hai** chỉ vì cần một cách xếp khác — thêm cột hoặc thêm nút sắp xếp.
+
+### QA
+- `tsc -b --force` + `npm run build` pass (`PRODUCTION_SUPABASE_BUNDLE_OK`).
+- Test mới `scripts/test-competition-single-board.mjs` (`COMPETITION_SINGLE_BOARD_OK`) khoá: đúng một danh sách nhân sự trong section, đúng một dải tổng, poster ăn tập đã lọc và không dùng `display:none`, có thanh sắp xếp + nút xem tất cả + 2 thẻ drill-down, có cột năng suất. **Đã kiểm tra ngược:** chạy trên `AdminPage.tsx` của HEAD thì đỏ đúng chỗ ("đang có: CompetitionClassificationTable, adm-list, kpi-daily-table").
+- Test đã cập nhật theo hợp đồng mới: `test-employee-sales-capacity` (năng suất là cột, không còn `capacity-list`/`capacity-summary-grid`), `test-manager-inventory-workspace` (bảng dòng + tìm/lọc/phân trang thay lưới thẻ), `test-admin-erp-workspaces` (panel `payroll-section` đã gộp).
+- Chạy lại **48 test có đọc `AdminPage.tsx`/`styles.css`**: 15 đỏ — **đúng bằng baseline ở HEAD, 0 đỏ mới** (đo bằng `git stash` rồi chạy lại cùng bộ). Nhóm đỏ sẵn: section-title mobile wrap, sitewide-horizontal-text, operations-ux-performance, competition-drilldown (crash do `data:` URL không resolve import tương đối), kpi-reward-reverse-audit (còn đòi `buildPayrollRows` đã gỡ ở §48)…
+- Không chạm DB, không migration.
+
+### Deploy 2026-08-07
+`dpl_3HV6FrHNereRwtkAvymPy7nBVFG8` READY, alias https://gustino-operations.vercel.app HTTP 200.
+
+Lô này **cuốn theo toàn bộ cây làm việc còn treo của §50/§51/§52** (viết lại màn Kho namespace `wh-`, gỡ thành phẩm khỏi kho qua `warehouseScope`, `shiftCountScope` cho bàn giao, bỏ `count exact` toàn chi nhánh ở `store.ts`/`App.tsx`, danh mục SKU không ghi localStorage). Migration RLS của §52 đã áp trước đó, lần này **không có migration mới, không ghi/sửa dòng dữ liệu prod nào**.
+
+Verify trên bundle live:
+- `index-BB8gIAiL.js` + `index-CQllBukJ.css` — đúng hash build local.
+- `AdminPage-BX5fxPdX.js` có `competition-sort-bar`, `competition-poster-stage`, `competition-classification-capacity`, `admin-stock-branches`, `admin-stock-chips`; **0 tham chiếu** `kpi-daily-table` và `adm-list`.
+- CSS live có `.competition-overview`, `.competition-sort-bar`, `.competition-poster-stage`, `.admin-stock-branch-row`, `.admin-stock-search`; **0 tham chiếu** `.inventory-branch-card`, `.capacity-list-head`, `.capacity-summary-grid`.
+- **Ba khiếu nại "mất tính năng" ở §51 nay hết:** CSS live không còn `.legacy-manager-workspace .app-sidebar{background:navy!important}` — luật thắng giờ là `.app-sidebar{background:#fbfcf8!important;color:#64748b!important}` của khối *Fixed CRM navigation*. Sidebar quản lý sáng trở lại, kèm luôn nút xóa dòng công và khối năng suất bán trung bình.
+- `public/sw.js` là service worker **tự hủy** (xóa mọi cache + `unregister()` + reload) nên không có rủi ro kẹt bản cũ; người dùng chỉ cần tải lại trang.
+
+**Đường lùi:** trỏ alias về deployment trước (`vercel alias set <deployment-cũ> gustino-operations.vercel.app`).
+
+## 52. "Web lag quá" — RLS chạy lại trên TỪNG DÒNG (2026-08-07) — ĐÃ ÁP DỤNG DB PROD
+> Chủ quán: "được nhận xét là web lag quá" + console hiện `Failed to load resource: 500` trên một lượt gọi `...?branch_id=eq.gold-coast`.
+
+### Bằng chứng (pg_stat_statements trên prod)
+| Truy vấn | Lượt gọi | Trung bình | Tổng CPU |
+|---|---|---|---|
+| `select * from stock_movements where branch_id=$1 order by created_at desc limit/offset` | 84.087 | **909 ms** | **21 giờ** |
+| `count exact` cùng bảng (lượt HEAD của `fetchMovements`/`fetchMovementsDelta`) | 15.482 | **2.025 ms** | **8,7 giờ** |
+| `sales_receipts` + LATERAL `sales_receipt_items` | 26.818 | **1.060 ms** | **7,9 giờ** |
+
+Cùng truy vấn lấy sổ kho Gold Coast (2.774 dòng): **không qua RLS 5,6 ms · qua RLS 1.242 ms**. Kế hoạch chỉ tố cáo đúng một dòng: `Index Scan … Filter: can_manage_branch(branch_id) (actual time=1.999..1238.718 rows=2774)`. Lỗi 500 trong console chính là lượt `count exact` chạm statement timeout.
+
+### Nguyên nhân
+Policy truyền **`branch_id` của từng dòng** vào `can_manage_branch()`. Đối số đổi theo dòng ⇒ Postgres không cache được kết quả hàm `STABLE`, mà thân hàm gọi `current_profile()` **ba lần**, mỗi lần một lượt tra `profiles`. Hàm lại khai `SET search_path` — đúng điều kiện **chặn inline** của SQL function ⇒ buộc phải gọi thật ~2.800 lần mỗi truy vấn.
+- Kiểm chứng: gọi `can_manage_branch('gold-coast')` (đối số HẰNG, cache được) 2.774 lần chỉ tốn **21,7 ms**.
+
+### Đã sửa — `supabase/migrations/20260807_rls_initplan_hot_reads.sql` (áp thẳng lên prod)
+- Viết lại vị từ của **7 policy SELECT** trên 6 bảng nóng (`stock_movements`, `sales_receipts`, `sales_receipt_items`, `bag_allocations` ×2, `bag_shift_sessions`, `attendance_records`) sang dạng `(select (public.current_profile()).role)` — truy vấn con **không tương quan** nên Postgres nâng thành **InitPlan, chạy đúng một lần cho cả câu**; phần còn lại chỉ là so sánh cột.
+- **Luật phân quyền không đổi** — biểu thức mới là bản khai triển nguyên văn thân hàm cũ; `supmt` vẫn không được cấp quyền ở đây.
+- Policy INSERT/UPDATE/DELETE **giữ nguyên** (chỉ chạm vài dòng, không phải chỗ nghẽn). `can_manage_branch()` **không bị xoá** — 30+ policy khác vẫn dùng.
+- Kết quả đo lại: sổ kho **1.242 ms → 20,3 ms** (nhanh 61×), hóa đơn + dòng hàng **~1.060 ms → 59 ms**.
+- **Ma trận quyền đã kiểm lại sau khi áp:** ca trưởng Gold Coast đọc kho chi nhánh mình = 2.774 dòng; đọc kho Lotte VT = **0**; quản lý đọc Lotte VT = 2.283; nhân viên bán hàng đọc kho = **0**. Khớp y hệt trước khi sửa.
+- **Đường hoàn tác** nằm ở cuối file migration (dán khối comment là quay về biểu thức cũ).
+- ⚠️ Migration này áp bằng `supabase db query --file`, KHÔNG qua `db push` ⇒ bảng `supabase_migrations` không ghi nhận. Đây là drift có chủ ý, cùng kiểu với drift đã ghi ở §5.
+
+### Đã sửa — phía app (`src/lib/store.ts`, `src/App.tsx`)
+- **Bỏ hẳn `count exact` toàn chi nhánh.** `fetchMovements` không hỏi tổng số dòng nữa: `fetchMovementPagesParallel` kéo song song theo lô 4 trang × 1.000 dòng và dừng khi gặp trang chưa đầy ⇒ chi nhánh lớn nhất xong trong đúng một lượt đi-về.
+- `fetchMovementsDelta` đổi hợp đồng: trả `{ rows, recentTotal, recentSince }`. Mốc phát hiện XOÁ phiếu chỉ đếm **3 ngày gần nhất** (`RECENT_DELETION_WINDOW_DAYS`, bám index `stock_movements_branch_date_idx`, ~270 dòng thay vì ~2.800) rồi so với chính danh sách đang giữ trong máy (`movementsRef`). Phiếu cũ hơn 3 ngày bị xoá thì lượt tải đầy đủ 2,5 phút vẫn nhặt được.
+- `applyMovements()` giữ `movementsRef` đồng bộ với state để nhịp nền đối chiếu mà không phải đưa `movements` vào deps (đưa vào là mỗi phiếu mới lại dựng lại bộ đếm).
+- Test: `scripts/test-stock-and-sync-performance.mjs` đã khoá "không được đếm exact toàn bộ sổ kho".
+
+### Vòng 3 cùng ngày — "giao diện kho quá gớm" + cấm lưu dữ liệu ở local
+- **Dòng nhập liệu đổi sang chạm-để-mở** (`wh-pickrow` + `wh-edit`, state `openId` trong `EntryList`). Bản trước bày ô nhập cao 44px ở CẢ 30 dòng ⇒ màn hình toàn hộp trống, cuộn mãi không hết, không biết đang gõ dòng nào. Nay mỗi SKU là một dòng gọn 52px (tên · tồn · nút ＋ hoặc số đã nhập); chạm mới mở stepper + đơn vị + nút Hết/= Tồn + kết quả. Một phiếu thực tế chỉ đụng 3–8 mặt hàng nên đây là ít chạm hơn, không phải nhiều hơn.
+- **Danh mục SKU không còn ghi xuống localStorage** (`lib/products.ts`): bỏ `PersistedProductCatalog`, `writeLocalProducts` chỉ giữ cache TRONG BỘ NHỚ phiên và `removeItem` bản cũ còn sót trên máy người dùng. Lỗi tải cloud nay **ném lỗi** thay vì âm thầm rơi về bản localStorage có thể cũ nhiều ngày — chính là lớp lỗi "máy này thấy khác máy kia". Test khoá ở `test-processing-product-linkage`.
+- **Còn lưu ở local (có chủ ý, KHÔNG được xoá):** hàng đợi chấm công offline trong IndexedDB (`attendanceOutbox` — BUG-118/131, xoá đi là mất lượt check-in khi mạng chập chờn) và con trỏ báo cáo chờ chốt (`handoverReportRequest`, 3 trường, để ca trưởng tắt app không quên gửi báo cáo ngày). Ngoài ra chỉ còn phiên đăng nhập, ngôn ngữ, trạng thái sidebar.
+
+### Còn lại chưa xử lý
+- `realtime.list_changes`: 4.011.615 lượt × 7,2 ms ≈ **8 giờ CPU**. Là hạ tầng realtime của Supabase, cần giảm số bảng/kênh đăng ký chứ không sửa bằng RLS. **Chưa đụng tới** — đây là điểm nghẽn lớn tiếp theo.
+- 30+ policy còn lại (lương, báo cáo, kiểm kê…) vẫn dùng `can_manage_branch()` theo dòng. Chủ quán chọn phạm vi "6 bảng nóng nhất" trước.
+
+## 51. Gỡ thành phẩm khỏi kho + viết lại toàn bộ màn Kho (2026-08-07) — ĐÃ DEPLOY (bundle `index-CY8pZy7_.js`, `InventoryPage-Cbd0LO47.js`, CSS `index-D3lM-dMC.css`)
+> Chủ quán: "thành phẩm thường xuyên âm, hủy cuối ngày cũng không ghi nhận, chỉ có ghi nhận số chế biến của ngày hôm đó còn bao nhiêu thôi… thành phẩm sẽ không để dồn qua nhiều ngày… hay không hiển thị thành phẩm trong kho luôn, để thành phẩm cứ trừ vào sau khi bán như cũ nhưng không hiển thị nữa" + "thiết kế lại toàn bộ giao diện kho mới luôn, không sử dụng dạng card" + "dữ liệu kho bị hiển thị chậm, đôi khi mất thành 0 hết rồi một lúc sau mới hiển thị" + "vì sao lại hiển thị món trong menu bán trong khi tôi đã ẩn rồi".
+
+### `src/lib/warehouseScope.ts` (mới, hàm thuần) — LUẬT "cái gì là hàng tồn kho"
+- `isStockManagedProduct` = `active !== false` **và** không phải món menu **và** `category !== 'finished'` ⇒ kho chỉ còn **nguyên liệu + bao bì** (đúng thứ để dành được qua ngày và cần đặt lại).
+- **Vì sao món đã ẩn vẫn lọt vào kho (trả lời khiếu nại):** `calculateStock` giữ mọi SKU từng có phiếu kho (`|| byProduct.has(product.id)`), còn `isMenuProduct` lọc theo `price > 0` — nên món bị ẩn bằng cách **xóa giá** rơi ngược vào nhóm "hàng kho". Nay lọc thẳng theo `active` + `category`, không phụ thuộc giá. `cake-ready` (thành phẩm, đơn vị "cái", giá 0) chính là ca đó.
+- `splitWarehouseLines` trả `{ managed, hidden }`; `hidden` = SKU bị ẩn **nhưng còn |số dư| > 0,0005**. Màn *Sửa tồn* có chip "Hàng đã ẩn (N)" để mở ra — giữ đúng quy tắc §50: mặt hàng biến mất khỏi màn nhập liệu là mất luôn đường sửa.
+- `summarizeFinishedToday(movements, dateKey)` = thành phẩm nhìn theo NGÀY (chế biến / đã bán / hao / còn lại), **không cộng dồn** ⇒ số âm tích lũy trong sổ không kéo vào bảng này. Hiện ở tab Tồn kho và tab Chế biến.
+- **KHÔNG đụng `calculateStock`:** POS vẫn trừ kho thành phẩm y như cũ, báo cáo ngày và màn Bàn giao vẫn cần thành phẩm. Luật hiển thị chỉ nằm ở lớp trang. Test khoá điều này: `scripts/test-warehouse-hides-finished.mjs` (`WAREHOUSE_HIDES_FINISHED_OK`).
+
+### `InventoryPage.tsx` viết lại toàn bộ — namespace `wh-`, KHÔNG dùng card
+- Bỏ hẳn `section-card`/`entry-card`/`.stock-entry-*`/`.inventory-modebar`. Mọi thứ là **bảng dòng trên nền trắng, ngăn nhau bằng kẻ 1px**: `.wh-table` (tồn kho), `.wh-etable`/`.wh-etr` (nhập/xuất/sửa tồn/kiểm kê), `.wh-doclist` (nhật ký chứng từ), `.wh-batchlist` (mẻ chế biến).
+- Đầu màn còn **một dòng** danh tính + **một hàng chip** dính đỉnh (`.wh-head`, `.wh-tabs`), 6 chế độ `InventoryMode = stock|inbound|processing|outbound|reset|count`.
+- Dòng nhập liệu: điện thoại 2–3 hàng ngắn, máy tính ≥900px gói vào MỘT hàng 5 cột. Ô số giữ 44px/16px (iOS không tự phóng to). Thanh lưu dính đáy `.wh-savebar` né bottom-nav bằng `bottom: calc(72px + env(safe-area-inset-bottom))`.
+- Phiếu kiểm kê đổi từ `<table>` sang `.wh-counttable` (5 cột, tự xuống hàng trên điện thoại); danh mục lấy `getProducts().filter(isStockManagedProduct)`.
+- Giữ nguyên mọi hợp đồng cũ: `formatQuantity`/`formatStockAmount` (3 số lẻ), `quantityInputValue` cho nút Hết/= Tồn, `planOutbound`/`planStockReset`, `confirmRisky`/`confirmBlockedMessage` (BUG-137).
+
+### Kho hiện chậm / nhảy về 0 rồi lát sau mới ra số — `App.tsx`
+- **Gốc:** `movements` khởi tạo `[]` và KHÔNG có cờ trạng thái ⇒ trang Kho dựng bảng từ mảng rỗng, hiện đúng số 0 cho mọi mặt hàng. Tệ hơn, `void refreshMovements()` **nuốt lỗi**: 4G chập chờn là màn hình đứng ở toàn số 0 tới nhịp 15 giây kế tiếp mới "tự nhiên" hiện số thật.
+- Thêm `movementsStatus: 'loading' | 'ready' | 'error'` truyền xuống `InventoryPage`; đang tải thì hiện `SkeletonRows`, lỗi thì hiện dải cảnh báo "số đang hiện KHÔNG phải tồn thật — đừng ghi phiếu lúc này". Tải lại lỗi mà đã từng có dữ liệu thì **giữ số cũ**, không xoá về 0.
+- Vào lại trang cần sổ kho mà chi nhánh đã có dữ liệu trong phiên ⇒ chỉ `syncMovements()` (kéo phần mới) thay vì `refreshMovements()` (đếm dòng + tải lại toàn bộ ~1.700 dòng). Mở màn Kho không còn phải chờ.
+
+### Bổ sung sau phản hồi lần 2 (cùng ngày)
+- **Màn Quản trị › Kho (`AdminPage`) cũng phải lọc:** ảnh chụp "vẫn hiển thị nè" là màn của **quản lý** (`manager-inventory` → `AdminPage` section `inventory`, badge "Ổn định"), không phải màn Kho ca trưởng. `currentStockRows` nay `.filter(isStockManagedProduct)` — một chỗ này phủ cả bảng trên màn lẫn sheet Excel. **Quy tắc: mọi bảng tồn kho hiển thị đều phải đi qua `warehouseScope`, đừng lọc lẻ ở từng trang.**
+- **Cột kết quả chỉ hiện khi dòng đã có số** (`{filled && <span className="wh-result">}`). Bản trước hiện `→ 200 cái` ở mọi dòng kể cả chưa gõ gì — 30 dòng như vậy là một cột số vô nghĩa chạy dọc màn hình. CSS: ô nhập chiếm trọn bề ngang khi chưa nhập (`grid-column: input-start / result-end`, gỡ bằng `.filled`). **Không dùng `:has()`** — WebView cũ trong Zalo/Facebook không hỗ trợ, mà đó đúng là nhóm máy ca trưởng dùng.
+
+### CSS
+- Khối kho cuối `styles.css` thay bằng namespace `.wh-*`. **Cảnh báo:** khối `.capacity-*` của §49 nằm NGAY SAU khối kho ở cuối file — khi thay đuôi file phải giữ lại nó (đợt này đã cắt nhầm rồi khôi phục từ git).
+- Sidebar: đã thêm ghi chú "MÀU SIDEBAR — NGUỒN SỰ THẬT DUY NHẤT" ở khối *Fixed CRM navigation*. Không đổi màu — repo vốn đã đúng (xem mục dưới).
+
+### QA
+- `tsc -b` + `npm run build` pass (`PRODUCTION_SUPABASE_BUNDLE_OK`).
+- Toàn bộ bộ test: **36 đỏ — đúng bằng baseline ở HEAD, 0 đỏ mới** (đo bằng cách stash rồi chạy lại). Test đã cập nhật cho hợp đồng mới: `test-inventory-mobile-and-shift-count` (đổi sang `wh-*`, thêm kiểm tra trạng thái tải), `test-owner-ux-inventory-admin-20260720`, `test-report-inventory-ux`, `test-processing-product-linkage`. Test mới: `test-warehouse-hides-finished`.
+
+### Ba khiếu nại còn lại: KHÔNG phải lỗi code — bản trên production đang CŨ
+Đối chiếu bundle live (`index-tTzCsD6K.js`, `AdminPage-CiSKP4pJ.js`, `index-CHi08Ntr.css`) với repo:
+| Hiện tượng | Bằng chứng | Kết luận |
+|---|---|---|
+| Sidebar quản lý sai màu (tên thương hiệu tàng hình, mục điều hướng mờ) | CSS live còn `.legacy-manager-workspace .app-sidebar{background:navy!important}` — repo **đã gỡ** khối này (kèm ghi chú "ĐỪNG thêm lại theme riêng theo role"). Nền navy thắng vì `!important`, còn chữ vẫn lấy màu tối `#1f2937!important` của theme sáng ⇒ chữ tối trên nền tối. | Repo đã đúng, **chỉ cần deploy** |
+| Mất nút xóa dòng công bị ghi vắng | Live **không có** chuỗi `Xóa dòng` lẫn `admin_delete_empty_shift_registration`; repo có cả hai (`AdminPage.tsx:2596`, `lib/attendance.ts:856`). RPC đã tồn tại trên DB prod (`security definer`). | Chưa deploy, **không mất code** |
+| Không thấy khối năng suất bán trung bình | Live **không có** `buildEmployeeSalesCapacity` / `.capacity-*`; repo có (§49). | Chưa deploy |
+- **Lưu ý phân quyền:** cả hai nút xóa nằm ở **Quản trị › Chấm công**, chỉ **admin** vào được (`App.tsx` `manager-attendance` gate `canUseAdmin`) và DB cũng chặn: `admin_delete_attendance_record` raise `'Chỉ Admin hệ thống được xóa ca công'` nếu `profiles.role <> 'admin'`. Tài khoản **manager** (sidebar 4 mục: Doanh thu / Kinh doanh / Kho / Báo cáo ngày) sẽ không thấy nút dù có deploy. Khối năng suất bán thì manager xem được ở **Kinh doanh**.
+
+## 50. Kho thành phẩm âm triền miên + thiết kế lại màn Kho cho điện thoại (2026-08-06) — ĐÃ DEPLOY cùng §51 (07/08)
+> Chủ quán: "thành phẩm đã cho trừ khi bán rồi mà vẫn âm quài, hoặc số lượng lớn luôn, hay do bàn giao không liên kết với kho?" + "chức năng kho khó dùng, thao tác lâu, thiết kế lại tối ưu điện thoại".
+
+### Chẩn đoán DB prod (chỉ đọc, `scripts/db_diag_finished_stock_negative_20260806.sql`)
+| SKU | Chi nhánh | Vào | Ra POS | Ra tay | Lần kiểm kê | Tồn |
+|---|---|---|---|---|---|---|
+| `chestnut-grilled-finished` (kg) | gold-coast / lotte-2310 / lotte-vt | **0 / 0 / 0** | 58,96 / 18,70 / 5,57 | 0 | **0 / 0 / 0** | −58,96 / −18,70 / −5,57 |
+| `cake-ready` (cái) | lotte-vt / lotte-2310 / gold-coast | 380 / 110 / 128 | 1.312 / 208 / 268 | 0 / **70** / 0 | 1 / 0 / 0 | −1.132 / −168 / −140 |
+
+**Ba nguyên nhân độc lập (công thức món KHÔNG sai đơn vị — đã kiểm: 0,11 kg/túi 110g, 4 cái/hộp):**
+1. **Có đường RA mà không có đường VÀO:** 4 món nướng trên POS trừ đúng SKU *Thành phẩm hạt dẻ nướng*, nhưng SKU đó **chưa từng có một phiếu `processing_in` nào** — ca trưởng chế biến ra "tuyết"/"rang", không ai chọn đầu ra "nướng". Bán bao nhiêu thì âm bấy nhiêu. **CHƯA SỬA — chờ chủ quán chọn hướng** (đổi thói quen chế biến hay đổi công thức 4 món).
+2. **Bàn giao ca không kiểm đếm hết kho** (đã sửa, xem dưới).
+3. **Trừ đôi:** lotte-2310 còn 70 cái `cake-ready` xuất bằng phiếu tay song song với 208 cái POS đã tự trừ. Chủ quán chọn KHÔNG làm cảnh báo trừ đôi ở đợt này.
+- **"Số lượng lớn" không phải lỗi tính:** Gold Coast `chestnut-cooked-kg` = 273,92 kg và sau mốc kiểm kê gần nhất không có phiếu nào ⇒ 273,92 chính là **số đổ sẵn đã được bấm chốt**.
+
+### Đã sửa — bàn giao ca (`ShiftHandoverPage.tsx` + `src/lib/shiftCountScope.ts` mới)
+- **`countProducts` phủ MỌI thành phẩm kho** (`category==='finished' && isWarehouseProduct`), không còn chỉ `getFinishedBulkProducts()` (thành phẩm **kg**) — nên bánh đơn vị "cái" mới lọt vào màn chốt ca.
+- **Gỡ bẫy tự khóa:** thêm `expectedBalances` (tồn GIỮ NGUYÊN DẤU) bên cạnh `availableBalances` (`Math.max(0,…)`, chỉ dùng cho tồn đầu ca). `productsToCount()` nhận SKU có |tồn| > 0,0005 **kể cả âm** và nhận **mọi loại phiếu** phát sinh trong ca (bản cũ chỉ `processing_in` nên hàng chỉ bán ra không bao giờ lọt vào).
+- **Ô đếm KHÔNG điền sẵn tồn dự kiến nữa:** `setClosingBalances({})` khi đổi ca, input `?? ''`, ô trống ≠ đã đếm 0 (`hasCountInput`). Chốt ca bị chặn kèm danh sách "Chưa đếm N mặt hàng: …". Bù lại có nút **"= dự kiến"** mỗi dòng để không làm chậm ca trưởng.
+- **QUY TẮC:** đừng bao giờ để một màn nhập liệu lọc theo `> 0` trên bản đã `Math.max(0, …)` — số âm biến mất khỏi màn là mất luôn đường sửa.
+
+### Đã sửa — màn Kho mobile-first (`InventoryPage.tsx`, CSS `.inventory-modebar` / `.stock-*`)
+- **Một tầng điều hướng:** `InventoryCrmMode = stock | inbound | processing | outbound | reset | count`. Bỏ hẳn `InboundSub`/`OutboundSub` + `.inventory-subtabs` (bản cũ: 4 thẻ cao 150px → tab con → mới tới ô nhập; "sửa tồn" mất 3 chạm). Nay `InventoryModeBar` = 1 hàng chip **sticky đỉnh màn**, cuộn ngang.
+- **Nhóm hay dùng:** `recentProductIds()` = SKU có phát sinh trong 7 ngày (top 10). Thứ tự dòng: đã nhập → hay dùng → còn tồn → còn lại. Mặc định **rút gọn**, nút "Hiện thêm N mặt hàng ít dùng" (không rút gọn khi đang tìm/lọc hoặc danh sách < 6 dòng).
+- **Thanh lưu dính đáy** (`.stock-entry-footer` sticky + shadow): lưu được ở bất kỳ vị trí cuộn nào, nút lưu ghi luôn số dòng và **disable khi chưa có gì thay đổi**. Ghi chú phiếu thu vào nút ✎ thay vì ô luôn chiếm chỗ.
+- **Dòng SKU:** thêm nút **− / +** bước thông minh (kg → 0,5; g → 100; hàng đếm/bao → 1) để khỏi bật bàn phím; nút ✎/× chỉ hiện khi dòng đã nhập; mobile xếp 3 hàng (tên+tồn / ô nhập / nút+kết quả) thay vì dồn 4 khối vào hàng hẹp. Hướng dẫn dài → `<details>` "Cách dùng nhanh".
+- Giữ nguyên mọi hợp đồng cũ: `quantityInputValue` cho nút Hết/= Tồn, `confirmRisky`/`confirmBlockedMessage` (BUG-137), `planOutbound`/`planStockReset`.
+- **CSS đã dọn:** khối `.inventory-crm-*` + `.inventory-subtabs` cuối `styles.css` (đợt "Đầu màn kho gọn lại" cùng ngày) bị thay bằng `.inventory-modebar`. Vẫn còn rule `.inventory-crm-*` rải rác ở các media query cũ — **chết nhưng chưa dọn**, không còn class nào render.
+- **QA:** `tsc -b` + `npm run build` pass (`PRODUCTION_SUPABASE_BUNDLE_OK`, `index-C8UqE94W.js`). Test mới `scripts/test-inventory-mobile-and-shift-count.mjs` (`INVENTORY_MOBILE_AND_SHIFT_COUNT_OK`, có test bằng số cho SKU âm). Pass lại: INVENTORY_ENTRY_REDESIGN, INVENTORY_DISPLAY_CONSISTENCY_OK, INVENTORY_CONFIRM_IN_WEBVIEW_OK, OWNER_UX_INVENTORY_ADMIN_20260720_OK, HANDOVER_SHIFT_RECOVERY_OK, HANDOVER_REPORT_REMINDER_OK, STOCK_ADJUSTMENT_CONSISTENCY_OK, SHIFT_REPORT_SCOPE_OK, POS_SALE_STOCK_DEDUCTION_OK, DAILY_REPORT_EMPLOYEE_ATTENDANCE_FLOW_OK.
+- **Số âm đang có KHÔNG tự hết:** phải đếm thật rồi chốt ca (hoặc dùng Sửa tồn) mới đặt lại được mốc. Không ghi số nào vào DB prod trong phiên này.
+
+## 49. Khả năng bán trung bình của nhân viên (2026-08-06) — ĐÃ DEPLOY (`dpl_FM1zxRBCND9PuJARxKaWyv6QWcuX`, bundle `index-_-At_eSP.js`)
 > Yêu cầu: thêm chức năng tính khả năng trung bình bán được của một nhân viên, hiện thành danh sách + biểu đồ so sánh, gộp chung vào màn **Thi đua nhân viên**.
 
 - **Lý do nghiệp vụ:** bảng thi đua xếp theo TỔNG doanh thu nên ai làm nhiều ca luôn đứng trên, dù mỗi ca bán ít hơn. Khối mới trả lời câu khác: *một ca (hoặc một giờ công) của người này bán được bao nhiêu*.

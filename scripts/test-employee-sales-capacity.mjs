@@ -72,21 +72,33 @@ assert.match(admin, /buildEmployeeSalesCapacity\(competitionFilteredRows, effect
   'Năng suất phải tính trên đúng tập nhân sự đã lọc của bảng thi đua.')
 assert.match(admin, /capacityMetric === 'revenuePerHour' && !capacityHasHours/,
   'Thiếu giờ công (bảng ca trưởng) thì chỉ số theo giờ phải tự quay về theo ca.')
-const competitionSection = sourceBetween(admin, "{activeSection === 'commission' && (", '<div className="adm-list">')
+const competitionSection = sourceBetween(admin, "{activeSection === 'commission' && (", '<p className="commission-note">KPI chỉ tính cho')
 assert.match(competitionSection, /<CompetitionClassificationTable/, 'Sai mốc kiểm tra: bảng xếp hạng thi đua đã đổi chỗ.')
 assert.match(competitionSection, /<EmployeeSalesCapacityBoard/,
-  'Danh sách khả năng bán trung bình phải nằm chung trong section Thi đua nhân viên.')
+  'Biểu đồ khả năng bán trung bình phải nằm chung trong section Thi đua nhân viên.')
 assert.match(admin, /aria-label="Chỉ số năng suất"/, 'Thiếu nút đổi chỉ số năng suất.')
 assert.match(admin, /className="capacity-chart-rows"/, 'Thiếu biểu đồ so sánh năng suất.')
 assert.match(admin, /className="capacity-average-mark"/, 'Biểu đồ phải có vạch mốc trung bình đội để so sánh.')
-assert.match(admin, /aria-label=\{`Danh sách \$\{salesCapacityMetricLabel\(metric\)\} theo nhân viên`\}/,
-  'Thiếu danh sách năng suất theo nhân viên.')
+
+// 07/08/2026 — MỘT BẢNG DUY NHẤT: năng suất từng người là CỘT của bảng xếp hạng,
+// không còn là danh sách thứ hai liệt kê lại đúng nhóm người đó.
+assert.doesNotMatch(admin, /className="capacity-list"/,
+  'Danh sách năng suất riêng đã bị gộp vào bảng xếp hạng — đừng dựng lại danh sách thứ hai.')
+assert.doesNotMatch(admin, /className="capacity-summary-grid"/,
+  'Số tổng năng suất đã dời lên dải competition-overview — đừng dựng lại dải tổng thứ hai.')
+assert.doesNotMatch(admin, /<div className="adm-list">\s*\{commissionRows/,
+  'Thẻ thưởng KPI trùng nhóm người của bảng xếp hạng đã bị gỡ.')
+assert.match(admin, /competition-classification-capacity/, 'Bảng xếp hạng thiếu cột năng suất.')
+assert.match(admin, /<span>\{salesCapacityMetricLabel\(capacityMetric\)\}<\/span>/,
+  'Tiêu đề cột năng suất phải đổi theo chỉ số đang chọn.')
 assert.match(admin, /Chưa có ca\/giờ công để tính trung bình/,
   'Người chưa có ca phải được nói rõ lý do thay vì hiện số 0 gây hiểu nhầm.')
+assert.match(admin, /so với TB đội/, 'Cột năng suất phải nói rõ chênh lệch so với trung bình đội.')
 
-for (const selector of ['.capacity-board {', '.capacity-chart {', '.capacity-average-mark {', '.capacity-list-head,']) {
+for (const selector of ['.capacity-board {', '.capacity-chart {', '.capacity-average-mark {', '.competition-overview {']) {
   assert.ok(styles.includes(selector), `Thiếu CSS ${selector}`)
 }
+assert.ok(!styles.includes('.capacity-list-head,'), 'CSS danh sách năng suất cũ phải được dọn cùng lúc với markup.')
 assert.match(styles, /@media \(max-width: 900px\) \{\s*\.capacity-board/, 'Bảng năng suất chưa có bố cục điện thoại.')
 
 console.log('EMPLOYEE_SALES_CAPACITY_OK')

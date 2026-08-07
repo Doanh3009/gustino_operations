@@ -45,52 +45,86 @@ function App() {
   const [page, setPage] = useState<Page>(() => pageFromHash())
   const [authReady, setAuthReady] = useState(!supabase)
   const [movements, setMovements] = useState<StockMovement[]>([])
+  /**
+   * Trạng thái nạp sổ kho. Trước đây chỉ có mảng `movements` rỗng: trang Kho
+   * dựng bảng từ mảng rỗng nên hiện ĐÚNG SỐ 0 cho mọi mặt hàng, và nếu lượt tải
+   * lỗi (4G chập chờn) thì `void refreshMovements()` nuốt luôn lỗi — màn hình
+   * đứng ở toàn số 0 cho tới nhịp 15 giây kế tiếp mới "tự nhiên" hiện số thật.
+   * Đúng hiện tượng chủ quán mô tả: "mất thành 0 hết rồi một lúc sau mới ra".
+   */
+  const [movementsStatus, setMovementsStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [inventoryTab, setInventoryTab] = useState<InventoryTab>('overview')
   const [mgmtSection, setMgmtSection] = useState<AdminSection | undefined>(() => managementSectionFromHash())
   const needsMovements = ['today', 'restaurant', 'report', 'inventory', 'handover', 'orders'].includes(page)
 
-  // Mốc đồng bộ sổ kho: dòng mới nhất đã có + tổng số dòng của chi nhánh.
-  const movementSyncRef = useRef<{ branchId: string; latestCreatedAt: string; total: number } | null>(null)
+  // Mốc đồng bộ sổ kho: chi nhánh + dòng mới nhất đã có.
+  const movementSyncRef = useRef<{ branchId: string; latestCreatedAt: string } | null>(null)
+  // Bản sao đồng bộ của `movements` để nhịp nền đối chiếu mà không phải đưa
+  // `movements` vào deps (đưa vào là mỗi lần có phiếu mới lại dựng lại bộ đếm).
+  const movementsRef = useRef<StockMovement[]>([])
+
+  const applyMovements = useCallback((next: StockMovement[] | ((current: StockMovement[]) => StockMovement[])) => {
+    setMovements((current) => {
+      const value = typeof next === 'function' ? next(current) : next
+      movementsRef.current = value
+      return value
+    })
+  }, [])
 
   const refreshMovements = useCallback(async () => {
     if (!user) return
-    const data = await fetchMovements(user.branchId, user)
-    movementSyncRef.current = {
-      branchId: user.branchId,
-      latestCreatedAt: latestMovementStamp(data, ''),
-      total: data.length,
+    const hadData = movementSyncRef.current?.branchId === user.branchId
+    if (!hadData) setMovementsStatus('loading')
+    try {
+      const data = await fetchMovements(user.branchId, user)
+      movementSyncRef.current = {
+        branchId: user.branchId,
+        latestCreatedAt: latestMovementStamp(data, ''),
+      }
+      applyMovements((current) => movementFingerprint(current) === movementFingerprint(data) ? current : data)
+      setMovementsStatus('ready')
+    } catch (error) {
+      // Giữ nguyên số đang hiển thị nếu đã từng tải được: số cũ vài phút vẫn
+      // đúng hơn một bảng toàn 0. Chỉ báo lỗi để trang Kho hiện nút "Tải lại".
+      setMovementsStatus(hadData ? 'ready' : 'error')
+      throw error
     }
-    setMovements((current) => movementFingerprint(current) === movementFingerprint(data) ? current : data)
-  }, [user])
+  }, [user, applyMovements])
 
   /**
    * Nhịp nền chỉ kéo phần MỚI của sổ kho. Tải lại toàn bộ lịch sử mỗi 15 giây là
-   * lý do app ngày càng ì (mỗi chi nhánh đã ~1.700 dòng và mỗi ngày thêm ~90).
-   * `fetchMovementsDelta` kèm tổng số dòng nên vẫn phát hiện được xoá/sửa quá
-   * khứ — lúc đó mới tải đầy đủ lại.
+   * lý do app ngày càng ì (mỗi chi nhánh đã ~2.800 dòng và mỗi ngày thêm ~90).
+   *
+   * Phát hiện XOÁ phiếu: máy chủ trả số dòng của vài ngày gần nhất; đem so với
+   * chính danh sách đang giữ trong máy trong cùng cửa sổ đó. Lệch = có dòng bị
+   * xoá/sửa ⇒ tải đầy đủ lại. Bản trước so bằng `count exact` trên TOÀN chi
+   * nhánh, chạy 15 giây một lần — chính là truy vấn 2 giây đã ngốn 8,7 giờ CPU
+   * database và trả HTTP 500 khi quá hạn.
    */
   const syncMovements = useCallback(async () => {
     if (!user) return
     const state = movementSyncRef.current
     if (!state || state.branchId !== user.branchId || !state.latestCreatedAt) return refreshMovements()
-    // Lỗi ở nhịp gia số (mạng rớt, timeout đếm dòng) không được làm chết việc
-    // đồng bộ: nuốt lỗi rồi thôi thì máy đứng ở số cũ cho tới lần tải đầy đủ kế
-    // tiếp mà không ai biết. Hỏng nhịp nhẹ thì quay về đường tải đầy đủ.
+    // Lỗi ở nhịp gia số (mạng rớt, timeout) không được làm chết việc đồng bộ:
+    // nuốt lỗi rồi thôi thì máy đứng ở số cũ mà không ai biết. Hỏng nhịp nhẹ thì
+    // quay về đường tải đầy đủ.
     const delta = await fetchMovementsDelta(user.branchId, state.latestCreatedAt, user).catch(() => null)
-    if (!delta || delta.total !== state.total + delta.rows.length) return refreshMovements()
-    if (!delta.rows.length) return
+    if (!delta) return refreshMovements()
+    const known = new Set(movementsRef.current.map((item) => item.id))
+    const fresh = delta.rows.filter((item) => !known.has(item.id))
+    const recentInMemory = movementsRef.current
+      .filter((item) => item.shiftDate >= delta.recentSince)
+      .length
+      + fresh.filter((item) => item.shiftDate >= delta.recentSince).length
+    if (delta.recentTotal !== recentInMemory) return refreshMovements()
+    if (!fresh.length) return
     movementSyncRef.current = {
       branchId: user.branchId,
       latestCreatedAt: latestMovementStamp(delta.rows, state.latestCreatedAt),
-      total: delta.total,
     }
-    setMovements((current) => {
-      const known = new Set(current.map((item) => item.id))
-      const fresh = delta.rows.filter((item) => !known.has(item.id))
-      // Cả hai danh sách đều sắp xếp mới → cũ nên ghép đầu là giữ đúng thứ tự.
-      return fresh.length ? [...fresh, ...current] : current
-    })
-  }, [user, refreshMovements])
+    // Cả hai danh sách đều sắp xếp mới → cũ nên ghép đầu là giữ đúng thứ tự.
+    applyMovements((current) => [...fresh, ...current])
+  }, [user, refreshMovements, applyMovements])
 
   useEffect(() => {
     if (!supabase) return
@@ -129,8 +163,13 @@ function App() {
     }
   }, [])
   useEffect(() => {
-    if (needsMovements) void refreshMovements()
-  }, [needsMovements, refreshMovements])
+    if (!needsMovements) return
+    // Mỗi lần bước vào một trang cần sổ kho, bản cũ tải lại TOÀN BỘ lịch sử
+    // (2 lượt mạng: đếm dòng + các trang dữ liệu). Chi nhánh đã có sẵn dữ liệu
+    // trong phiên thì chỉ cần kéo phần mới — mở màn Kho không còn phải chờ.
+    const warm = movementSyncRef.current?.branchId === user?.branchId
+    void (warm ? syncMovements() : refreshMovements()).catch(() => undefined)
+  }, [needsMovements, refreshMovements, syncMovements, user?.branchId])
   useEffect(() => {
     if (!user || !needsMovements) return
     let ticks = 0
@@ -139,10 +178,10 @@ function App() {
       if (document.hidden) return
       ticks += 1
       // Khoảng 2,5 phút tải đầy đủ một lần để bắt cả sửa/xoá ở quá khứ.
-      void (ticks % 10 === 0 ? refreshMovements() : syncMovements())
+      void (ticks % 10 === 0 ? refreshMovements() : syncMovements()).catch(() => undefined)
     }, 15000)
     const resume = () => {
-      if (!document.hidden) void syncMovements()
+      if (!document.hidden) void syncMovements().catch(() => undefined)
     }
     document.addEventListener('visibilitychange', resume)
     window.addEventListener('focus', resume)
@@ -399,7 +438,9 @@ function App() {
 
   function handleLogin(nextUser: AppUser) {
     const normalizedUser = { ...nextUser, role: normalizeRole(nextUser.role) }
-    setMovements([])
+    applyMovements([])
+    setMovementsStatus('loading')
+    movementSyncRef.current = null
     saveLocalUser(normalizedUser)
     markSessionStart()
     setUser(normalizedUser)
@@ -453,6 +494,7 @@ function App() {
           <InventoryPage
             user={user}
             movements={movements}
+            movementsStatus={movementsStatus}
             onChanged={refreshMovements}
             initialTab={inventoryTab}
             onNavigate={navigate}

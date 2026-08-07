@@ -10,12 +10,6 @@ import type { AppUser, ProductRecipeLine } from '../types'
 export const PRODUCTS_CHANGED_EVENT = 'gustino-products-updated'
 const PRODUCTS_CACHE_KEY = 'gustino:configured-products:v1'
 
-interface PersistedProductCatalog {
-  products: ConfiguredProduct[]
-  deletedProducts: ConfiguredProduct[]
-  cachedAt: string
-}
-
 interface ProductRow {
   id: string
   sku: string
@@ -78,37 +72,30 @@ function productToRow(product: ConfiguredProduct) {
   }
 }
 
-function writeLocalProducts(products: ConfiguredProduct[], deletedProducts?: ConfiguredProduct[]) {
-  setConfiguredProductsCache(products, deletedProducts)
-  if (typeof window !== 'undefined') {
-    try {
-      const previous = readPersistedProducts()
-      const payload: PersistedProductCatalog = {
-        products,
-        deletedProducts: deletedProducts ?? previous?.deletedProducts ?? [],
-        cachedAt: new Date().toISOString(),
-      }
-      window.localStorage.setItem(PRODUCTS_CACHE_KEY, JSON.stringify(payload))
-    } catch {
-      // Catalog cloud vẫn là nguồn chuẩn; cache trình duyệt chỉ là fallback khi mạng chập chờn.
-    }
+/**
+ * Danh mục SKU chỉ sống trong BỘ NHỚ của phiên, KHÔNG ghi xuống localStorage.
+ *
+ * Quyết định 07/08/2026 (chủ quán): "không có dữ liệu nào được phép lưu trong
+ * local". Bản cũ ghi nguyên danh mục (tên, giá, nhóm hàng, công thức) vào
+ * `localStorage['gustino:configured-products:v1']`. Bản cache đó sống qua nhiều
+ * ngày và không có đường hết hạn, nên admin sửa giá/tắt món trên một máy thì máy
+ * khác vẫn đọc bản cũ — đúng lớp lỗi "máy này thấy khác máy kia" đã đeo bám kho.
+ * Cloud là nguồn sự thật duy nhất; mỗi lần mở app đọc lại từ Supabase.
+ */
+const clearPersistedProducts = () => {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(PRODUCTS_CACHE_KEY)
+  } catch {
+    // Trình duyệt riêng tư chặn storage — không có gì để dọn thì thôi.
   }
-  window.dispatchEvent(new CustomEvent(PRODUCTS_CHANGED_EVENT))
 }
 
-function readPersistedProducts(): PersistedProductCatalog | null {
-  if (typeof window === 'undefined') return null
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(PRODUCTS_CACHE_KEY) || 'null') as Partial<PersistedProductCatalog> | null
-    if (!parsed || !Array.isArray(parsed.products) || !Array.isArray(parsed.deletedProducts)) return null
-    return {
-      products: parsed.products,
-      deletedProducts: parsed.deletedProducts,
-      cachedAt: typeof parsed.cachedAt === 'string' ? parsed.cachedAt : '',
-    }
-  } catch {
-    return null
-  }
+function writeLocalProducts(products: ConfiguredProduct[], deletedProducts?: ConfiguredProduct[]) {
+  setConfiguredProductsCache(products, deletedProducts)
+  // Dọn bản cache cũ còn sót trên máy người dùng từ các phiên bản trước.
+  clearPersistedProducts()
+  window.dispatchEvent(new CustomEvent(PRODUCTS_CHANGED_EVENT))
 }
 
 function mergeCloudIntoBase(rows: ConfiguredProduct[]): ConfiguredProduct[] {
@@ -140,20 +127,13 @@ export async function fetchConfiguredProducts(user?: AppUser | null): Promise<Co
     writeLocalProducts(products, [])
     return products
   }
-  const persisted = readPersistedProducts()
-  if (persisted?.products.length) {
-    setConfiguredProductsCache(persisted.products, persisted.deletedProducts)
-  }
   const { data, error } = await supabase
     .from('products')
     .select('id, sku, name, unit, category, low_stock, active, price, source, weight_kg, counts_for_yield, inbound_unit, inbound_pack_kg, inbound_pack_quantity, recipe, deleted_at')
-  if (error) {
-    if (persisted?.products.length) {
-      window.dispatchEvent(new CustomEvent(PRODUCTS_CHANGED_EVENT))
-      return persisted.products
-    }
-    throw error
-  }
+  // Lỗi mạng thì GIỮ danh mục đang có trong bộ nhớ phiên (nếu đã tải được lần
+  // nào) và ném lỗi lên cho phía gọi. Trước đây chỗ này rơi về bản localStorage
+  // — nghĩa là im lặng dùng danh mục có thể đã cũ nhiều ngày.
+  if (error) throw error
   const rows = (data || []).map((row) => rowToProduct(row as ProductRow))
   const merged = mergeCloudIntoBase(rows)
   writeLocalProducts(merged, rows.filter((product) => Boolean(product.deletedAt)))

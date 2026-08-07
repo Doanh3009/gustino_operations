@@ -15,8 +15,11 @@ const checks = [
   ['packing residue is not labelled ready to sell', inventory.includes("'packing-residue'") && inventory.includes('Còn dư, chưa đủ đóng gói') && inventory.includes('PACKING_OPTIONS_BY_OUTPUT')],
   // 05/08/2026: món trong menu bán không còn là một NHÓM của bảng tồn — POS ghi
   // hóa đơn chứ không ghi movement, nên `calculateStock` loại hẳn chúng ra thay
-  // vì hiển thị một nhóm luôn rỗng. Bảng tồn chỉ còn 3 nhóm hàng thật.
-  ['stock screen shows warehouse goods only, POS menu items filtered out', inventory.includes("type StockDisplayCategory = 'all' | 'raw' | 'packaging' | 'finished'") && !inventory.includes("| 'sale'") && store.includes('isWarehouseProduct(product) || byProduct.has(product.id)')],
+  // vì hiển thị một nhóm luôn rỗng.
+  // 07/08/2026: thành phẩm cũng bị gỡ khỏi bảng tồn theo quyết định của chủ quán
+  // (thành phẩm dùng trong ngày, không để dồn qua nhiều ngày). Bảng tồn chỉ còn
+  // NGUYÊN LIỆU + BAO BÌ; POS vẫn trừ kho thành phẩm y như cũ.
+  ['stock screen shows raw + packaging only, menu items and finished goods filtered out', inventory.includes("type StockDisplayCategory = 'all' | 'raw' | 'packaging'") && !inventory.includes("| 'sale'") && store.includes('isWarehouseProduct(product) || byProduct.has(product.id)')],
   ['mobile header no longer renders Gustino logo', !shell.includes('<span className="mh-logo"><img src="/gustino-logo.jpg" alt="GUSTINO" /></span>')],
   ['employee sales uses daily revenue aggregation', admin.includes('const employeeDailyRevenue = buildEmployeeDailyRevenueRows(employeeReceipts)') && admin.includes('Doanh thu theo ngày')],
   ['employee daily revenue has an informative chart and table', admin.includes('admin-employee-daily-revenue-chart') && admin.includes('admin-employee-daily-revenue-table')],

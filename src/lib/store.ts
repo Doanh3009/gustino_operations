@@ -56,7 +56,9 @@ export function saveLocalMovements(items: StockMovement[]) {
   void items
 }
 
-const STOCK_MOVEMENT_PAGE_SIZE = 500
+const STOCK_MOVEMENT_PAGE_SIZE = 1000
+/** Số trang kéo song song mỗi lượt. 4 × 1000 phủ hết chi nhánh lớn nhất trong MỘT lượt đi-về. */
+const STOCK_MOVEMENT_PAGE_BATCH = 4
 
 async function fetchAllMovementRows(
   loadPage: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }>,
@@ -68,6 +70,42 @@ async function fetchAllMovementRows(
     const page = data || []
     rows.push(...page)
     if (page.length < STOCK_MOVEMENT_PAGE_SIZE) return rows
+  }
+}
+
+/**
+ * Kéo hết sổ kho mà KHÔNG hỏi tổng số dòng trước.
+ *
+ * Bản cũ gọi `select('id', { count: 'exact', head: true })` để biết số trang.
+ * Trên prod (07/08/2026) truy vấn đếm đó là điểm nghẽn của cả hệ thống:
+ * **15.428 lượt × 2.025 ms trung bình = 8,7 giờ thời gian CPU database**, trong
+ * khi lấy CHÍNH dữ liệu chỉ 34 ms. Lý do: `count exact` phải quét toàn bộ dòng
+ * của chi nhánh và chạy RLS `can_manage_branch()` trên từng dòng, còn lượt lấy
+ * dữ liệu thì dừng ở 1.000 dòng đầu. Đây vừa là nguồn "web lag quá", vừa là
+ * lượt trả HTTP 500 trong console (statement timeout).
+ *
+ * Nay kéo song song theo lô và dừng khi gặp trang chưa đầy — không cần biết
+ * trước tổng số dòng. Chi nhánh lớn nhất (~2.800 dòng) xong trong đúng một lượt.
+ */
+async function fetchMovementPagesParallel(
+  loadPage: (from: number, to: number) => PromiseLike<{ data: any[] | null; error: any }>,
+): Promise<any[]> {
+  const rows: any[] = []
+  for (let batch = 0; ; batch += 1) {
+    const pages = await Promise.all(
+      Array.from({ length: STOCK_MOVEMENT_PAGE_BATCH }, (_, index) => {
+        const from = (batch * STOCK_MOVEMENT_PAGE_BATCH + index) * STOCK_MOVEMENT_PAGE_SIZE
+        return loadPage(from, from + STOCK_MOVEMENT_PAGE_SIZE - 1)
+      }),
+    )
+    let lastPageWasFull = true
+    for (const page of pages) {
+      if (page.error) throw page.error
+      const data = page.data || []
+      rows.push(...data)
+      if (data.length < STOCK_MOVEMENT_PAGE_SIZE) { lastPageWasFull = false; break }
+    }
+    if (!lastPageWasFull) return rows
   }
 }
 
@@ -101,31 +139,9 @@ export async function fetchMovements(branchId: string, user?: AppUser): Promise<
     .order('id', { ascending: false })
     .range(from, to)
 
-  // Biết trước tổng số dòng thì tải các trang SONG SONG. Vòng lặp nối tiếp cũ
-  // tốn 4 lượt đi-về mạng liên tiếp ngay khi mở trang — trên 4G là hơn một giây
-  // chỉ để dựng bảng tồn.
-  const { count, error: countError } = await supabase!
-    .from('stock_movements')
-    .select('id', { count: 'exact', head: true })
-    .eq('branch_id', branchId)
-  if (countError) throw countError
-  const total = count || 0
-  if (total <= STOCK_MOVEMENT_PAGE_SIZE) {
-    const { data, error } = await branchPage(0, STOCK_MOVEMENT_PAGE_SIZE - 1)
-    if (error) throw error
-    return (data || []).map(mapMovementRow)
-  }
-  const pages = await Promise.all(
-    Array.from({ length: Math.ceil(total / STOCK_MOVEMENT_PAGE_SIZE) }, (_, index) => {
-      const from = index * STOCK_MOVEMENT_PAGE_SIZE
-      return branchPage(from, from + STOCK_MOVEMENT_PAGE_SIZE - 1)
-    }),
-  )
-  const rows: any[] = []
-  for (const page of pages) {
-    if (page.error) throw page.error
-    rows.push(...(page.data || []))
-  }
+  // Kéo song song theo lô, KHÔNG hỏi tổng số dòng trước (xem
+  // `fetchMovementPagesParallel`: lượt đếm đó là điểm nghẽn số 1 của prod).
+  const rows = await fetchMovementPagesParallel(branchPage)
   // Có phiếu kho được ghi ngay giữa lúc phân trang thì các trang sẽ trượt một
   // nhịp và trả trùng dòng; lọc theo id để bảng tồn không cộng đôi.
   const seen = new Set<string>()
@@ -138,22 +154,33 @@ export async function fetchMovements(branchId: string, user?: AppUser): Promise<
   return unique.map(mapMovementRow)
 }
 
+/** Số ngày gần đây được soi để phát hiện phiếu bị xoá. */
+const RECENT_DELETION_WINDOW_DAYS = 3
+
 /**
  * Sổ kho là event sourcing nên chỉ có thêm, gần như không sửa. Tải lại TOÀN BỘ
  * lịch sử mỗi 15 giây (đầu tháng 7 đã ~1.700 dòng/chi nhánh, mỗi ngày thêm ~90)
  * là lý do app ngày càng ì: 4 lượt gọi mạng mỗi nhịp, mỗi lượt vài trăm KB JSON
- * phải parse lại trên điện thoại.
+ * phải parse lại trên điện thoại. Nhịp nền vì vậy chỉ lấy phần MỚI kể từ
+ * `sinceCreatedAt`.
  *
- * Nhịp nền chỉ lấy phần MỚI kể từ `sinceCreatedAt`, kèm `total` (count exact,
- * gần như không tốn gì) để phát hiện xoá: `total` khác `đã có + mới` nghĩa là có
- * dòng bị xoá/sửa ở quá khứ → phía gọi tải đầy đủ lại.
+ * Xoá phiếu thì không có dòng mới nào để nhận ra, nên kèm một mốc đối chiếu.
+ * Bản trước dùng `count exact` trên TOÀN chi nhánh — chính là truy vấn 2 giây
+ * chạy 15 giây một lần đã ngốn 8,7 giờ CPU database (xem
+ * `fetchMovementPagesParallel`). Nay chỉ đếm **3 ngày gần nhất**, bám đúng index
+ * `stock_movements_branch_date_idx` (~270 dòng thay vì ~2.800) và vẫn bắt được
+ * đúng tình huống thật: ca trưởng xoá nhầm phiếu vừa lập. Phiếu cũ hơn 3 ngày bị
+ * xoá thì lượt tải đầy đủ định kỳ (2,5 phút) vẫn nhặt được.
  */
 export async function fetchMovementsDelta(
   branchId: string,
   sinceCreatedAt: string,
   user?: AppUser,
-): Promise<{ rows: StockMovement[]; total: number } | null> {
+): Promise<{ rows: StockMovement[]; recentTotal: number; recentSince: string } | null> {
   if (shouldUseLanApi(user) || !supabase) return null
+  const since = new Date()
+  since.setDate(since.getDate() - RECENT_DELETION_WINDOW_DAYS)
+  const recentSince = `${since.getFullYear()}-${String(since.getMonth() + 1).padStart(2, '0')}-${String(since.getDate()).padStart(2, '0')}`
   const [inserted, counted] = await Promise.all([
     fetchAllMovementRows((from, to) => supabase!
       .from('stock_movements')
@@ -163,10 +190,13 @@ export async function fetchMovementsDelta(
       .order('created_at', { ascending: false })
       .order('id', { ascending: false })
       .range(from, to)),
-    supabase.from('stock_movements').select('id', { count: 'exact', head: true }).eq('branch_id', branchId),
+    supabase.from('stock_movements')
+      .select('id', { count: 'exact', head: true })
+      .eq('branch_id', branchId)
+      .gte('shift_date', recentSince),
   ])
   if (counted.error) throw counted.error
-  return { rows: inserted.map(mapMovementRow), total: counted.count || 0 }
+  return { rows: inserted.map(mapMovementRow), recentTotal: counted.count || 0, recentSince }
 }
 
 export async function addMovement(item: StockMovement, user?: AppUser): Promise<void> {

@@ -26,7 +26,9 @@ assert.doesNotMatch(admin, /className="rev-day-list"/)
 assert.doesNotMatch(admin, /className="rev-day"/)
 assert.match(admin, /className="erp-workspace-panel admin-report-section"/)
 assert.match(admin, /className="erp-workspace-panel commission-section"/)
-assert.match(admin, /className="erp-workspace-panel payroll-section"/)
+// 07/08/2026: panel `payroll-section` (bảng KPI × ngày toàn cục) đã bị gộp vào
+// chính section Thi đua — KPI theo ngày nay là thẻ drill-down của từng người.
+assert.doesNotMatch(admin, /className="erp-workspace-panel payroll-section"/)
 assert.match(admin, /className="erp-workspace-panel admin-requests-workspace"/)
 assert.match(styles, /\.erp-workspace-panel\s*\{[\s\S]*border-radius: 0/)
 assert.doesNotMatch(styles, /\.admin-workspace-toolbar/)

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ShiftPhotoButton } from '../components/ShiftPhotoButton'
-import { getFinishedBulkProducts, getSaleProducts, productById, type ConfiguredProduct } from '../lib/constants'
+import { getProducts, getSaleProducts, isWarehouseProduct, productById, type ConfiguredProduct } from '../lib/constants'
 import { burstGuard, createId, imageFileToDataUrl } from '../lib/browser'
 import { calculateStock, ensureOperationDay, getOperationDay } from '../lib/store'
 import { formatQuantity } from '../lib/inventoryEntry'
+import { hasCountInput, productsToCount, uncountedProducts } from '../lib/shiftCountScope'
 import { fetchAttendanceRecords, fetchShiftRegistrations, fetchWorkShifts, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { formatLocalDate, localDateKey } from '../lib/dates'
@@ -79,8 +80,14 @@ export function ShiftHandoverPage({
   const autoStartAttemptRef = useRef('')
 
   const saleProducts = useMemo(() => getSaleProducts(), [productTick])
+  // Kiểm đếm cuối ca phải phủ MỌI thành phẩm kho, không riêng hàng cân ký.
+  // Bản cũ chỉ lấy thành phẩm đơn vị kg nên "Bánh hạt dẻ thành phẩm" (đơn vị cái)
+  // không bao giờ xuất hiện ở màn chốt ca ⇒ không có mốc kiểm kê nào ⇒ POS trừ
+  // hoài mà không ai đếm lại, tồn tụt xuống −1.132 cái ở Lotte Vũng Tàu (06/08).
   const countProducts = useMemo(() => {
-    const finishedProducts = getFinishedBulkProducts()
+    const finishedProducts = getProducts().filter((product) =>
+      product.active !== false && product.category === 'finished' && isWarehouseProduct(product),
+    )
     return finishedProducts.length ? finishedProducts : saleProducts
   }, [productTick, saleProducts])
   const branchOpenSession = sessions.find((item) => item.status === 'open' && item.businessDate === today)
@@ -169,12 +176,23 @@ export function ShiftHandoverPage({
     && nextSequence <= 2,
   )
   const stock = useMemo(() => calculateStock(movements), [movements])
-  const availableBalances = useMemo(
+  // Tồn THẬT, giữ nguyên dấu. Bản cũ chỉ có bản `Math.max(0, …)` nên SKU đang âm
+  // trông như bằng 0 và bị loại khỏi danh sách kiểm đếm (điều kiện "> 0") — rơi
+  // xuống âm một lần là kẹt âm vĩnh viễn vì không còn cơ hội được đếm lại.
+  const expectedBalances = useMemo(
     () => Object.fromEntries(countProducts.map((product) => [
       product.id,
-      Math.max(0, stock.find((line) => line.product.id === product.id)?.expected || 0),
+      stock.find((line) => line.product.id === product.id)?.expected || 0,
     ])),
     [stock, countProducts],
+  )
+  // Bản không âm: chỉ dùng cho tồn đầu ca (mở ca không ghi số âm vào sổ ca).
+  const availableBalances = useMemo(
+    () => Object.fromEntries(Object.entries(expectedBalances).map(([productId, value]) => [
+      productId,
+      Math.max(0, value),
+    ])),
+    [expectedBalances],
   )
   const exactShiftReceipts = useMemo(
     () => openSession ? receiptsInSession(receipts, openSession, sessions) : [],
@@ -274,13 +292,13 @@ export function ShiftHandoverPage({
     setCloseArmed(false)
   }, [today, user.branchId, openSession?.id, openSession?.openingPhotoUrl, openSession?.closingPhotoUrl])
 
+  // KHÔNG điền sẵn tồn dự kiến vào ô đếm. Bản cũ đổ sẵn số hệ thống nên ca trưởng
+  // bấm chốt là con số SAI được đóng dấu thành "số đếm thật" và từ đó không bao giờ
+  // tự sửa được nữa (Gold Coast: 273,92 kg hạt dẻ rang chính là số đổ sẵn đã chốt).
+  // Đổi ca thì xoá sạch ô đếm để không mang số của ca trước sang.
   useEffect(() => {
-    if (!openSession) return
-    setClosingBalances(Object.fromEntries(
-      visibleProducts(openSession, movements, countProducts, availableBalances)
-        .map((product) => [product.id, String(availableBalances[product.id] || 0)]),
-    ))
-  }, [openSession?.id, JSON.stringify(availableBalances), countProducts])
+    setClosingBalances({})
+  }, [openSession?.id])
 
   async function handleStartShift(options: { takeOver?: boolean; standIn?: boolean } = {}) {
     if (dayLocked) {
@@ -414,13 +432,19 @@ export function ShiftHandoverPage({
       setFeedback('Ngày vận hành đã kết thúc, không thể chốt thêm ca.')
       return
     }
-    const productsToCount = visibleProducts(openSession, movements, countProducts, availableBalances)
-    const actual = Object.fromEntries(productsToCount.map((product) => [
+    const countableProducts = visibleProducts(openSession, movements, countProducts, expectedBalances)
+    // Ô trống KHÔNG còn được hiểu ngầm là "đúng bằng số hệ thống": phải đếm thật.
+    const notCounted = uncountedProducts(countableProducts, closingBalances)
+    if (notCounted.length) {
+      setFeedback(`Chưa đếm ${notCounted.length} mặt hàng: ${notCounted.map((product) => product.name).join(', ')}. Nhập số thực tế (gõ 0 nếu đã hết sạch) rồi mới bàn giao được.`)
+      return
+    }
+    const actual = Object.fromEntries(countableProducts.map((product) => [
       product.id,
-      Math.max(0, Number(closingBalances[product.id] ?? availableBalances[product.id] ?? 0)),
+      Math.max(0, Number(closingBalances[product.id])),
     ]))
-    const hasDiscrepancy = productsToCount.some((product) =>
-      Math.abs((actual[product.id] || 0) - (availableBalances[product.id] || 0)) > 0.001,
+    const hasDiscrepancy = countableProducts.some((product) =>
+      Math.abs((actual[product.id] || 0) - (expectedBalances[product.id] || 0)) > 0.001,
     )
     if (hasDiscrepancy && !discrepancyNote.trim()) {
       setFeedback('Có lệch tồn thành phẩm. Hãy nhập lý do ngắn trước khi bàn giao.')
@@ -446,7 +470,7 @@ export function ShiftHandoverPage({
       // nhập của chính ca đó, thậm chí nuốt luôn phiếu sửa tồn ghi sau nó.
       // `close_bag_shift_safe` dùng `coalesce(x.created_at, now())` nên bỏ trống
       // là server tự đóng dấu; đường ghi thẳng cũng để DB dùng `default now()`.
-      const movementRows: StockMovement[] = productsToCount.map((product) => ({
+      const movementRows: StockMovement[] = countableProducts.map((product) => ({
         id: createId(),
         documentId: openSession.id,
         branchId: user.branchId,
@@ -678,10 +702,10 @@ export function ShiftHandoverPage({
       {openSession && (
         <>
           <section className="handover-balance-grid">
-            {visibleProducts(openSession, movements, countProducts, availableBalances).map((product) => (
+            {visibleProducts(openSession, movements, countProducts, expectedBalances).map((product) => (
               <article key={product.id}>
                 <small>{product.name}</small>
-                <strong>{formatNumber(availableBalances[product.id] || 0)}</strong>
+                <strong>{formatNumber(expectedBalances[product.id] || 0)}</strong>
                 <span>tồn thành phẩm</span>
               </article>
             ))}
@@ -727,16 +751,30 @@ export function ShiftHandoverPage({
 
             <section className="section-card handover-close-card">
               <div className="section-title"><div><span className="eyebrow dark">CHỐT TỒN</span><h2>{`Bàn giao ${shiftLabel(openSession.sequence)}`}</h2></div><b>2</b></div>
-              <p className="handover-hint">Đếm tồn thành phẩm thực tế cuối ca. Số này sẽ kế thừa cho ca sau và còn trong kho để ngày mai bán tiếp.</p>
+              <p className="handover-hint">Đếm tồn thành phẩm thực tế cuối ca — ô để trống là chưa đếm, gõ 0 nếu đã hết sạch. Số này kế thừa cho ca sau và là mốc chuẩn lại kho.</p>
               <div className="handover-count-grid">
-                {visibleProducts(openSession, movements, countProducts, availableBalances).map((product) => {
-                  const expected = availableBalances[product.id] || 0
-                  const actual = Number(closingBalances[product.id] ?? expected)
+                {visibleProducts(openSession, movements, countProducts, expectedBalances).map((product) => {
+                  const expected = expectedBalances[product.id] || 0
+                  const counted = hasCountInput(closingBalances[product.id])
+                  const actual = counted ? Number(closingBalances[product.id]) : expected
                   return (
-                    <label className={actual !== expected ? 'different' : ''} key={product.id}>
+                    <label className={counted && Math.abs(actual - expected) > 0.001 ? 'different' : ''} key={product.id}>
                       <span>{product.name}</span>
                       <small>Dự kiến {formatNumber(expected)}</small>
-                      <input type="number" min="0" step="0.0001" inputMode="decimal" value={closingBalances[product.id] ?? String(expected)} onChange={(event) => setClosingBalances((current) => ({ ...current, [product.id]: event.target.value }))} />
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.0001"
+                        inputMode="decimal"
+                        placeholder="Đếm thực tế"
+                        value={closingBalances[product.id] ?? ''}
+                        onChange={(event) => setClosingBalances((current) => ({ ...current, [product.id]: event.target.value }))}
+                      />
+                      <button
+                        type="button"
+                        className="handover-count-same"
+                        onClick={() => setClosingBalances((current) => ({ ...current, [product.id]: String(Math.max(0, expected)) }))}
+                      >= dự kiến</button>
                     </label>
                   )
                 })}
@@ -894,22 +932,20 @@ function groupReceiptsBySeller(receipts: SalesReceipt[]) {
   return Array.from(groups.values()).sort((a, b) => b.quantity - a.quantity || a.employeeName.localeCompare(b.employeeName, 'vi'))
 }
 
+/** Quy tắc chọn hàng phải đếm nằm ở `lib/shiftCountScope.ts` (có test bằng số). */
 function visibleProducts(
   session: BagShiftSession,
   movements: StockMovement[],
   countProducts: ConfiguredProduct[],
-  availableBalances: Record<string, number>,
+  expectedBalances: Record<string, number>,
 ) {
-  const ids = new Set<string>()
-  countProducts.forEach((product) => {
-    if ((session.openingBalances[product.id] || 0) > 0) ids.add(product.id)
-    if ((availableBalances[product.id] || 0) > 0) ids.add(product.id)
+  return productsToCount({
+    products: countProducts,
+    openingBalances: session.openingBalances,
+    expectedBalances,
+    movements,
+    shiftStartedAt: session.startedAt,
   })
-  movements
-    .filter((item) => item.type === 'processing_in' && item.createdAt >= session.startedAt)
-    .forEach((item) => ids.add(item.productId))
-  if (!ids.size) countProducts.slice(0, 4).forEach((product) => ids.add(product.id))
-  return countProducts.filter((product) => ids.has(product.id))
 }
 
 // Thành phẩm bàn giao theo kg, cho tới 4 số lẻ; số nguyên (vd số lượng bán) vẫn hiển thị nguyên.

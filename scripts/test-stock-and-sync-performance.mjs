@@ -135,8 +135,19 @@ assert.equal(typeof store.fetchMovementsDelta, 'function')
 const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8')
 assert.match(appSource, /if \(document\.hidden\) return/)
 assert.match(appSource, /ticks % 10 === 0 \? refreshMovements\(\) : syncMovements\(\)/)
-assert.match(appSource, /delta\.total !== state\.total \+ delta\.rows\.length/)
+// 07/08/2026: mốc phát hiện XOÁ phiếu đổi từ `count exact` TOÀN chi nhánh sang
+// đếm vài ngày gần nhất rồi so với chính danh sách đang giữ trong máy. Truy vấn
+// đếm toàn chi nhánh là điểm nghẽn số 1 trên prod: 15.428 lượt × 2.025 ms.
+assert.match(appSource, /delta\.recentTotal !== recentInMemory/)
 assert.doesNotMatch(appSource, /movementSignature/)
+const storeSource = await readFile(new URL('../src/lib/store.ts', import.meta.url), 'utf8')
+assert.doesNotMatch(
+  storeSource,
+  /select\('id', \{ count: 'exact', head: true \}\)\s*\n?\s*\.eq\('branch_id', branchId\)\s*(?!\s*\.gte)/,
+  'Không được đếm exact toàn bộ sổ kho của chi nhánh — đó là truy vấn 2 giây chạy mỗi 15 giây.',
+)
+assert.match(storeSource, /RECENT_DELETION_WINDOW_DAYS/, 'Thiếu cửa sổ đối chiếu xoá phiếu.')
+assert.match(storeSource, /fetchMovementPagesParallel/, 'Tải sổ kho phải phân trang song song, không hỏi tổng số dòng trước.')
 
 // Realtime gộp burst ở các màn nghe bảng dòng hàng (bảng này không lọc được chi nhánh).
 for (const page of ['SalesPage', 'ShiftHandoverPage', 'TodayPage', 'ManagerDashboardPage']) {

@@ -55,8 +55,10 @@ import { emailToUsername, validateUsername } from '../lib/authIdentity'
 import { fetchSupplyRequests, formatSupplyRequestDelivery, type SupplyRequest, type SupplyRequestStatus } from '../lib/supplyRequests'
 import { fetchActiveUsers } from '../lib/activeUsers'
 import { AttendanceAdjustmentArchive } from '../components/AttendanceAdjustmentArchive'
+import { Pagination } from '../components/admin/Pagination'
 import { DateTime24Field } from '../components/Time24Field'
 import { fetchAttendanceAdjustments } from '../lib/attendanceAdjustments'
+import { isStockManagedProduct } from '../lib/warehouseScope'
 import { BranchesPage } from './admin/BranchesPage'
 import { DashboardPage } from './admin/DashboardPage'
 import { EmployeesPage } from './admin/EmployeesPage'
@@ -283,6 +285,25 @@ const PAYROLL_ROLES: Role[] = ['shift_leader', 'staff']
 const ATTENDANCE_EDIT_PAGE_SIZE = 20
 type CompetitionRoleFilter = 'all' | 'staff' | 'shift_leader'
 
+/**
+ * Màn Thi đua trước đây bày 5 danh sách của CÙNG một nhóm người (poster, bảng
+ * phân loại, danh sách năng suất, thẻ thưởng KPI, bảng KPI theo ngày) — mỗi cái
+ * lại xếp theo một tiêu chí khác nên quản lý không biết tin bảng nào. Nay chỉ
+ * còn MỘT bảng; muốn đổi cách xếp thì bấm đúng cột, không đẻ thêm danh sách.
+ */
+type CompetitionSortKey = 'revenue' | 'capacity' | 'progress' | 'reward'
+
+type DailyEmployeeKpiRow = ReturnType<typeof buildDailyEmployeeKpiRows>[number]
+
+const COMPETITION_SORT_OPTIONS: Array<{ id: CompetitionSortKey; label: string; hint: string }> = [
+  { id: 'revenue', label: 'Doanh thu', hint: 'Tổng tiền bán ra trong kỳ đang xem.' },
+  { id: 'capacity', label: 'Năng suất', hint: 'Trung bình một ca (hoặc một giờ công) bán được bao nhiêu.' },
+  { id: 'progress', label: '% KPI', hint: 'Tỷ lệ đạt so với chỉ tiêu doanh thu của kỳ.' },
+  { id: 'reward', label: 'Thưởng KPI', hint: 'Tiền thưởng ngày/tuần đã đạt ngưỡng.' },
+]
+
+const COMPETITION_TOP_ROWS = 10
+
 function lastDayOfMonth(period: string) {
   const [year, month] = period.split('-').map(Number)
   return `${period}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
@@ -394,6 +415,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [competitionMinShifts, setCompetitionMinShifts] = useState('')
   const [competitionMaxShifts, setCompetitionMaxShifts] = useState('')
   const [capacityMetric, setCapacityMetric] = useState<SalesCapacityMetric>('revenuePerShift')
+  const [competitionSort, setCompetitionSort] = useState<CompetitionSortKey>('revenue')
+  const [competitionShowAll, setCompetitionShowAll] = useState(false)
+  const [competitionPosterOpen, setCompetitionPosterOpen] = useState(false)
   const [savingRoleId, setSavingRoleId] = useState('')
   const [accountBusyId, setAccountBusyId] = useState('')
   const [pendingDeleteId, setPendingDeleteId] = useState('')
@@ -438,6 +462,16 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [temporaryCredential, setTemporaryCredential] = useState<{ username: string; password: string } | null>(null)
   const [supplyStatusFilter, setSupplyStatusFilter] = useState<'all' | SupplyRequestStatus>('all')
   const [inventoryDetailBranchId, setInventoryDetailBranchId] = useState('')
+  // Màn Quản trị › Kho: trước đây đổ THẲNG mọi SKU, mọi ca và mọi phiếu trong kỳ
+  // ra màn hình. Với 3 chi nhánh × 30 ngày là hàng nghìn dòng DOM — mở màn là
+  // giật, mà thứ quản lý cần tìm (hàng sắp hết, ca lệch số) lại nằm lẫn ở giữa.
+  const [inventorySkuSearch, setInventorySkuSearch] = useState('')
+  const [inventoryStockFilter, setInventoryStockFilter] = useState<'all' | 'attention' | 'out'>('all')
+  const [inventoryShiftOnlyIssues, setInventoryShiftOnlyIssues] = useState(true)
+  const [inventoryLedgerType, setInventoryLedgerType] = useState<'all' | StockMovement['type']>('all')
+  const [inventoryLedgerSearch, setInventoryLedgerSearch] = useState('')
+  const [inventoryLedgerPage, setInventoryLedgerPage] = useState(1)
+  const [inventoryLedgerPageSize, setInventoryLedgerPageSize] = useState(50)
   const [activeUsers, setActiveUsers] = useState<ActiveUserSession[]>([])
   const [attendanceEdit, setAttendanceEdit] = useState<{
     recordId: string
@@ -803,14 +837,48 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     () => rangeMovements.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     [rangeMovements],
   )
+  /**
+   * Sổ phát sinh kho: lọc theo loại phiếu + tìm theo tên/SKU/ghi chú, rồi PHÂN
+   * TRANG. Bản cũ render mọi phiếu trong kỳ (một chi nhánh ~90 phiếu/ngày) nên
+   * chọn khoảng một tháng là vài nghìn dòng DOM dựng cùng lúc.
+   */
+  const inventoryLedgerFilteredRows = useMemo(() => {
+    const needle = normalizeName(inventoryLedgerSearch)
+    return inventoryLedgerRows.filter((row) => {
+      if (inventoryLedgerType !== 'all' && row.type !== inventoryLedgerType) return false
+      if (!needle) return true
+      const product = productById(row.productId)
+      return normalizeName(`${product?.name || row.productId} ${product?.sku || ''} ${row.note || ''}`).includes(needle)
+    })
+  }, [inventoryLedgerRows, inventoryLedgerType, inventoryLedgerSearch])
+  const inventoryLedgerTotalPages = Math.max(1, Math.ceil(inventoryLedgerFilteredRows.length / inventoryLedgerPageSize))
+  const inventoryLedgerSafePage = Math.min(Math.max(inventoryLedgerPage, 1), inventoryLedgerTotalPages)
   const inventoryLedgerByDay = useMemo(() => {
+    const start = (inventoryLedgerSafePage - 1) * inventoryLedgerPageSize
     const map = new Map<string, StockMovement[]>()
-    inventoryLedgerRows.forEach((row) => { map.set(row.shiftDate, [...(map.get(row.shiftDate) || []), row]) })
+    inventoryLedgerFilteredRows
+      .slice(start, start + inventoryLedgerPageSize)
+      .forEach((row) => { map.set(row.shiftDate, [...(map.get(row.shiftDate) || []), row]) })
     return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0]))
+  }, [inventoryLedgerFilteredRows, inventoryLedgerSafePage, inventoryLedgerPageSize])
+  const inventoryLedgerTypeCounts = useMemo(() => {
+    const counts = new Map<StockMovement['type'], number>()
+    inventoryLedgerRows.forEach((row) => counts.set(row.type, (counts.get(row.type) || 0) + 1))
+    return counts
   }, [inventoryLedgerRows])
+  /**
+   * Tồn kho hiển thị ở màn Quản trị › Kho — CÙNG một luật với màn Kho của ca
+   * trưởng (`lib/warehouseScope.ts`): chỉ nguyên liệu + bao bì đang bật.
+   *
+   * Thành phẩm bị loại vì nó dùng trong ngày, không để dồn qua nhiều ngày; giữ
+   * lại chỉ tạo ra những dòng vô nghĩa kiểu "Thành phẩm hạt dẻ nướng −6,23 kg".
+   * POS vẫn trừ kho thành phẩm như cũ — `calculateStock` không đổi, đây chỉ là
+   * lớp hiển thị. Lọc ở ĐÂY là đủ cho cả bảng trên màn lẫn sheet Excel.
+   */
   const currentStockRows = useMemo(
     () => selectedBranches.flatMap((branch) =>
       calculateStock(movements.filter((item) => item.branchId === branch.id))
+        .filter((line) => isStockManagedProduct(line.product))
         .map((line) => ({ ...line, branchId: branch.id })),
     ),
     [movements, branchId],
@@ -929,22 +997,40 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     lowSkus: lowStockRows.filter((line) => Math.abs(line.expected) > 0.0001).length,
     movements: rangeMovements.length,
   }
-  const commissionRows = useMemo(
-    () => buildCommissionRows(
-      bagAllocations.filter((item) => {
-        const date = allocationReportDate(item)
-        return soldBagQuantity(item) > 0 && date >= from && date <= to && (!branchId || item.branchId === branchId)
-      }),
-      payrollEmployees,
-      attendanceRows,
-      salesReceipts.filter((receipt) => receipt.businessDate >= from && receipt.businessDate <= to && (!branchId || receipt.branchId === branchId)),
-      commissionRuleDrafts,
-      employeeKpiDrafts,
-      from,
-      to,
-    ),
-    [bagAllocations, payrollEmployees, attendanceRows, salesReceipts, commissionRuleDrafts, employeeKpiDrafts, branchId, from, to],
+  /**
+   * Bảng tồn của một chi nhánh: xếp theo MỨC ĐỘ CẦN XỬ LÝ (hết → sắp hết → còn
+   * hàng) thay vì theo tên. Quản lý mở màn này để biết phải đặt hàng gì, không
+   * phải để tra từ điển — bản cũ sắp theo alphabet nên mặt hàng đã hết nằm lẫn
+   * đâu đó giữa 30 dòng. Kèm ô tìm không dấu và 3 chip lọc.
+   */
+  const inventoryStockLines = useMemo(() => {
+    if (!inventoryDetailSummary) return []
+    const needle = normalizeName(inventorySkuSearch)
+    const severity = (line: { expected: number; product: Product }) =>
+      line.expected <= 0.0001 ? 0 : line.expected <= line.product.lowStock ? 1 : 2
+    return inventoryDetailSummary.stockLines
+      .filter((line) => {
+        if (needle && !normalizeName(`${line.product.name} ${line.product.sku}`).includes(needle)) return false
+        if (inventoryStockFilter === 'out') return line.expected <= 0.0001
+        if (inventoryStockFilter === 'attention') return line.expected <= line.product.lowStock
+        return true
+      })
+      .slice()
+      .sort((a, b) => severity(a) - severity(b) || a.product.name.localeCompare(b.product.name, 'vi'))
+  }, [inventoryDetailSummary, inventorySkuSearch, inventoryStockFilter])
+  const inventoryStockOutCount = inventoryDetailSummary
+    ? inventoryDetailSummary.stockLines.filter((line) => line.expected <= 0.0001).length
+    : 0
+  // Ca "cần xem": chưa bàn giao, hoặc đã bàn giao mà số kho lệch so với POS.
+  const inventoryShiftIssueRows = inventoryShiftReconciliationRows.filter((row) =>
+    row.status === 'open' || row.lines.some((line) => line.difference !== null && Math.abs(line.difference) > 0.0005),
   )
+  const inventoryShiftVisibleRows = inventoryShiftOnlyIssues && inventoryShiftIssueRows.length
+    ? inventoryShiftIssueRows
+    : inventoryShiftReconciliationRows
+  // `commissionRows` (bộ thẻ thưởng KPI theo bộ lọc đầu trang) đã bị gỡ 07/08/2026:
+  // nó lặp lại đúng nhóm người của bảng xếp hạng nhưng lấy KHOẢNG NGÀY khác nên
+  // hai khối cạnh nhau hiện hai con số khác nhau cho cùng một nhân viên.
   const dailyKpiRows = useMemo(
     () => buildDailyEmployeeKpiRows(
       bagAllocations.filter((item) => {
@@ -1100,7 +1186,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     && row.shiftCount >= minimumCompetitionShifts
     && row.shiftCount <= maximumCompetitionShifts,
   )
-  const competitionRankingRows = competitionFilteredRows.slice(0, 10)
   // Năng suất bán trung bình dùng ĐÚNG tập nhân sự của bảng xếp hạng đang xem
   // (cùng phân loại, vai trò, loại ngày, khoảng số ca) để hai bảng không đá nhau.
   // Bảng ca trưởng không có giờ công nên chỉ số theo giờ tự quay về theo ca.
@@ -1109,14 +1194,59 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     ? 'revenuePerShift'
     : capacityMetric
   const salesCapacity = buildEmployeeSalesCapacity(competitionFilteredRows, effectiveCapacityMetric)
+  // Năng suất được ghép THẲNG vào bảng xếp hạng (một dòng = một người) thay vì
+  // dựng thêm một danh sách thứ hai của cùng nhóm người.
+  const competitionCapacityByKey = useMemo(() => {
+    const map = new Map<string, SalesCapacityRow>()
+    salesCapacity.rows.forEach((row) => map.set(`${row.branchId}-${row.employeeKey}`, row))
+    return map
+  }, [salesCapacity])
+  const competitionSortedRows = useMemo(() => {
+    // 'revenue' giữ nguyên thứ tự gốc của buildCompetitionRows (doanh thu →
+    // tiến độ → số lượng → giờ công → tên) để không đổi ngữ nghĩa xếp hạng cũ.
+    if (competitionSort === 'revenue') return competitionFilteredRows
+    const valueOf = (row: typeof competitionFilteredRows[number]) => {
+      if (competitionSort === 'progress') return row.progress
+      if (competitionSort === 'reward') return row.commission
+      return competitionCapacityByKey.get(`${row.branchId}-${row.employeeKey}`)?.value || 0
+    }
+    return competitionFilteredRows.slice().sort((a, b) =>
+      valueOf(b) - valueOf(a) || b.revenue - a.revenue || a.employeeName.localeCompare(b.employeeName, 'vi'),
+    )
+  }, [competitionFilteredRows, competitionSort, competitionCapacityByKey])
+  const competitionRankingRows = competitionShowAll
+    ? competitionSortedRows
+    : competitionSortedRows.slice(0, COMPETITION_TOP_ROWS)
+  const competitionAchievedCount = competitionFilteredRows.filter((row) => row.progress >= 100).length
+  const competitionTotalRevenue = competitionFilteredRows.reduce((sum, row) => sum + row.revenue, 0)
+  const competitionTotalReward = competitionFilteredRows.reduce((sum, row) => sum + row.commission, 0)
   const competitionExportRows = (competitionRankingMode === 'leaders' ? leaderCompetitionRows : monthlyCompetitionRows)
     .filter((row) =>
       (effectiveCompetitionRole === 'all' || row.role === effectiveCompetitionRole)
       && row.shiftCount >= minimumCompetitionShifts
       && row.shiftCount <= maximumCompetitionShifts,
     )
+  // Ảnh thi đua ăn ĐÚNG bộ lọc đang hiển thị. Bản cũ chụp `monthlyCompetitionRows`
+  // thô nên ảnh gửi Zalo có cả người mà bảng trên màn hình đã lọc bỏ.
+  const competitionPosterRows = competitionExportRows
   const competitionRangeFrom = competitionRankingMode === 'daily' ? competitionDate : rankingMonthFrom
   const competitionRangeTo = competitionRankingMode === 'daily' ? competitionDate : rankingMonthTo
+  /**
+   * KPI từng ngày giờ nằm TRONG dòng của chính người đó (bấm mở ra), không còn
+   * là một bảng riêng ở cuối màn — bảng cũ trộn mọi nhân viên × mọi ngày nên
+   * đọc một người phải tự dò bằng mắt qua hàng trăm dòng.
+   */
+  const competitionDailyKpiByKey = useMemo(() => {
+    const map = new Map<string, DailyEmployeeKpiRow[]>()
+    monthlyDailyKpiRows
+      .filter((row) => row.date >= competitionRangeFrom && row.date <= competitionRangeTo)
+      .forEach((row) => {
+        const key = `${row.branchId}-${row.employeeKey}`
+        map.set(key, [...(map.get(key) || []), row])
+      })
+    map.forEach((rows) => rows.sort((a, b) => a.date.localeCompare(b.date)))
+    return map
+  }, [monthlyDailyKpiRows, competitionRangeFrom, competitionRangeTo])
   const competitionEvidenceAllocations = useMemo(
     () => bagAllocations.filter((item) => competitionDayMatches(allocationReportDate(item), competitionDayType)),
     [bagAllocations, competitionDayType],
@@ -1501,7 +1631,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   async function exportCompetitionImage() {
     const target = competitionPosterRef.current
     if (!target) return
-    if (!monthlyCompetitionRows.length) {
+    if (!competitionPosterRows.length) {
       setFeedback('Chưa có dữ liệu thi đua để xuất ảnh.')
       return
     }
@@ -2703,7 +2833,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               <div className="section-title">
                 <div><span className="eyebrow dark">KPI & XẾP HẠNG</span><h2>Thi đua nhân viên</h2></div>
                 <div className="section-actions">
-                  <span className="date-chip">{commissionRows.filter((row) => row.achieved).length} người đạt KPI</span>
+                  <span className="date-chip">{competitionAchievedCount}/{competitionFilteredRows.length} đạt KPI</span>
                   <button
                     type="button"
                     className="secondary-button"
@@ -2715,21 +2845,27 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       'Đã xuất Excel KPI kèm bằng chứng nguồn doanh thu.',
                     )}
                   >{exportBusy === 'kpi-evidence' ? 'Đang xuất Excel…' : 'Xuất Excel ngày & tháng'}</button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={exportBusy === 'kpi-daily'}
+                    onClick={() => void runExport(
+                      'kpi-daily',
+                      dailyKpiRows.length ? '' : 'Chưa có dữ liệu KPI theo ngày trong bộ lọc hiện tại để xuất Excel.',
+                      exportDailyKpiExcel,
+                      'Đã xuất Excel KPI theo ngày gồm doanh thu và tiền thưởng.',
+                    )}
+                  >{exportBusy === 'kpi-daily' ? 'Đang xuất Excel…' : 'Xuất Excel KPI theo ngày'}</button>
                   <button type="button" className="secondary-button" disabled={exportBusy === 'competition-image'} onClick={() => void exportCompetitionImage()}>
                     {exportBusy === 'competition-image' ? 'Đang xuất…' : 'Xuất ảnh thi đua'}
                   </button>
                 </div>
               </div>
               <div className="commission-note">
-                KPI nhân viên được tính theo từng ngày từ bảng KPI vị trí/chi nhánh. Quản lý chỉ theo dõi doanh thu, doanh số và kho; không chỉnh KPI bán hàng tại màn hình này.
+                Một bộ lọc, một bảng xếp hạng: mỗi nhân sự chỉ xuất hiện một dòng, bấm vào dòng để xem nguồn doanh thu và KPI từng ngày của chính người đó.
+                KPI tính theo bảng chỉ tiêu vị trí/chi nhánh; màn này chỉ theo dõi, không chỉnh KPI bán hàng.
+                File "KPI theo ngày" xuất theo khoảng ngày ở đầu trang ({formatDate(from)} — {formatDate(to)}), không theo kỳ thi đua đang xem.
               </div>
-              <EmployeeCompetitionPoster
-                posterRef={competitionPosterRef}
-                rows={monthlyCompetitionRows}
-                from={rankingMonthFrom}
-                to={rankingMonthTo}
-                branchLabel={branchId ? branchName(branchId) : 'Toàn hệ thống'}
-              />
               <div className="competition-ranking-toolbar">
                 <div>
                   <span className="eyebrow dark">BẢNG XẾP HẠNG</span>
@@ -2816,9 +2952,49 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   >Xóa lọc so sánh</button>
                 </div>
               </div>
+
+              <div className="kpi-reading-guide">
+                <strong>Cách đọc KPI</strong>
+                <span>Bảng xếp hạng là tổng của cả kỳ đang chọn. Bấm vào một dòng rồi mở thẻ "KPI theo ngày" để xem chi tiết. Mỗi dòng bên dưới là một nhân viên trong một ngày: doanh thu ngày được so với mục tiêu ngày, tỷ lệ từ 100% là đạt. Thưởng ngày và thưởng tuần dùng đúng quy tắc hiện có, không phụ thuộc riêng vào xếp hạng doanh thu.</span>
+                <small>Doanh thu và % KPI đo sức bán tổng; cột Năng suất đo sức bán trên mỗi ca nên người làm ít ca vẫn so được với người làm nhiều ca.</small>
+              </div>
+
+              {/* Một dải số duy nhất cho cả màn — trước đây có 3 dải tổng khác kỳ nhau. */}
+              <div className="competition-overview" aria-label={`Tổng hợp thi đua ${competitionRankingTitle}`}>
+                <article>
+                  <span>Doanh thu kỳ</span>
+                  <strong>{formatMoney(competitionTotalRevenue)}</strong>
+                  <small>{formatNumber(salesCapacity.totalSoldQuantity)} sản phẩm · {competitionFilteredRows.length} nhân sự có doanh thu</small>
+                </article>
+                <article className={competitionAchievedCount ? 'good' : ''}>
+                  <span>Đạt KPI</span>
+                  <strong>{competitionAchievedCount}/{competitionFilteredRows.length}</strong>
+                  <small>Từ 100% chỉ tiêu doanh thu của kỳ</small>
+                </article>
+                <article>
+                  <span>{salesCapacityMetricLabel(effectiveCapacityMetric)} — trung bình đội</span>
+                  <strong>{formatCapacityValue(effectiveCapacityMetric, salesCapacity.teamAverage)}</strong>
+                  <small>{effectiveCapacityMetric === 'revenuePerHour'
+                    ? `${formatNumber(salesCapacity.totalHours)} giờ công`
+                    : `${formatNumber(salesCapacity.totalShifts)} ca có check-in`}</small>
+                </article>
+                <article className="total">
+                  <span>Thưởng KPI</span>
+                  <strong>{competitionRankingMode === 'leaders' ? '—' : formatMoney(competitionTotalReward)}</strong>
+                  <small>{competitionRankingMode === 'leaders'
+                    ? 'Bảng ca trưởng xếp doanh thu ca, không phát sinh thưởng cá nhân'
+                    : 'Chỉ phát sinh khi đạt ngưỡng KPI ngày/tuần'}</small>
+                </article>
+              </div>
+
               <CompetitionClassificationTable
                 title={competitionRankingTitle}
                 rows={competitionRankingRows}
+                totalRows={competitionFilteredRows.length}
+                showAll={competitionShowAll}
+                onToggleShowAll={() => setCompetitionShowAll((current) => !current)}
+                sort={competitionSort}
+                onSortChange={setCompetitionSort}
                 showReward={competitionRankingMode !== 'leaders'}
                 mode={competitionRankingMode}
                 from={competitionRangeFrom}
@@ -2826,7 +3002,12 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 allocations={competitionEvidenceAllocations}
                 sessions={competitionEvidenceSessions}
                 receipts={competitionEvidenceReceipts}
+                capacityByKey={competitionCapacityByKey}
+                capacityMetric={effectiveCapacityMetric}
+                teamAverage={salesCapacity.teamAverage}
+                dailyKpiByKey={competitionDailyKpiByKey}
               />
+
               <EmployeeSalesCapacityBoard
                 summary={salesCapacity}
                 metric={effectiveCapacityMetric}
@@ -2834,99 +3015,30 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 hasHours={capacityHasHours}
                 scopeLabel={competitionRankingTitle}
               />
-              <div className="adm-list">
-                {commissionRows.map((row) => (
-                  <article className="adm-row" key={`${row.branchId}-${row.employeeKey}`}>
-                    <div className="adm-row-head">
-                      <div className="adm-row-id"><strong>{row.employeeName}</strong><small>{branchName(row.branchId)}</small></div>
-                      <div className="adm-row-hero"><b className="adm-hero-money">{row.commission.toLocaleString('vi-VN')}đ</b><span>thưởng KPI</span></div>
-                    </div>
-                    <div className="adm-metrics">
-                      <span><i>Giờ công</i><b>{formatDecimalHoursAsDuration(row.totalHours)}</b></span>
-                      <span><i>Doanh thu</i><b>{formatMoney(row.revenue)}</b></span>
-                      <span><i>KPI doanh thu</i><b>{formatMoney(row.targetQuantity)}</b></span>
-                      <span className={row.rank === 'A' || row.rank === 'S+' ? 'ok' : row.rank === 'D' ? 'warn' : 'amber'}><i>Xếp hạng</i><b>{row.rank}</b></span>
-                      <span><i>Thưởng ngày</i><b>{formatMoney(row.dailyBonus)}</b></span>
-                      <span><i>Thưởng tuần</i><b>{formatMoney(row.weeklyBonus)}</b></span>
-                      <span className={row.achieved ? 'ok' : 'amber'}><i>Tỷ lệ</i><b>{formatNumber(row.progress)}%</b></span>
-                    </div>
-                  </article>
-                ))}
-                {!commissionRows.length && <p className="empty-copy">Chưa có lượt bán đã đối soát trong kỳ.</p>}
-              </div>
-              <p className="commission-note">KPI chỉ tính cho staff/ca trưởng có chi nhánh hợp lệ. Thưởng KPI ngày/tuần được cộng tự động vào bảng lương tháng.</p>
-            </section>
-          )}
 
-          {/* ===== CHI TIẾT KPI THEO NGÀY (đặt trong Thi đua sau khi bỏ bảng lương) ===== */}
-          {activeSection === 'commission' && (
-            <section className="erp-workspace-panel payroll-section">
-              <div className="section-title">
-                <div><span className="eyebrow dark">CHI TIẾT KPI THEO NGÀY</span><h2>KPI & thưởng theo ngày</h2></div>
-                <div className="section-actions">
-                  <span className="date-chip">{dailyKpiRows.length} dòng KPI</span>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={exportBusy === 'kpi-daily'}
-                    onClick={() => void runExport(
-                      'kpi-daily',
-                      dailyKpiRows.length ? '' : 'Chưa có dữ liệu KPI theo ngày trong bộ lọc hiện tại để xuất Excel.',
-                      exportDailyKpiExcel,
-                      'Đã xuất Excel KPI theo ngày gồm doanh thu và tiền thưởng.',
-                    )}
-                  >{exportBusy === 'kpi-daily' ? 'Đang xuất Excel…' : 'Xuất Excel KPI theo ngày'}</button>
+              {/* Poster chỉ để xuất ảnh gửi Zalo. Khi thu gọn nó vẫn phải NẰM
+                  TRONG DOM và có kích thước thật thì html2canvas mới chụp được,
+                  nên đẩy ra ngoài khung nhìn thay vì display:none. */}
+              <div className="competition-poster-toggle">
+                <div>
+                  <strong>Ảnh thi đua (gửi Zalo)</strong>
+                  <small>Ảnh luôn lấy TOP 10 nhân viên theo tháng {rankingPeriod} theo đúng bộ lọc phía trên. Không cần mở xem trước vẫn xuất được.</small>
                 </div>
+                <button type="button" onClick={() => setCompetitionPosterOpen((current) => !current)} aria-expanded={competitionPosterOpen}>
+                  {competitionPosterOpen ? 'Ẩn xem trước' : 'Xem trước ảnh'}
+                </button>
               </div>
-              <div className="kpi-reading-guide">
-                <strong>Cách đọc KPI</strong>
-                <span>Mỗi dòng bên dưới là một nhân viên trong một ngày. Doanh thu ngày được so với mục tiêu ngày; tỷ lệ từ 100% là đạt. Thưởng ngày và thưởng tuần dùng đúng quy tắc hiện có, không phụ thuộc riêng vào xếp hạng doanh thu.</span>
-                <small>Bộ lọc chi nhánh, nhân viên và khoảng ngày ở đầu trang áp dụng trực tiếp cho bảng này.</small>
+              <div className={`competition-poster-stage${competitionPosterOpen ? ' is-open' : ''}`} aria-hidden={!competitionPosterOpen}>
+                <EmployeeCompetitionPoster
+                  posterRef={competitionPosterRef}
+                  rows={competitionPosterRows}
+                  from={rankingMonthFrom}
+                  to={rankingMonthTo}
+                  branchLabel={branchId ? branchName(branchId) : 'Toàn hệ thống'}
+                />
               </div>
-              <div className="payroll-summary-grid">
-                <article><span>Doanh thu KPI</span><strong>{formatMoney(dailyKpiRows.reduce((sum, row) => sum + row.revenue, 0))}</strong></article>
-                <article><span>Ngày có KPI</span><strong>{dailyKpiRows.length}</strong></article>
-                <article><span>Đạt KPI</span><strong>{dailyKpiRows.filter((row) => row.progress >= 100).length}</strong></article>
-                <article className="total"><span>Thưởng ngày</span><strong>{formatMoney(dailyKpiRows.reduce((sum, row) => sum + row.dailyBonus, 0))}</strong></article>
-              </div>
-              <div className="table-scroll">
-                <table className="data-table kpi-daily-table">
-                  <thead>
-                    <tr>
-                      <th>Ngày</th>
-                      <th>Chi nhánh</th>
-                      <th>Nhân viên</th>
-                      <th>Vị trí</th>
-                      <th>Giờ công</th>
-                      <th>Sản phẩm bán</th>
-                      <th>Doanh thu ngày</th>
-                      <th>KPI ngày</th>
-                      <th>% đạt</th>
-                      <th>Hạng</th>
-                      <th>Thưởng ngày</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dailyKpiRows.map((row) => (
-                      <tr key={`${row.date}-${row.branchId}-${row.employeeKey}`}>
-                        <td>{formatDate(row.date)}</td>
-                        <td>{branchName(row.branchId)}</td>
-                        <td><strong>{row.employeeName}</strong></td>
-                        <td>{row.positionTitle}</td>
-                        <td>{formatDecimalHoursAsDuration(row.totalHours)}</td>
-                        <td>{formatNumber(row.soldQuantity)}</td>
-                        <td>{formatMoney(row.revenue)}</td>
-                        <td>{formatMoney(row.targetRevenue)}</td>
-                        <td className={row.progress >= 100 ? 'ok' : row.progress >= 80 ? 'amber' : 'warn'}>{formatNumber(row.progress)}%</td>
-                        <td>{row.rank}</td>
-                        <td>{formatMoney(row.dailyBonus)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {!dailyKpiRows.length && <p className="empty-copy">Chưa có doanh thu KPI trong khoảng đã chọn.</p>}
-              <p className="commission-note">Thưởng KPI theo ngày dùng chung công thức với sheet "KPI theo tên từng ngày" trong file Excel bảng công.</p>
+
+              <p className="commission-note">KPI chỉ tính cho staff/ca trưởng có chi nhánh hợp lệ. Thưởng KPI ngày/tuần dùng chung công thức với sheet "KPI theo tên từng ngày" trong file Excel bảng công.</p>
             </section>
           )}
 
@@ -2962,41 +3074,48 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   <div>
                     <span className="eyebrow dark">KHO THEO CHI NHÁNH</span>
                     <h3>Tình trạng tồn và luân chuyển hàng hóa</h3>
-                    <p>Chọn một chi nhánh để xem tồn từng SKU. Danh sách chi nhánh luôn được giữ nguyên phía trên.</p>
+                    <p>Mỗi chi nhánh một dòng — bấm để mở tồn từng SKU ngay bên dưới.</p>
                   </div>
                   <span className="inventory-branch-count">{branchInventorySummaries.length} điểm bán</span>
                 </div>
 
-                <div className="inventory-branch-grid">
+                {/* 07/08/2026: bỏ lưới thẻ cao 200px (mỗi chi nhánh một khối) —
+                    cùng luật với màn Kho ca trưởng ở §51: dòng, không dùng card. */}
+                <div className="admin-stock-branches" role="table" aria-label="Kho theo chi nhánh">
+                  <div className="admin-stock-branch-head" role="row">
+                    <span>Chi nhánh</span>
+                    <span>Tồn hiện tại</span>
+                    <span>Nhập trong kỳ</span>
+                    <span>POS bán trong kỳ</span>
+                    <span>Cảnh báo</span>
+                    <span />
+                  </div>
                   {branchInventorySummaries.map(({ branch, lowCount, lossRate, stockLines, stockSummary, inboundSummary, dailyPosSummary }) => {
                     const isSelected = inventoryDetailBranchId === branch.id
                     const stockedCount = stockLines.filter((line) => line.expected > 0.0001).length
+                    const outCount = stockLines.filter((line) => line.expected <= 0.0001).length
                     return (
                       <button
                         type="button"
-                        className={`inventory-branch-card${isSelected ? ' selected' : ''}`}
+                        className={`admin-stock-branch-row${isSelected ? ' selected' : ''}`}
                         key={branch.id}
+                        role="row"
                         aria-expanded={isSelected}
                         aria-controls="inventory-branch-detail-panel"
                         onClick={() => setInventoryDetailBranchId((current) => current === branch.id ? '' : branch.id)}
                       >
-                        <span className="inventory-branch-card-head">
-                          <span className="inventory-branch-symbol" aria-hidden="true">▦</span>
-                          <span className="inventory-branch-identity">
-                            <strong>{branch.name}</strong>
-                            <small>{stockedCount} SKU đang có tồn</small>
-                          </span>
-                          <span className="inventory-branch-action">{isSelected ? 'Thu gọn' : 'Xem chi tiết'} <i aria-hidden="true">⌄</i></span>
+                        <span data-label="Chi nhánh" role="cell" className="admin-stock-branch-name">
+                          <strong>{branch.name}</strong>
+                          <small>{stockedCount} SKU đang có tồn{outCount ? ` · ${outCount} SKU đã hết` : ''}</small>
                         </span>
-                        <span className="inventory-branch-card-metrics">
-                          <span><small>Tồn hiện tại</small><b>{stockSummary}</b></span>
-                          <span><small>Nhập trong kỳ</small><b>{inboundSummary}</b></span>
-                          <span><small>POS bán trong kỳ</small><b>{dailyPosSummary}</b></span>
+                        <span data-label="Tồn hiện tại" role="cell"><b>{stockSummary}</b></span>
+                        <span data-label="Nhập trong kỳ" role="cell"><b>{inboundSummary}</b></span>
+                        <span data-label="POS bán trong kỳ" role="cell"><b>{dailyPosSummary}</b></span>
+                        <span data-label="Cảnh báo" role="cell" className="admin-stock-branch-flags">
+                          <i className={`inventory-health ${lowCount ? 'warning' : 'good'}`}>{lowCount ? `${lowCount} SKU sắp hết` : 'Tồn ổn định'}</i>
+                          <i className={`inventory-health ${lossRate > 12 ? 'danger' : lossRate > 7 ? 'warning' : 'good'}`}>Hao hụt {formatInventoryDecimal(lossRate, 1)}%</i>
                         </span>
-                        <span className="inventory-branch-card-footer">
-                          <span className={`inventory-health ${lowCount ? 'warning' : 'good'}`}>{lowCount ? `${lowCount} SKU sắp hết` : 'Tồn kho ổn định'}</span>
-                          <span className={`inventory-health ${lossRate > 12 ? 'danger' : lossRate > 7 ? 'warning' : 'good'}`}>Hao hụt {formatInventoryDecimal(lossRate, 1)}%</span>
-                        </span>
+                        <span role="cell" className="admin-stock-branch-action">{isSelected ? 'Thu gọn' : 'Xem chi tiết'}</span>
                       </button>
                     )
                   })}
@@ -3023,6 +3142,35 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       <div><span>Sửa tồn trong kỳ</span><b>{inventoryDetailSummary.adjustSummary}</b></div>
                     </div>
 
+                    {/* Tìm không dấu + 3 chip lọc. Dòng nào cần xử lý được đẩy
+                        lên đầu (hết → sắp hết → còn hàng), xem `inventoryStockLines`. */}
+                    <div className="admin-stock-filterbar">
+                      <label className="admin-stock-search">
+                        <span aria-hidden="true">⌕</span>
+                        <input
+                          value={inventorySkuSearch}
+                          onChange={(event) => setInventorySkuSearch(event.target.value)}
+                          placeholder="Tìm tên hoặc mã SKU (không cần dấu)"
+                          aria-label="Tìm mặt hàng trong kho chi nhánh"
+                        />
+                      </label>
+                      <div className="admin-stock-chips" role="group" aria-label="Lọc trạng thái tồn">
+                        {([
+                          ['all', `Tất cả (${inventoryDetailSummary.stockLines.length})`],
+                          ['attention', `Cần chú ý (${inventoryDetailSummary.lowCount})`],
+                          ['out', `Đã hết (${inventoryStockOutCount})`],
+                        ] as const).map(([id, label]) => (
+                          <button
+                            key={id}
+                            type="button"
+                            className={inventoryStockFilter === id ? 'is-active' : ''}
+                            aria-pressed={inventoryStockFilter === id}
+                            onClick={() => setInventoryStockFilter(id)}
+                          >{label}</button>
+                        ))}
+                      </div>
+                    </div>
+
                     <div className="inventory-branch-detail-content">
                       <div className="inventory-stock-table" role="table" aria-label={`Tồn kho ${inventoryDetailSummary.branch.name}`}>
                         <div className="inventory-stock-head" role="row">
@@ -3030,7 +3178,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                           <span>Tồn hiện tại</span>
                           <span>Trạng thái</span>
                         </div>
-                        {inventoryDetailSummary.stockLines.slice().sort((a, b) => a.product.name.localeCompare(b.product.name, 'vi')).map((line) => {
+                        {inventoryStockLines.map((line) => {
                           const isOut = line.expected <= 0.0001
                           const isLow = !isOut && line.expected <= line.product.lowStock
                           return (
@@ -3041,6 +3189,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                             </article>
                           )
                         })}
+                        {!inventoryStockLines.length && <p className="empty-copy">Không có mặt hàng nào khớp bộ lọc hiện tại.</p>}
                       </div>
 
                       <aside className="inventory-loss-panel">
@@ -3078,10 +3227,29 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 </header>
                 <div className="inventory-shift-reconciliation-summary">
                   <span><small>Ca đã bàn giao</small><strong>{inventoryClosedShiftCount}/{inventoryShiftReconciliationRows.length} ca</strong></span>
+                  <span><small>Ca cần xem</small><strong>{inventoryShiftIssueRows.length} ca</strong></span>
                   <span><small>POS đã bán</small><strong>{inventoryShiftPosSummary}</strong></span>
                   <span><small>Out chính thức</small><strong>{inventoryShiftOfficialOutSummary}</strong></span>
                   <span><small>Phiếu xuất riêng</small><strong>{inventoryDailyOutboundDocumentCount} phiếu · {inventoryDailyOutboundSummary}</strong></span>
                 </div>
+                {/* Mặc định chỉ hiện ca ĐANG MỞ hoặc ca có SKU lệch — chọn một
+                    tháng là hàng trăm ca, mà ca khớp số thì không cần đọc. */}
+                {inventoryShiftIssueRows.length > 0 && inventoryShiftIssueRows.length < inventoryShiftReconciliationRows.length && (
+                  <div className="admin-stock-chips" role="group" aria-label="Lọc ca đối chiếu">
+                    <button
+                      type="button"
+                      className={inventoryShiftOnlyIssues ? 'is-active' : ''}
+                      aria-pressed={inventoryShiftOnlyIssues}
+                      onClick={() => setInventoryShiftOnlyIssues(true)}
+                    >Ca cần xem ({inventoryShiftIssueRows.length})</button>
+                    <button
+                      type="button"
+                      className={!inventoryShiftOnlyIssues ? 'is-active' : ''}
+                      aria-pressed={!inventoryShiftOnlyIssues}
+                      onClick={() => setInventoryShiftOnlyIssues(false)}
+                    >Tất cả ({inventoryShiftReconciliationRows.length})</button>
+                  </div>
+                )}
                 <div className="inventory-shift-reconciliation-table" role="table" aria-label={`Đối chiếu xuất bán theo ca từ ${formatDate(from)} đến ${formatDate(to)}`}>
                   <div className="inventory-shift-reconciliation-table-head" role="row">
                     <span>Chi nhánh / ca</span>
@@ -3094,7 +3262,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     <span>Out chính thức</span>
                     <span>Chênh lệch</span>
                   </div>
-                  {inventoryShiftReconciliationRows.map((row) => (
+                  {inventoryShiftVisibleRows.map((row) => (
                     <article className={`inventory-shift-reconciliation-row ${row.status}`} role="row" key={row.sessionId}>
                       <span data-label="Chi nhánh / ca" role="cell">
                         <strong>{branchName(row.branchId)}</strong>
@@ -3140,7 +3308,40 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   {!inventoryShiftReconciliationRows.length && <p className="empty-copy">Không có ca vận hành trong khoảng ngày và chi nhánh đã chọn.</p>}
                 </div>
               </section>
-              {user.role === 'admin' && <div className="admin-inventory-ledger" role="table" aria-label="Danh sách phát sinh kho">
+              {user.role === 'admin' && <>
+              {/* Sổ phát sinh kho: lọc theo loại phiếu + tìm không dấu + phân trang.
+                  Bản cũ đổ thẳng mọi phiếu của kỳ ra một khối duy nhất. */}
+              <div className="admin-ledger-filterbar">
+                <label className="admin-stock-search">
+                  <span aria-hidden="true">⌕</span>
+                  <input
+                    value={inventoryLedgerSearch}
+                    onChange={(event) => { setInventoryLedgerSearch(event.target.value); setInventoryLedgerPage(1) }}
+                    placeholder="Tìm mặt hàng, SKU hoặc ghi chú phiếu"
+                    aria-label="Tìm trong sổ phát sinh kho"
+                  />
+                </label>
+                <div className="admin-stock-chips" role="group" aria-label="Lọc loại phiếu kho">
+                  <button
+                    type="button"
+                    className={inventoryLedgerType === 'all' ? 'is-active' : ''}
+                    aria-pressed={inventoryLedgerType === 'all'}
+                    onClick={() => { setInventoryLedgerType('all'); setInventoryLedgerPage(1) }}
+                  >Tất cả ({inventoryLedgerRows.length})</button>
+                  {(Object.keys(MOVEMENT_LABELS) as Array<StockMovement['type']>)
+                    .filter((type) => (inventoryLedgerTypeCounts.get(type) || 0) > 0)
+                    .map((type) => (
+                      <button
+                        key={type}
+                        type="button"
+                        className={inventoryLedgerType === type ? 'is-active' : ''}
+                        aria-pressed={inventoryLedgerType === type}
+                        onClick={() => { setInventoryLedgerType(type); setInventoryLedgerPage(1) }}
+                      >{MOVEMENT_LABELS[type]} ({inventoryLedgerTypeCounts.get(type)})</button>
+                    ))}
+                </div>
+              </div>
+              <div className="admin-inventory-ledger" role="table" aria-label="Danh sách phát sinh kho">
                 <div className="admin-inventory-ledger-head" role="row">
                   <span>Ngày</span>
                   <span>Chi nhánh</span>
@@ -3173,8 +3374,21 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     })}
                   </details>
                 ))}
-                {!inventoryLedgerRows.length && <p className="empty-copy">Không có phát sinh kho trong khoảng đã chọn.</p>}
-              </div>}
+                {!inventoryLedgerFilteredRows.length && <p className="empty-copy">
+                  {inventoryLedgerRows.length
+                    ? 'Không có phiếu kho nào khớp bộ lọc hiện tại.'
+                    : 'Không có phát sinh kho trong khoảng đã chọn.'}
+                </p>}
+              </div>
+              {inventoryLedgerFilteredRows.length > 0 && <Pagination
+                total={inventoryLedgerFilteredRows.length}
+                page={inventoryLedgerSafePage}
+                pageSize={inventoryLedgerPageSize}
+                pageSizeOptions={[25, 50, 100]}
+                onPageChange={setInventoryLedgerPage}
+                onPageSizeChange={(size) => { setInventoryLedgerPageSize(size); setInventoryLedgerPage(1) }}
+              />}
+              </>}
             </section>
           )}
 
@@ -3773,9 +3987,27 @@ function EmployeeRevenueChart({ rows }: { rows: ReturnType<typeof buildCompetiti
   )
 }
 
+/**
+ * BẢNG XẾP HẠNG THI ĐUA — bảng DUY NHẤT của màn.
+ *
+ * Trước bản này màn Thi đua có 5 danh sách của cùng nhóm người: poster, bảng
+ * phân loại, danh sách năng suất, thẻ thưởng KPI, bảng KPI × ngày. Mỗi cái xếp
+ * theo một tiêu chí và lấy một KHOẢNG NGÀY khác nhau (poster + phân loại theo kỳ
+ * thi đua, thẻ thưởng + KPI ngày theo bộ lọc đầu trang) nên hai bảng cạnh nhau
+ * hiện hai con số khác nhau cho cùng một người.
+ *
+ * Nay: một dòng = một người, muốn đổi cách xếp thì bấm cột (`sort`), muốn xem
+ * sâu thì mở dòng ra — thẻ "Nguồn doanh thu" (hóa đơn/phiếu túi) và thẻ "KPI
+ * theo ngày" (chỉ của người đó). Không đẻ thêm danh sách nào ở ngoài.
+ */
 function CompetitionClassificationTable({
   title,
   rows,
+  totalRows,
+  showAll,
+  onToggleShowAll,
+  sort,
+  onSortChange,
   showReward,
   mode,
   from,
@@ -3783,9 +4015,18 @@ function CompetitionClassificationTable({
   allocations,
   sessions,
   receipts,
+  capacityByKey,
+  capacityMetric,
+  teamAverage,
+  dailyKpiByKey,
 }: {
   title: string
   rows: CompetitionClassificationRow[]
+  totalRows: number
+  showAll: boolean
+  onToggleShowAll: () => void
+  sort: CompetitionSortKey
+  onSortChange: (sort: CompetitionSortKey) => void
   showReward: boolean
   mode: 'daily' | 'monthly' | 'leaders'
   from: string
@@ -3793,8 +4034,13 @@ function CompetitionClassificationTable({
   allocations: BagAllocation[]
   sessions: BagShiftSession[]
   receipts: SalesReceipt[]
+  capacityByKey: Map<string, SalesCapacityRow>
+  capacityMetric: SalesCapacityMetric
+  teamAverage: number
+  dailyKpiByKey: Map<string, DailyEmployeeKpiRow[]>
 }) {
   const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null)
+  const [detailTab, setDetailTab] = useState<'sources' | 'days'>('sources')
   useEffect(() => setExpandedRowKey(null), [title])
   const sourcesByRow = useMemo(
     () => buildCompetitionSourcesByRow(rows, mode, from, to, allocations, sessions, receipts),
@@ -3809,7 +4055,22 @@ function CompetitionClassificationTable({
           ? 'Top doanh thu không tự phát sinh thưởng; thưởng chỉ có khi đạt ngưỡng KPI ngày/tuần.'
           : 'Bảng này xếp doanh thu ca do ca trưởng phụ trách, không phải thưởng KPI cá nhân.'}</p>
       </div>
-      <small>{rows.length} người có doanh thu</small>
+      <small>{totalRows} người có doanh thu</small>
+    </div>
+    <div className="competition-sort-bar" role="group" aria-label="Sắp xếp bảng thi đua">
+      <span>Xếp theo</span>
+      {COMPETITION_SORT_OPTIONS
+        .filter((option) => option.id !== 'reward' || showReward)
+        .map((option) => (
+          <button
+            key={option.id}
+            type="button"
+            className={sort === option.id ? 'is-active' : ''}
+            aria-pressed={sort === option.id}
+            title={option.hint}
+            onClick={() => onSortChange(option.id)}
+          >{option.label}</button>
+        ))}
     </div>
     <div className="competition-classification-head" role="row">
       <span>Hạng</span>
@@ -3817,6 +4078,7 @@ function CompetitionClassificationTable({
       <span>Chi nhánh</span>
       <span>Kết quả</span>
       <span>Doanh thu</span>
+      <span>{salesCapacityMetricLabel(capacityMetric)}</span>
       <span>Xếp loại KPI</span>
       {showReward && <span>Thưởng KPI</span>}
     </div>
@@ -3824,8 +4086,11 @@ function CompetitionClassificationTable({
       const rowKey = competitionRowKey(row)
       const expanded = expandedRowKey === rowKey
       const sources = sourcesByRow.get(rowKey) || []
+      const dayRows = dailyKpiByKey.get(rowKey) || []
       const sourceRevenue = sources.reduce((sum, source) => sum + source.revenue, 0)
       const detailId = `competition-detail-${rowKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+      const capacity = capacityByKey.get(rowKey)
+      const aboveTeam = !!capacity?.measured && teamAverage > 0 && capacity.value >= teamAverage
       return <Fragment key={rowKey}>
         <div className={`competition-classification-row${expanded ? ' is-expanded' : ''}`} role="row">
           <span data-label="Hạng" role="cell"><b className={`leaderboard-rank rank-${index + 1}`}>{index + 1}</b></span>
@@ -3837,27 +4102,45 @@ function CompetitionClassificationTable({
           <span data-label="Kết quả" role="cell" className="competition-classification-result">
             <span>
               {row.detail || `${formatNumber(row.soldQuantity)} sản phẩm`}
-              <small>{mode === 'leaders' ? `${formatNumber(row.shiftCount)} ca vận hành` : `${formatNumber(row.shiftCount)} ca có check-in`}</small>
+              <small>
+                {mode === 'leaders' ? `${formatNumber(row.shiftCount)} ca vận hành` : `${formatNumber(row.shiftCount)} ca có check-in`}
+                {row.totalHours > 0 ? ` · ${formatDecimalHoursAsDuration(row.totalHours)}` : ''}
+              </small>
             </span>
             <button
               type="button"
               className="competition-drilldown-trigger"
               aria-expanded={expanded}
               aria-controls={detailId}
-              onClick={() => setExpandedRowKey(expanded ? null : rowKey)}
-            >{expanded ? 'Thu gọn chi tiết' : `Xem ${sources.length} nguồn doanh thu`}</button>
+              onClick={() => {
+                setDetailTab('sources')
+                setExpandedRowKey(expanded ? null : rowKey)
+              }}
+            >{expanded ? 'Thu gọn chi tiết' : `Xem chi tiết (${sources.length} nguồn · ${dayRows.length} ngày)`}</button>
           </span>
           <span data-label="Doanh thu" role="cell"><b>{formatMoney(row.revenue)}</b></span>
+          <span
+            data-label={salesCapacityMetricLabel(capacityMetric)}
+            role="cell"
+            className={`competition-classification-capacity${!capacity?.measured ? '' : aboveTeam ? ' up' : ' down'}`}
+          >
+            <b>{capacity?.measured ? formatCapacityValue(capacityMetric, capacity.value) : '—'}</b>
+            <small>{!capacity?.measured
+              ? 'Chưa có ca/giờ công để tính trung bình'
+              : teamAverage > 0
+                ? `${capacity.teamRatio >= 100 ? '+' : '−'}${formatNumber(Math.abs(capacity.teamRatio - 100))}% so với TB đội`
+                : 'Chưa đủ dữ liệu so sánh'}</small>
+          </span>
           <span data-label="Xếp loại KPI" role="cell"><b>{row.rank}</b><small>{formatNumber(row.progress)}%</small></span>
           {showReward && <span data-label="Thưởng KPI" role="cell" className={`competition-classification-reward${row.commission > 0 ? ' earned' : ''}`}>
             <b>{formatMoney(row.commission)}</b>
             <small>{row.commission > 0 ? 'Đã đạt thưởng ngày/tuần' : 'Chưa đạt ngưỡng ngày/tuần'}</small>
           </span>}
         </div>
-        {expanded && <div id={detailId} className="competition-drilldown-panel" role="region" aria-label={`Nguồn doanh thu của ${row.employeeName}`}>
+        {expanded && <div id={detailId} className="competition-drilldown-panel" role="region" aria-label={`Chi tiết của ${row.employeeName}`}>
           <header>
             <div>
-              <span className="eyebrow dark">DRILL-DOWN NGUỒN DOANH THU</span>
+              <span className="eyebrow dark">CHI TIẾT MỘT NGƯỜI</span>
               <h4>{row.employeeName} · {formatDate(from)}{to !== from ? ` - ${formatDate(to)}` : ''}</h4>
             </div>
             <div className="competition-drilldown-totals">
@@ -3865,26 +4148,68 @@ function CompetitionClassificationTable({
               <span><small>Đối chiếu</small><b>{formatMoney(sourceRevenue)}</b></span>
             </div>
           </header>
-          {Math.abs(sourceRevenue - row.revenue) > 1 && <p className="competition-drilldown-warning">
-            Tổng nguồn đang lệch {formatMoney(Math.abs(sourceRevenue - row.revenue))} so với bảng xếp hạng. Vui lòng kiểm tra dữ liệu chưa gắn nhân sự hoặc ca.
-          </p>}
-          <div className="competition-drilldown-list">
-            {sources.map((source) => <article key={`${source.kind}-${source.id}`}>
-              <span className={`competition-source-kind ${source.kind}`}>{source.kind === 'receipt' ? 'Hóa đơn' : 'Giao túi'}</span>
-              <div>
-                <strong>{source.heading}</strong>
-                <p>{source.detail}</p>
-                <small>{formatDate(source.businessDate)} · {formatDateTime(source.createdAt)} · {source.meta}</small>
-              </div>
-              <span><small>Số lượng</small><b>{formatNumber(source.soldQuantity)}</b></span>
-              <span><small>Doanh thu</small><b>{formatMoney(source.revenue)}</b></span>
-            </article>)}
-            {!sources.length && <p className="empty-copy">Chưa tìm thấy nguồn doanh thu khớp nhân sự và kỳ đang xem.</p>}
+          <div className="competition-drilldown-tabs" role="tablist" aria-label={`Chi tiết ${row.employeeName}`}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={detailTab === 'sources'}
+              className={detailTab === 'sources' ? 'is-active' : ''}
+              onClick={() => setDetailTab('sources')}
+            >Nguồn doanh thu ({sources.length})</button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={detailTab === 'days'}
+              className={detailTab === 'days' ? 'is-active' : ''}
+              onClick={() => setDetailTab('days')}
+            >KPI theo ngày ({dayRows.length})</button>
           </div>
+          {detailTab === 'sources' ? <>
+            {Math.abs(sourceRevenue - row.revenue) > 1 && <p className="competition-drilldown-warning">
+              Tổng nguồn đang lệch {formatMoney(Math.abs(sourceRevenue - row.revenue))} so với bảng xếp hạng. Vui lòng kiểm tra dữ liệu chưa gắn nhân sự hoặc ca.
+            </p>}
+            <div className="competition-drilldown-list">
+              {sources.map((source) => <article key={`${source.kind}-${source.id}`}>
+                <span className={`competition-source-kind ${source.kind}`}>{source.kind === 'receipt' ? 'Hóa đơn' : 'Giao túi'}</span>
+                <div>
+                  <strong>{source.heading}</strong>
+                  <p>{source.detail}</p>
+                  <small>{formatDate(source.businessDate)} · {formatDateTime(source.createdAt)} · {source.meta}</small>
+                </div>
+                <span><small>Số lượng</small><b>{formatNumber(source.soldQuantity)}</b></span>
+                <span><small>Doanh thu</small><b>{formatMoney(source.revenue)}</b></span>
+              </article>)}
+              {!sources.length && <p className="empty-copy">Chưa tìm thấy nguồn doanh thu khớp nhân sự và kỳ đang xem.</p>}
+            </div>
+          </> : <div className="competition-day-table" role="table" aria-label={`KPI theo ngày của ${row.employeeName}`}>
+            <div className="competition-day-row head" role="row">
+              <span>Ngày</span><span>Giờ công</span><span>SL bán</span><span>Doanh thu</span><span>KPI ngày</span><span>% đạt</span><span>Hạng</span><span>Thưởng ngày</span>
+            </div>
+            {dayRows.map((day) => (
+              <div className="competition-day-row" role="row" key={`${day.date}-${day.branchId}-${day.employeeKey}`}>
+                <span data-label="Ngày" role="cell"><b>{formatDate(day.date)}</b></span>
+                <span data-label="Giờ công" role="cell">{formatDecimalHoursAsDuration(day.totalHours)}</span>
+                <span data-label="SL bán" role="cell">{formatNumber(day.soldQuantity)}</span>
+                <span data-label="Doanh thu" role="cell"><b>{formatMoney(day.revenue)}</b></span>
+                <span data-label="KPI ngày" role="cell">{formatMoney(day.targetRevenue)}</span>
+                <span data-label="% đạt" role="cell" className={day.progress >= 100 ? 'ok' : day.progress >= 80 ? 'amber' : 'warn'}>{formatNumber(day.progress)}%</span>
+                <span data-label="Hạng" role="cell">{day.rank}</span>
+                <span data-label="Thưởng ngày" role="cell">{formatMoney(day.dailyBonus)}</span>
+              </div>
+            ))}
+            {!dayRows.length && <p className="empty-copy">{mode === 'leaders'
+              ? 'Bảng ca trưởng xếp doanh thu ca nên không có KPI cá nhân theo ngày.'
+              : 'Chưa có ngày nào phát sinh KPI trong kỳ đang xem.'}</p>}
+          </div>}
         </div>}
       </Fragment>
     })}
     {!rows.length && <p className="empty-copy">Chưa có doanh thu phù hợp với phân loại và ngày đã chọn.</p>}
+    {totalRows > COMPETITION_TOP_ROWS && <div className="competition-classification-more">
+      <button type="button" onClick={onToggleShowAll}>
+        {showAll ? `Chỉ hiện ${COMPETITION_TOP_ROWS} người dẫn đầu` : `Xem tất cả ${totalRows} người`}
+      </button>
+    </div>}
   </section>
 }
 
@@ -3998,17 +4323,16 @@ function formatCapacityValue(metric: SalesCapacityMetric, value: number) {
   return metric === 'quantityPerShift' ? `${formatNumber(value)} sản phẩm` : formatMoney(value)
 }
 
-/** Dòng phụ luôn cho thấy chỉ số còn lại để quản lý không phải đổi tab mới so được. */
-function capacitySecondaryLabel(metric: SalesCapacityMetric, row: SalesCapacityRow) {
-  return metric === 'revenuePerShift'
-    ? `${formatNumber(row.quantityPerShift)} sản phẩm / ca`
-    : `${formatMoney(row.revenuePerShift)} / ca`
-}
-
 /**
  * Bảng thi đua xếp theo TỔNG doanh thu nên người làm nhiều ca luôn đứng trên.
  * Khối này trả lời câu hỏi khác: "một ca (hoặc một giờ công) của người này bán
- * được bao nhiêu" — danh sách + biểu đồ so sánh với mốc trung bình của cả đội.
+ * được bao nhiêu" — biểu đồ so sánh với mốc trung bình của cả đội.
+ *
+ * 07/08/2026: khối này TỪNG có thêm 4 thẻ tổng và một danh sách đầy đủ, tức là
+ * liệt kê lại đúng nhóm người của bảng xếp hạng ngay bên trên. Số tổng đã dời
+ * lên dải `competition-overview`, số từng người đã thành CỘT trong bảng xếp
+ * hạng — ở đây chỉ giữ phần mà bảng không làm được: nhìn phát thấy ai trên/dưới
+ * mốc trung bình. ĐỪNG thêm lại danh sách vào đây.
  */
 function EmployeeSalesCapacityBoard({
   summary,
@@ -4057,31 +4381,6 @@ function EmployeeSalesCapacityBoard({
     {!summary.measuredRows.length
       ? <p className="empty-copy">Chưa có nhân sự nào vừa có doanh thu vừa có ca ghi nhận trong bộ lọc này.</p>
       : <>
-        <div className="capacity-summary-grid">
-          <article>
-            <span>Trung bình đội</span>
-            <strong>{formatCapacityValue(metric, summary.teamAverage)}</strong>
-            <small>{metric === 'revenuePerHour'
-              ? `${formatNumber(summary.totalHours)} giờ công`
-              : `${formatNumber(summary.totalShifts)} ca có check-in`}</small>
-          </article>
-          <article>
-            <span>Cao nhất</span>
-            <strong>{formatCapacityValue(metric, summary.bestValue)}</strong>
-            <small>{summary.bestRow?.employeeName || '—'}</small>
-          </article>
-          <article>
-            <span>Trên mức trung bình</span>
-            <strong>{aboveAverage}/{summary.measuredRows.length}</strong>
-            <small>người tính được năng suất</small>
-          </article>
-          <article className="total">
-            <span>Tổng doanh thu</span>
-            <strong>{formatMoney(summary.totalRevenue)}</strong>
-            <small>{formatNumber(summary.totalSoldQuantity)} sản phẩm</small>
-          </article>
-        </div>
-
         <div className="capacity-chart">
           <header>
             <div>
@@ -4112,63 +4411,10 @@ function EmployeeSalesCapacityBoard({
           </div>
           <p className="capacity-chart-note">
             Cột xanh lá là người bán trên mức trung bình đội, cột xám là dưới mức. Vạch đứt là mốc trung bình
-            {' '}{formatCapacityValue(metric, summary.teamAverage)}. Biểu đồ hiển thị {chartRows.length} người dẫn đầu,
-            danh sách bên dưới có đủ {summary.rows.length} người.
+            {' '}{formatCapacityValue(metric, summary.teamAverage)}. Biểu đồ chỉ vẽ {chartRows.length} người dẫn đầu
+            ({aboveAverage}/{summary.measuredRows.length} người trên mức trung bình) — số của từng người nằm ở cột
+            "{salesCapacityMetricLabel(metric)}" trong bảng xếp hạng phía trên.
           </p>
-        </div>
-
-        <div className="capacity-list" role="table" aria-label={`Danh sách ${salesCapacityMetricLabel(metric)} theo nhân viên`}>
-          <div className="capacity-list-head" role="row">
-            <span>Hạng</span>
-            <span>Nhân sự</span>
-            <span>Chi nhánh</span>
-            <span>{salesCapacityMetricLabel(metric)}</span>
-            <span>So với TB đội</span>
-            <span>Tổng doanh thu</span>
-            <span>Ca / giờ công</span>
-          </div>
-          {summary.rows.map((row, index) => (
-            <div
-              key={`${row.branchId}-${row.employeeKey}`}
-              className={`capacity-list-row${row.measured ? '' : ' is-unmeasured'}`}
-              role="row"
-            >
-              <span data-label="Hạng" role="cell">
-                <b className={`leaderboard-rank rank-${index + 1}`}>{row.measured ? index + 1 : '—'}</b>
-              </span>
-              <span data-label="Nhân sự" role="cell" className="capacity-person">
-                <i className="employee-top-avatar">{row.avatarUrl
-                  ? <img src={row.avatarUrl} alt="" />
-                  : row.employeeName.slice(0, 1).toUpperCase()}</i>
-                <strong>{row.employeeName}</strong>
-              </span>
-              <span data-label="Chi nhánh" role="cell">{branchName(row.branchId)}</span>
-              <span data-label={salesCapacityMetricLabel(metric)} role="cell" className="capacity-value">
-                <b>{row.measured ? formatCapacityValue(metric, row.value) : '—'}</b>
-                <small>{row.measured ? capacitySecondaryLabel(metric, row) : 'Chưa có ca/giờ công để tính trung bình'}</small>
-              </span>
-              <span
-                data-label="So với TB đội"
-                role="cell"
-                className={`capacity-gap${!row.measured ? '' : row.value >= summary.teamAverage ? ' up' : ' down'}`}
-              >
-                <b>{row.measured && summary.teamAverage > 0
-                  ? `${row.teamRatio >= 100 ? '+' : '−'}${formatNumber(Math.abs(row.teamRatio - 100))}%`
-                  : '—'}</b>
-                <small>{row.measured && summary.teamAverage > 0
-                  ? `${row.diffFromTeam >= 0 ? '+' : '−'}${formatCapacityValue(metric, Math.abs(row.diffFromTeam))}`
-                  : 'Chưa đủ dữ liệu so sánh'}</small>
-              </span>
-              <span data-label="Tổng doanh thu" role="cell">
-                <b>{formatMoney(row.revenue)}</b>
-                <small>{formatNumber(row.soldQuantity)} sản phẩm</small>
-              </span>
-              <span data-label="Ca / giờ công" role="cell">
-                <b>{formatNumber(row.shiftCount)} ca</b>
-                <small>{row.totalHours > 0 ? formatDecimalHoursAsDuration(row.totalHours) : 'Chưa có giờ công'}</small>
-              </span>
-            </div>
-          ))}
         </div>
       </>}
   </section>

@@ -18,20 +18,28 @@ if (!inventory.includes('getProcessingOutputOptions(inputId)')) {
 if (inventory.includes('.map((id) => finishedBulkProducts.find((product) => product.id === id))')) {
   failures.push('Mapping thành phẩm vẫn bị tra cứu chỉ trong danh sách đơn vị kg.')
 }
-if (!inventory.includes('const visibleOverviewStock = stock')) {
+// 07/08/2026: màn Kho viết lại, biến đổi tên thành `warehouseStock` (= bảng tồn
+// sau khi lọc thành phẩm/món menu bằng `splitWarehouseLines`). Yêu cầu KHÔNG đổi:
+// danh mục SKU dùng chung toàn công ty, chi nhánh đang có tồn 0 vẫn phải thấy dòng.
+if (!inventory.includes('splitWarehouseLines(stock)') || /warehouseStock\.filter\(\(line\) => line\.expected > 0/.test(inventory)) {
   failures.push('Màn tồn kho vẫn ẩn SKU dùng chung tại chi nhánh có tồn bằng 0.')
 }
 if (inventory.includes('stock.filter(isVisibleStockLine)')) {
   failures.push('SKU dùng chung vẫn bị lọc khỏi chi nhánh chỉ vì tồn hiện tại bằng 0.')
 }
-if (!products.includes("const PRODUCTS_CACHE_KEY = 'gustino:configured-products:v1'")) {
-  failures.push('Danh mục cloud chưa có cache bền vững nên SKU tùy chỉnh có thể biến mất khi tải lại lúc mạng lỗi.')
+// 07/08/2026 — chủ quán: "không có dữ liệu nào được phép lưu trong local".
+// Danh mục SKU (tên, giá, nhóm hàng, công thức) TRƯỚC ĐÂY được ghi xuống
+// localStorage và sống qua nhiều ngày không hết hạn: admin sửa giá / tắt món
+// trên một máy thì máy khác vẫn đọc bản cũ. Nay chỉ giữ trong bộ nhớ phiên.
+if (products.includes('localStorage.setItem')) {
+  failures.push('Danh mục SKU không được ghi xuống localStorage — cloud là nguồn sự thật duy nhất.')
 }
-if (!products.includes('setConfiguredProductsCache(persisted.products, persisted.deletedProducts)')) {
-  failures.push('Fallback catalog chưa khôi phục đồng thời SKU hiện hành và tombstone.')
+if (!products.includes("const PRODUCTS_CACHE_KEY = 'gustino:configured-products:v1'")
+  || !products.includes('localStorage.removeItem(PRODUCTS_CACHE_KEY)')) {
+  failures.push('Phải dọn bản cache danh mục cũ còn sót trên máy người dùng.')
 }
-if (!products.includes('if (persisted?.products.length)')) {
-  failures.push('Lỗi tải cloud chưa giữ lại bản catalog tốt gần nhất.')
+if (products.includes('return persisted.products')) {
+  failures.push('Lỗi tải cloud không được âm thầm rơi về danh mục cũ trong máy — phải báo lỗi.')
 }
 
 try {
