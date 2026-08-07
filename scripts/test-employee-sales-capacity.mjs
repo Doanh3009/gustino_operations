@@ -10,68 +10,80 @@ const [admin, styles, capacitySource] = await Promise.all([
 const compiled = await transform(capacitySource, { loader: 'ts', format: 'esm', target: 'es2022' })
 const capacity = await import(`data:text/javascript;base64,${Buffer.from(compiled.code).toString('base64')}`)
 
-// ── 1. Người làm ít ca nhưng bán khỏe phải đứng trên người có tổng doanh thu lớn hơn.
+// 07/08/2026 — mẫu số đổi từ CA/GIỜ sang NGÀY/THÁNG theo yêu cầu chủ quán:
+// "nhân viên đó bán mỗi ngày bao nhiêu, tổng tháng trung bình bao nhiêu".
+// Một người trực 2 ca cùng ngày vẫn chỉ bán trong MỘT ngày ⇒ mẫu số là ngày.
+
+// ── 1. Người làm ít ngày nhưng bán khỏe phải đứng trên người có tổng doanh thu lớn hơn.
 const inputs = [
-  employee('a', 'Nhân viên A', { revenue: 10_000_000, soldQuantity: 200, shiftCount: 10, totalHours: 80 }),
-  employee('b', 'Nhân viên B', { revenue: 3_000_000, soldQuantity: 75, shiftCount: 2, totalHours: 10 }),
-  employee('c', 'Nhân viên C', { revenue: 1_200_000, soldQuantity: 20, shiftCount: 0, totalHours: 0 }),
+  employee('a', 'Nhân viên A', { revenue: 10_000_000, soldQuantity: 200, shiftCount: 12, dayCount: 10, monthCount: 2, totalHours: 80 }),
+  employee('b', 'Nhân viên B', { revenue: 3_000_000, soldQuantity: 75, shiftCount: 2, dayCount: 2, monthCount: 1, totalHours: 10 }),
+  employee('c', 'Nhân viên C', { revenue: 1_200_000, soldQuantity: 20, shiftCount: 0, dayCount: 0, monthCount: 0, totalHours: 0 }),
 ]
 
-const perShift = capacity.buildEmployeeSalesCapacity(inputs, 'revenuePerShift')
+const perDay = capacity.buildEmployeeSalesCapacity(inputs, 'revenuePerDay')
 assert.deepEqual(
-  perShift.rows.map((row) => row.employeeKey),
+  perDay.rows.map((row) => row.employeeKey),
   ['b', 'a', 'c'],
-  'Xếp hạng năng suất phải theo doanh thu/ca, người thiếu mẫu số xếp cuối.',
+  'Xếp hạng năng suất phải theo doanh thu/ngày, người thiếu mẫu số xếp cuối.',
 )
-assert.equal(perShift.rows[0].value, 1_500_000, 'Doanh thu/ca sai.')
-assert.equal(perShift.rows[1].value, 1_000_000, 'Doanh thu/ca sai.')
-assert.equal(perShift.rows[2].measured, false, 'Người không có ca check-in không thể có năng suất trung bình.')
-assert.equal(perShift.rows[2].value, 0, 'Người thiếu mẫu số phải để trống chỉ số, không lấy tổng doanh thu làm trung bình.')
-assert.equal(perShift.measuredRows.length, 2)
+assert.equal(perDay.rows[0].value, 1_500_000, 'Doanh thu/ngày sai.')
+assert.equal(perDay.rows[1].value, 1_000_000, 'Doanh thu/ngày sai.')
+assert.equal(perDay.rows[2].measured, false, 'Người không có ngày công không thể có năng suất trung bình.')
+assert.equal(perDay.rows[2].value, 0, 'Người thiếu mẫu số phải để trống chỉ số, không lấy tổng doanh thu làm trung bình.')
+assert.equal(perDay.measuredRows.length, 2)
+
+// Trực 2 ca trong cùng một ngày KHÔNG được làm loãng trung bình ngày.
+const doubleShift = capacity.buildEmployeeSalesCapacity(
+  [employee('d', 'Nhân viên D', { revenue: 2_000_000, soldQuantity: 40, shiftCount: 4, dayCount: 2, monthCount: 1, totalHours: 32 })],
+  'revenuePerDay',
+)
+assert.equal(doubleShift.rows[0].value, 1_000_000, 'Mẫu số phải là NGÀY công, không phải số ca.')
 
 // Trung bình đội là bình quân gia quyền (tổng/tổng), không phải trung bình của các số trung bình.
 assert.equal(
-  Math.round(perShift.teamAverage),
+  Math.round(perDay.teamAverage),
   Math.round(13_000_000 / 12),
-  'Trung bình đội phải lấy tổng doanh thu chia tổng số ca của người đo được.',
+  'Trung bình đội phải lấy tổng doanh thu chia tổng số ngày công của người đo được.',
 )
-assert.notEqual(Math.round(perShift.teamAverage), Math.round((1_500_000 + 1_000_000) / 2))
-assert.equal(perShift.totalRevenue, 14_200_000, 'Tổng doanh thu phải gồm cả người chưa tính được năng suất.')
-assert.equal(perShift.totalShifts, 12)
-assert.equal(perShift.bestRow.employeeKey, 'b')
+assert.notEqual(Math.round(perDay.teamAverage), Math.round((1_500_000 + 1_000_000) / 2))
+assert.equal(perDay.totalRevenue, 14_200_000, 'Tổng doanh thu phải gồm cả người chưa tính được năng suất.')
+assert.equal(perDay.totalDays, 12)
+assert.equal(perDay.bestRow.employeeKey, 'b')
 
 // So với trung bình đội: trên mức thì dương, dưới mức thì âm.
-assert.ok(perShift.rows[0].diffFromTeam > 0 && perShift.rows[0].teamRatio > 100, 'Người trên mức trung bình phải có chênh lệch dương.')
-assert.ok(perShift.rows[1].diffFromTeam < 0 && perShift.rows[1].teamRatio < 100, 'Người dưới mức trung bình phải có chênh lệch âm.')
-assert.equal(perShift.rows[2].teamRatio, 0, 'Người thiếu mẫu số không được gán tỷ lệ so sánh.')
+assert.ok(perDay.rows[0].diffFromTeam > 0 && perDay.rows[0].teamRatio > 100, 'Người trên mức trung bình phải có chênh lệch dương.')
+assert.ok(perDay.rows[1].diffFromTeam < 0 && perDay.rows[1].teamRatio < 100, 'Người dưới mức trung bình phải có chênh lệch âm.')
+assert.equal(perDay.rows[2].teamRatio, 0, 'Người thiếu mẫu số không được gán tỷ lệ so sánh.')
 
 // ── 2. Đổi chỉ số thì đổi cả thứ hạng lẫn mốc trung bình.
-const perQuantity = capacity.buildEmployeeSalesCapacity(inputs, 'quantityPerShift')
-assert.equal(perQuantity.rows[0].value, 37.5, 'Sản phẩm/ca sai.')
-assert.equal(perQuantity.teamAverage, 275 / 12, 'Trung bình sản phẩm/ca phải theo tổng sản phẩm chia tổng ca.')
+const perQuantity = capacity.buildEmployeeSalesCapacity(inputs, 'quantityPerDay')
+assert.equal(perQuantity.rows[0].value, 37.5, 'Sản phẩm/ngày sai.')
+assert.equal(perQuantity.teamAverage, 275 / 12, 'Trung bình sản phẩm/ngày phải theo tổng sản phẩm chia tổng ngày.')
 
-const perHour = capacity.buildEmployeeSalesCapacity(inputs, 'revenuePerHour')
-assert.equal(perHour.rows[0].value, 300_000, 'Doanh thu/giờ công sai.')
-assert.equal(perHour.teamAverage, 13_000_000 / 90, 'Trung bình doanh thu/giờ phải theo tổng giờ công.')
-assert.equal(perHour.hasHours, true)
+const perMonth = capacity.buildEmployeeSalesCapacity(inputs, 'revenuePerMonth')
+assert.equal(perMonth.rows.find((row) => row.employeeKey === 'a').value, 5_000_000, 'Doanh thu/tháng sai (10tr trong 2 tháng).')
+assert.equal(perMonth.rows.find((row) => row.employeeKey === 'b').value, 3_000_000, 'Doanh thu/tháng sai (3tr trong 1 tháng).')
+assert.equal(perMonth.teamAverage, 13_000_000 / 3, 'Trung bình tháng phải theo tổng doanh thu chia tổng lượt tháng có làm.')
+assert.equal(perMonth.totalMonths, 3)
 
-// ── 3. Bảng ca trưởng không có giờ công ⇒ chỉ số theo giờ không đo được.
-const leaderRows = [employee('l1', 'Ca trưởng 1', { revenue: 5_000_000, soldQuantity: 90, shiftCount: 4, totalHours: 0 })]
-const leaderCapacity = capacity.buildEmployeeSalesCapacity(leaderRows, 'revenuePerHour')
-assert.equal(leaderCapacity.hasHours, false, 'Không có giờ công thì phải báo hasHours = false để UI quay về chỉ số theo ca.')
+// ── 3. Ca trưởng theo tháng chưa có ngày công ⇒ không đo được, không chia cho 0.
+const leaderRows = [employee('l1', 'Ca trưởng 1', { revenue: 5_000_000, soldQuantity: 90, shiftCount: 4, dayCount: 0, monthCount: 0, totalHours: 0 })]
+const leaderCapacity = capacity.buildEmployeeSalesCapacity(leaderRows, 'revenuePerDay')
+assert.equal(leaderCapacity.hasDays, false, 'Không có ngày công thì phải báo hasDays = false.')
 assert.equal(leaderCapacity.measuredRows.length, 0)
 assert.equal(leaderCapacity.teamAverage, 0, 'Không có mẫu số thì trung bình đội là 0, không chia cho 0.')
-assert.equal(capacity.buildEmployeeSalesCapacity(leaderRows, 'revenuePerShift').rows[0].value, 1_250_000)
 
-assert.equal(capacity.buildEmployeeSalesCapacity([], 'revenuePerShift').teamAverage, 0, 'Danh sách rỗng không được sinh NaN.')
+assert.equal(capacity.buildEmployeeSalesCapacity([], 'revenuePerDay').teamAverage, 0, 'Danh sách rỗng không được sinh NaN.')
 assert.equal(capacity.SALES_CAPACITY_METRICS.length, 3)
-assert.equal(capacity.salesCapacityMetricLabel('revenuePerShift'), 'Doanh thu / ca')
+assert.equal(capacity.salesCapacityMetricLabel('revenuePerDay'), 'Doanh thu / ngày')
+assert.equal(capacity.salesCapacityMetricLabel('revenuePerMonth'), 'Doanh thu / tháng')
 
 // ── 4. Gắn đúng chỗ trong màn Thi đua nhân viên, dùng đúng tập nhân sự đang lọc.
 assert.match(admin, /buildEmployeeSalesCapacity\(competitionFilteredRows, effectiveCapacityMetric\)/,
   'Năng suất phải tính trên đúng tập nhân sự đã lọc của bảng thi đua.')
-assert.match(admin, /capacityMetric === 'revenuePerHour' && !capacityHasHours/,
-  'Thiếu giờ công (bảng ca trưởng) thì chỉ số theo giờ phải tự quay về theo ca.')
+assert.match(admin, /capacityMetric === 'revenuePerMonth' && !capacityHasMonths/,
+  'Kỳ chỉ có một ngày thì chỉ số theo tháng phải tự quay về theo ngày.')
 const competitionSection = sourceBetween(admin, "{activeSection === 'commission' && (", '<p className="commission-note">KPI chỉ tính cho')
 assert.match(competitionSection, /<CompetitionClassificationTable/, 'Sai mốc kiểm tra: bảng xếp hạng thi đua đã đổi chỗ.')
 assert.match(competitionSection, /<EmployeeSalesCapacityBoard/,
@@ -91,8 +103,8 @@ assert.doesNotMatch(admin, /<div className="adm-list">\s*\{commissionRows/,
 assert.match(admin, /competition-classification-capacity/, 'Bảng xếp hạng thiếu cột năng suất.')
 assert.match(admin, /<span>\{salesCapacityMetricLabel\(capacityMetric\)\}<\/span>/,
   'Tiêu đề cột năng suất phải đổi theo chỉ số đang chọn.')
-assert.match(admin, /Chưa có ca\/giờ công để tính trung bình/,
-  'Người chưa có ca phải được nói rõ lý do thay vì hiện số 0 gây hiểu nhầm.')
+assert.match(admin, /Chưa có ngày công để tính trung bình/,
+  'Người chưa có ngày công phải được nói rõ lý do thay vì hiện số 0 gây hiểu nhầm.')
 assert.match(admin, /so với TB đội/, 'Cột năng suất phải nói rõ chênh lệch so với trung bình đội.')
 
 for (const selector of ['.capacity-board {', '.capacity-chart {', '.capacity-average-mark {', '.competition-overview {']) {
@@ -108,6 +120,8 @@ function employee(key, name, metrics) {
     employeeKey: key,
     employeeName: name,
     branchId: 'gold-coast',
+    dayCount: 0,
+    monthCount: 0,
     ...metrics,
   }
 }

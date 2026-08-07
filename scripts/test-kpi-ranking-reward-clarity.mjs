@@ -8,7 +8,10 @@ const [admin, commission, styles] = await Promise.all([
 ])
 
 assert.match(admin, /Xếp hạng doanh thu/)
-assert.match(admin, /Top doanh thu không tự phát sinh thưởng/)
+// 07/08/2026: bỏ đoạn văn giải thích ở tiêu đề bảng. Ý "top doanh thu KHÔNG
+// tự sinh thưởng" vẫn phải hiện ở chỗ đọc được nhanh hơn: thẻ tổng Thưởng KPI
+// và dòng phụ của chính ô thưởng từng người.
+assert.match(admin, /Chỉ phát sinh khi đạt ngưỡng KPI ngày\/tuần/)
 assert.match(admin, /data-label="Thưởng KPI"/)
 assert.match(admin, /formatMoney\(row\.commission\)/)
 assert.match(admin, /Chưa đạt ngưỡng ngày\/tuần/)

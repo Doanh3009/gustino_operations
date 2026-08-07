@@ -16896,7 +16896,8 @@ body { background: #f7f8f5; font-size: 14px; }
   }
 }
 
-.admin-readonly-note, .kpi-reading-guide {
+/* `.kpi-reading-guide` đã bị gỡ 07/08/2026 (chủ quán: mô tả rườm rà). */
+.admin-readonly-note {
   margin: 0 0 14px;
   padding: 11px 13px;
   border: 1px solid #dfe8d7;
@@ -16906,10 +16907,6 @@ body { background: #f7f8f5; font-size: 14px; }
   font-size: 12px;
   line-height: 1.55;
 }
-
-.kpi-reading-guide { display: grid; gap: 3px; }
-.kpi-reading-guide strong { color: #29421f; font-size: 13px; }
-.kpi-reading-guide small { color: #718065; }
 
 .admin-employee-daily-revenue-chart {
   display: flex;

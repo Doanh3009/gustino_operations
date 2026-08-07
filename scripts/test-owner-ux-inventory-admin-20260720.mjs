@@ -23,7 +23,10 @@ const checks = [
   ['mobile header no longer renders Gustino logo', !shell.includes('<span className="mh-logo"><img src="/gustino-logo.jpg" alt="GUSTINO" /></span>')],
   ['employee sales uses daily revenue aggregation', admin.includes('const employeeDailyRevenue = buildEmployeeDailyRevenueRows(employeeReceipts)') && admin.includes('Doanh thu theo ngày')],
   ['employee daily revenue has an informative chart and table', admin.includes('admin-employee-daily-revenue-chart') && admin.includes('admin-employee-daily-revenue-table')],
-  ['KPI screen explains formula and keeps day-filtered detail', admin.includes('Cách đọc KPI') && admin.includes('Mỗi dòng bên dưới là một nhân viên trong một ngày')],
+  // 07/08/2026: khối văn "Cách đọc KPI" bị bỏ theo yêu cầu chủ quán (rườm rà).
+  // Điều thật sự cần giữ là KPI theo NGÀY vẫn tra được — nay nằm trong thẻ
+  // drill-down của từng nhân sự thay vì một bảng toàn cục ở cuối màn.
+  ['KPI theo ngày van tra duoc tung nguoi', admin.includes('KPI theo ngày ({dayRows.length})') && admin.includes('competitionDailyKpiByKey')],
   ['Admin purchasing is read-only and exports Excel', admin.includes('Admin chỉ theo dõi, lọc và xuất danh sách; không đặt hàng hoặc đổi trạng thái đơn tại màn này.') && admin.includes('exportSupplyReportExcel')],
   ['responsive hardening prevents common flex/grid/table overflow', styles.includes('/* Owner UX overflow hardening 2026-07-20 */') && styles.includes('min-width: 0;') && styles.includes('overflow-wrap: anywhere;')],
   ['competition classification remains visible at tablet widths', styles.includes('.competition-classification-table {') && styles.includes('overflow-x: auto;') && styles.includes('.competition-classification-table.with-reward .competition-classification-row')],

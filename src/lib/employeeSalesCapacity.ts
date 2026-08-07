@@ -1,17 +1,21 @@
 /**
  * Khả năng bán trung bình của một nhân viên.
  *
- * Bảng thi đua xếp theo TỔNG doanh thu nên người làm nhiều ca luôn đứng trên,
- * kể cả khi mỗi ca họ bán ít hơn người khác. Module này chia tổng cho mẫu số
- * công sức (số ca có check-in / giờ công thực tế) để so sánh đúng "khả năng bán
- * được của một người trong một ca".
+ * Bảng thi đua xếp theo TỔNG doanh thu nên người làm nhiều hơn luôn đứng trên,
+ * kể cả khi mỗi ngày họ bán ít hơn người khác. Module này chia tổng cho mẫu số
+ * công sức để trả lời đúng câu chủ quán hỏi: *một NGÀY người này bán được bao
+ * nhiêu, và cả THÁNG thì trung bình bao nhiêu*.
+ *
+ * Mẫu số là NGÀY CÔNG và THÁNG CÓ ĐI LÀM, không phải số ca: một người trực hai
+ * ca trong cùng một ngày vẫn chỉ bán trong một ngày. Muốn tách ngày thường với
+ * cuối tuần thì dùng bộ lọc "Loại ngày" của bảng thi đua — cùng một tập dữ liệu.
  *
  * Hàm thuần, không React, không gọi mạng — mọi số liệu vào từ bảng thi đua đã
- * lọc sẵn (vai trò, loại ngày, khoảng số ca) nên danh sách này luôn cùng phạm vi
- * với bảng xếp hạng đang xem.
+ * lọc sẵn (vai trò, loại ngày, khoảng số ca) nên khối này luôn cùng phạm vi với
+ * bảng xếp hạng đang xem.
  */
 
-export type SalesCapacityMetric = 'revenuePerShift' | 'quantityPerShift' | 'revenuePerHour'
+export type SalesCapacityMetric = 'revenuePerDay' | 'quantityPerDay' | 'revenuePerMonth'
 
 export interface SalesCapacityInput {
   employeeKey: string
@@ -22,15 +26,19 @@ export interface SalesCapacityInput {
   soldQuantity: number
   shiftCount: number
   totalHours: number
+  /** Số ngày công khác nhau trong kỳ (2 ca cùng ngày vẫn là 1). */
+  dayCount: number
+  /** Số tháng khác nhau có đi làm trong kỳ. */
+  monthCount: number
 }
 
 export interface SalesCapacityRow extends SalesCapacityInput {
-  revenuePerShift: number
-  quantityPerShift: number
-  revenuePerHour: number
+  revenuePerDay: number
+  quantityPerDay: number
+  revenuePerMonth: number
   /** Giá trị của chỉ số đang xem. */
   value: number
-  /** Có mẫu số hợp lệ (ca hoặc giờ công) để tính trung bình hay không. */
+  /** Có mẫu số hợp lệ (ngày công hoặc tháng có làm) để tính trung bình hay không. */
   measured: boolean
   /** Chênh lệch tuyệt đối so với trung bình đội. */
   diffFromTeam: number
@@ -50,19 +58,21 @@ export interface SalesCapacitySummary {
   totalSoldQuantity: number
   totalShifts: number
   totalHours: number
-  /** Có giờ công để tính doanh thu/giờ không (bảng ca trưởng không có giờ công). */
-  hasHours: boolean
+  totalDays: number
+  totalMonths: number
+  /** Có ngày công để tính trung bình không (bảng ca trưởng theo tháng thì không). */
+  hasDays: boolean
 }
 
 export const SALES_CAPACITY_METRICS: Array<{
   id: SalesCapacityMetric
   label: string
   hint: string
-  needsHours: boolean
+  perMonth: boolean
 }> = [
-  { id: 'revenuePerShift', label: 'Doanh thu / ca', hint: 'Trung bình một ca người đó bán ra bao nhiêu tiền.', needsHours: false },
-  { id: 'quantityPerShift', label: 'Sản phẩm / ca', hint: 'Trung bình một ca người đó bán được bao nhiêu sản phẩm.', needsHours: false },
-  { id: 'revenuePerHour', label: 'Doanh thu / giờ công', hint: 'Trung bình mỗi giờ đứng quầy mang về bao nhiêu tiền.', needsHours: true },
+  { id: 'revenuePerDay', label: 'Doanh thu / ngày', hint: 'Trung bình một ngày đi làm người đó bán ra bao nhiêu tiền.', perMonth: false },
+  { id: 'quantityPerDay', label: 'Sản phẩm / ngày', hint: 'Trung bình một ngày đi làm người đó bán được bao nhiêu sản phẩm.', perMonth: false },
+  { id: 'revenuePerMonth', label: 'Doanh thu / tháng', hint: 'Trung bình mỗi tháng có đi làm người đó mang về bao nhiêu tiền.', perMonth: true },
 ]
 
 export function salesCapacityMetricLabel(metric: SalesCapacityMetric) {
@@ -73,24 +83,24 @@ export function buildEmployeeSalesCapacity(
   inputs: SalesCapacityInput[],
   metric: SalesCapacityMetric,
 ): SalesCapacitySummary {
-  const usesHours = metric === 'revenuePerHour'
-  const hasHours = inputs.some((input) => input.totalHours > 0)
+  const usesMonths = metric === 'revenuePerMonth'
+  const hasDays = inputs.some((input) => input.dayCount > 0)
 
   const base = inputs.map((input) => {
-    const shifts = Math.max(0, input.shiftCount)
-    const hours = Math.max(0, input.totalHours)
-    const revenuePerShift = shifts > 0 ? input.revenue / shifts : 0
-    const quantityPerShift = shifts > 0 ? input.soldQuantity / shifts : 0
-    const revenuePerHour = hours > 0 ? input.revenue / hours : 0
-    const measured = usesHours ? hours > 0 : shifts > 0
-    const value = metric === 'revenuePerShift' ? revenuePerShift
-      : metric === 'quantityPerShift' ? quantityPerShift
-        : revenuePerHour
+    const days = Math.max(0, input.dayCount)
+    const months = Math.max(0, input.monthCount)
+    const revenuePerDay = days > 0 ? input.revenue / days : 0
+    const quantityPerDay = days > 0 ? input.soldQuantity / days : 0
+    const revenuePerMonth = months > 0 ? input.revenue / months : 0
+    const measured = usesMonths ? months > 0 : days > 0
+    const value = metric === 'revenuePerDay' ? revenuePerDay
+      : metric === 'quantityPerDay' ? quantityPerDay
+        : revenuePerMonth
     return {
       ...input,
-      revenuePerShift,
-      quantityPerShift,
-      revenuePerHour,
+      revenuePerDay,
+      quantityPerDay,
+      revenuePerMonth,
       value: measured ? value : 0,
       measured,
       diffFromTeam: 0,
@@ -103,10 +113,10 @@ export function buildEmployeeSalesCapacity(
   // trung bình của các số trung bình: một người chỉ làm 1 ca may mắn sẽ không
   // kéo lệch mốc so sánh của cả đội.
   const numerator = measuredRows.reduce(
-    (sum, row) => sum + (metric === 'quantityPerShift' ? row.soldQuantity : row.revenue),
+    (sum, row) => sum + (metric === 'quantityPerDay' ? row.soldQuantity : row.revenue),
     0,
   )
-  const denominator = measuredRows.reduce((sum, row) => sum + (usesHours ? row.totalHours : row.shiftCount), 0)
+  const denominator = measuredRows.reduce((sum, row) => sum + (usesMonths ? row.monthCount : row.dayCount), 0)
   const teamAverage = denominator > 0 ? numerator / denominator : 0
 
   const rows = base
@@ -134,6 +144,8 @@ export function buildEmployeeSalesCapacity(
     totalSoldQuantity: base.reduce((sum, row) => sum + row.soldQuantity, 0),
     totalShifts: base.reduce((sum, row) => sum + Math.max(0, row.shiftCount), 0),
     totalHours: base.reduce((sum, row) => sum + Math.max(0, row.totalHours), 0),
-    hasHours,
+    totalDays: base.reduce((sum, row) => sum + Math.max(0, row.dayCount), 0),
+    totalMonths: base.reduce((sum, row) => sum + Math.max(0, row.monthCount), 0),
+    hasDays,
   }
 }

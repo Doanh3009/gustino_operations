@@ -414,7 +414,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [competitionDayType, setCompetitionDayType] = useState<CompetitionDayType>('all')
   const [competitionMinShifts, setCompetitionMinShifts] = useState('')
   const [competitionMaxShifts, setCompetitionMaxShifts] = useState('')
-  const [capacityMetric, setCapacityMetric] = useState<SalesCapacityMetric>('revenuePerShift')
+  const [capacityMetric, setCapacityMetric] = useState<SalesCapacityMetric>('revenuePerDay')
   const [competitionSort, setCompetitionSort] = useState<CompetitionSortKey>('revenue')
   const [competitionShowAll, setCompetitionShowAll] = useState(false)
   const [competitionPosterOpen, setCompetitionPosterOpen] = useState(false)
@@ -1099,7 +1099,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       dayType: competitionDayType,
       branchId,
     })
-    return buildCompetitionRows(rows, checkedInRecords, payrollEmployees)
+    return buildCompetitionRows(rows, checkedInRecords, payrollEmployees, registrations)
   }, [bagAllocations, payrollEmployees, salesReceipts, registrations, records, commissionRuleDrafts, employeeKpiDrafts, branchId, rankingMonthFrom, rankingMonthTo, competitionDayType])
   const dailyCompetitionRows = useMemo(() => {
     const dateIncluded = competitionDayMatches(competitionDate, competitionDayType)
@@ -1123,7 +1123,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           branchId,
         })
       : []
-    return buildCompetitionRows(rows, checkedInRecords, payrollEmployees)
+    return buildCompetitionRows(rows, checkedInRecords, payrollEmployees, registrations)
   }, [bagAllocations, payrollEmployees, salesReceipts, registrations, records, commissionRuleDrafts, employeeKpiDrafts, branchId, competitionDate, competitionDayType])
   const leaderCompetitionRows = useMemo(() => {
     return buildShiftLeaderRevenueRows(
@@ -1154,6 +1154,17 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           employee.branchId === row.branchId
           && (employee.id === row.leaderKey || normalizeName(employee.name) === normalizeName(row.leaderName)),
         )
+        // Ca trưởng không có bản ghi chấm công trong bảng này, nên ngày/tháng
+        // lấy từ chính sổ ca: một ca trưởng trực 2 ca trong ngày vẫn là 1 ngày.
+        const leaderDays = new Set<string>()
+        bagSessions.forEach((session) => {
+          if (session.branchId !== row.branchId) return
+          if (session.businessDate < rankingMonthFrom || session.businessDate > rankingMonthTo) return
+          if (!competitionDayMatches(session.businessDate, competitionDayType)) return
+          const sameLeader = session.leaderId === row.leaderKey
+            || normalizeName(session.leaderName) === normalizeName(row.leaderName)
+          if (sameLeader) leaderDays.add(session.businessDate)
+        })
         return {
           employeeKey: profile?.id || row.leaderKey,
           employeeName: profile?.name || row.leaderName,
@@ -1164,6 +1175,8 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           commission: 0,
           totalHours: 0,
           shiftCount: row.shiftCount,
+          dayCount: leaderDays.size,
+          monthCount: new Set(Array.from(leaderDays, (date) => date.slice(0, 7))).size,
           role: 'shift_leader' as Role,
           targetRevenue: row.targetRevenue,
           progress: row.progress,
@@ -1189,9 +1202,12 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   // Năng suất bán trung bình dùng ĐÚNG tập nhân sự của bảng xếp hạng đang xem
   // (cùng phân loại, vai trò, loại ngày, khoảng số ca) để hai bảng không đá nhau.
   // Bảng ca trưởng không có giờ công nên chỉ số theo giờ tự quay về theo ca.
-  const capacityHasHours = competitionFilteredRows.some((row) => row.totalHours > 0)
-  const effectiveCapacityMetric: SalesCapacityMetric = capacityMetric === 'revenuePerHour' && !capacityHasHours
-    ? 'revenuePerShift'
+  // Thi đua "Theo ngày" chỉ có đúng một ngày trong kỳ ⇒ trung bình/tháng không
+  // nói lên gì, tự quay về trung bình/ngày thay vì hiện một con số vô nghĩa.
+  const capacityHasMonths = competitionFilteredRows.some((row) => row.monthCount > 0)
+    && competitionRankingMode !== 'daily'
+  const effectiveCapacityMetric: SalesCapacityMetric = capacityMetric === 'revenuePerMonth' && !capacityHasMonths
+    ? 'revenuePerDay'
     : capacityMetric
   const salesCapacity = buildEmployeeSalesCapacity(competitionFilteredRows, effectiveCapacityMetric)
   // Năng suất được ghép THẲNG vào bảng xếp hạng (một dòng = một người) thay vì
@@ -2849,6 +2865,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     type="button"
                     className="secondary-button"
                     disabled={exportBusy === 'kpi-daily'}
+                    // Khác biệt duy nhất còn phải nói ra: file này theo khoảng ngày ĐẦU
+                    // TRANG, không theo kỳ thi đua. Để ở tooltip thay vì một đoạn văn.
+                    title={`Xuất theo khoảng ngày ở đầu trang: ${formatDate(from)} — ${formatDate(to)}`}
                     onClick={() => void runExport(
                       'kpi-daily',
                       dailyKpiRows.length ? '' : 'Chưa có dữ liệu KPI theo ngày trong bộ lọc hiện tại để xuất Excel.',
@@ -2861,16 +2880,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   </button>
                 </div>
               </div>
-              <div className="commission-note">
-                Một bộ lọc, một bảng xếp hạng: mỗi nhân sự chỉ xuất hiện một dòng, bấm vào dòng để xem nguồn doanh thu và KPI từng ngày của chính người đó.
-                KPI tính theo bảng chỉ tiêu vị trí/chi nhánh; màn này chỉ theo dõi, không chỉnh KPI bán hàng.
-                File "KPI theo ngày" xuất theo khoảng ngày ở đầu trang ({formatDate(from)} — {formatDate(to)}), không theo kỳ thi đua đang xem.
-              </div>
               <div className="competition-ranking-toolbar">
                 <div>
                   <span className="eyebrow dark">BẢNG XẾP HẠNG</span>
                   <h3>Phân loại thi đua</h3>
-                  <p>Lọc cùng nhóm vai trò, số ca và loại ngày để so sánh công bằng; công thức KPI gốc không thay đổi.</p>
                 </div>
                 <div className="competition-ranking-controls">
                   <label>Phân loại
@@ -2953,12 +2966,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 </div>
               </div>
 
-              <div className="kpi-reading-guide">
-                <strong>Cách đọc KPI</strong>
-                <span>Bảng xếp hạng là tổng của cả kỳ đang chọn. Bấm vào một dòng rồi mở thẻ "KPI theo ngày" để xem chi tiết. Mỗi dòng bên dưới là một nhân viên trong một ngày: doanh thu ngày được so với mục tiêu ngày, tỷ lệ từ 100% là đạt. Thưởng ngày và thưởng tuần dùng đúng quy tắc hiện có, không phụ thuộc riêng vào xếp hạng doanh thu.</span>
-                <small>Doanh thu và % KPI đo sức bán tổng; cột Năng suất đo sức bán trên mỗi ca nên người làm ít ca vẫn so được với người làm nhiều ca.</small>
-              </div>
-
               {/* Một dải số duy nhất cho cả màn — trước đây có 3 dải tổng khác kỳ nhau. */}
               <div className="competition-overview" aria-label={`Tổng hợp thi đua ${competitionRankingTitle}`}>
                 <article>
@@ -2974,9 +2981,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 <article>
                   <span>{salesCapacityMetricLabel(effectiveCapacityMetric)} — trung bình đội</span>
                   <strong>{formatCapacityValue(effectiveCapacityMetric, salesCapacity.teamAverage)}</strong>
-                  <small>{effectiveCapacityMetric === 'revenuePerHour'
-                    ? `${formatNumber(salesCapacity.totalHours)} giờ công`
-                    : `${formatNumber(salesCapacity.totalShifts)} ca có check-in`}</small>
+                  <small>{effectiveCapacityMetric === 'revenuePerMonth'
+                    ? `${formatNumber(salesCapacity.totalMonths)} lượt tháng có đi làm`
+                    : `${formatNumber(salesCapacity.totalDays)} ngày công`}</small>
                 </article>
                 <article className="total">
                   <span>Thưởng KPI</span>
@@ -3012,7 +3019,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 summary={salesCapacity}
                 metric={effectiveCapacityMetric}
                 onMetricChange={setCapacityMetric}
-                hasHours={capacityHasHours}
+                hasMonths={capacityHasMonths}
                 scopeLabel={competitionRankingTitle}
               />
 
@@ -3022,7 +3029,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               <div className="competition-poster-toggle">
                 <div>
                   <strong>Ảnh thi đua (gửi Zalo)</strong>
-                  <small>Ảnh luôn lấy TOP 10 nhân viên theo tháng {rankingPeriod} theo đúng bộ lọc phía trên. Không cần mở xem trước vẫn xuất được.</small>
+                  <small>TOP 10 tháng {rankingPeriod}</small>
                 </div>
                 <button type="button" onClick={() => setCompetitionPosterOpen((current) => !current)} aria-expanded={competitionPosterOpen}>
                   {competitionPosterOpen ? 'Ẩn xem trước' : 'Xem trước ảnh'}
@@ -3038,7 +3045,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 />
               </div>
 
-              <p className="commission-note">KPI chỉ tính cho staff/ca trưởng có chi nhánh hợp lệ. Thưởng KPI ngày/tuần dùng chung công thức với sheet "KPI theo tên từng ngày" trong file Excel bảng công.</p>
             </section>
           )}
 
@@ -4051,9 +4057,6 @@ function CompetitionClassificationTable({
     <div className="competition-classification-title">
       <div>
         <h3>{title} · Xếp hạng doanh thu</h3>
-        <p>{showReward
-          ? 'Top doanh thu không tự phát sinh thưởng; thưởng chỉ có khi đạt ngưỡng KPI ngày/tuần.'
-          : 'Bảng này xếp doanh thu ca do ca trưởng phụ trách, không phải thưởng KPI cá nhân.'}</p>
       </div>
       <small>{totalRows} người có doanh thu</small>
     </div>
@@ -4104,7 +4107,7 @@ function CompetitionClassificationTable({
               {row.detail || `${formatNumber(row.soldQuantity)} sản phẩm`}
               <small>
                 {mode === 'leaders' ? `${formatNumber(row.shiftCount)} ca vận hành` : `${formatNumber(row.shiftCount)} ca có check-in`}
-                {row.totalHours > 0 ? ` · ${formatDecimalHoursAsDuration(row.totalHours)}` : ''}
+                {row.dayCount > 0 ? ` · ${formatNumber(row.dayCount)} ngày` : ''}
               </small>
             </span>
             <button
@@ -4126,7 +4129,7 @@ function CompetitionClassificationTable({
           >
             <b>{capacity?.measured ? formatCapacityValue(capacityMetric, capacity.value) : '—'}</b>
             <small>{!capacity?.measured
-              ? 'Chưa có ca/giờ công để tính trung bình'
+              ? 'Chưa có ngày công để tính trung bình'
               : teamAverage > 0
                 ? `${capacity.teamRatio >= 100 ? '+' : '−'}${formatNumber(Math.abs(capacity.teamRatio - 100))}% so với TB đội`
                 : 'Chưa đủ dữ liệu so sánh'}</small>
@@ -4320,12 +4323,12 @@ function receiptLineSummary(lines: SalesReceipt['lines']) {
 }
 
 function formatCapacityValue(metric: SalesCapacityMetric, value: number) {
-  return metric === 'quantityPerShift' ? `${formatNumber(value)} sản phẩm` : formatMoney(value)
+  return metric === 'quantityPerDay' ? `${formatNumber(value)} sản phẩm` : formatMoney(value)
 }
 
 /**
- * Bảng thi đua xếp theo TỔNG doanh thu nên người làm nhiều ca luôn đứng trên.
- * Khối này trả lời câu hỏi khác: "một ca (hoặc một giờ công) của người này bán
+ * Bảng thi đua xếp theo TỔNG doanh thu nên người làm nhiều ngày luôn đứng trên.
+ * Khối này trả lời câu hỏi khác: "một NGÀY (hoặc một THÁNG) của người này bán
  * được bao nhiêu" — biểu đồ so sánh với mốc trung bình của cả đội.
  *
  * 07/08/2026: khối này TỪNG có thêm 4 thẻ tổng và một danh sách đầy đủ, tức là
@@ -4338,13 +4341,13 @@ function EmployeeSalesCapacityBoard({
   summary,
   metric,
   onMetricChange,
-  hasHours,
+  hasMonths,
   scopeLabel,
 }: {
   summary: SalesCapacitySummary
   metric: SalesCapacityMetric
   onMetricChange: (metric: SalesCapacityMetric) => void
-  hasHours: boolean
+  hasMonths: boolean
   scopeLabel: string
 }) {
   const chartRows = summary.measuredRows.slice(0, 8)
@@ -4357,21 +4360,18 @@ function EmployeeSalesCapacityBoard({
       <div>
         <span className="eyebrow dark">NĂNG SUẤT BÁN HÀNG</span>
         <h3>Khả năng bán trung bình của một nhân viên</h3>
-        <p>
-          {scopeLabel} · lấy doanh thu chia cho số ca có check-in (hoặc giờ công thực tế) nên người làm ít ca vẫn
-          so sánh được với người làm nhiều ca. Chỉ tính nhân sự có doanh thu trong kỳ đang lọc.
-        </p>
+        <p>{scopeLabel}</p>
       </div>
       <div className="capacity-metric-switch" role="group" aria-label="Chỉ số năng suất">
         {SALES_CAPACITY_METRICS.map((item) => {
-          const disabled = item.needsHours && !hasHours
+          const disabled = item.perMonth && !hasMonths
           return <button
             key={item.id}
             type="button"
             className={metric === item.id ? 'is-active' : ''}
             aria-pressed={metric === item.id}
             disabled={disabled}
-            title={disabled ? 'Bảng ca trưởng chưa có giờ công chấm công nên không tính được chỉ số này.' : item.hint}
+            title={disabled ? 'Kỳ đang xem chỉ có một ngày nên chưa tính được trung bình theo tháng.' : item.hint}
             onClick={() => onMetricChange(item.id)}
           >{item.label}</button>
         })}
@@ -4410,10 +4410,7 @@ function EmployeeSalesCapacityBoard({
             ))}
           </div>
           <p className="capacity-chart-note">
-            Cột xanh lá là người bán trên mức trung bình đội, cột xám là dưới mức. Vạch đứt là mốc trung bình
-            {' '}{formatCapacityValue(metric, summary.teamAverage)}. Biểu đồ chỉ vẽ {chartRows.length} người dẫn đầu
-            ({aboveAverage}/{summary.measuredRows.length} người trên mức trung bình) — số của từng người nằm ở cột
-            "{salesCapacityMetricLabel(metric)}" trong bảng xếp hạng phía trên.
+            Vạch đứt = trung bình đội · {aboveAverage}/{summary.measuredRows.length} người trên mức
           </p>
         </div>
       </>}
@@ -4693,6 +4690,7 @@ function buildCompetitionRows(
   commissionRows: ReturnType<typeof buildCommissionRows>,
   attendanceRecords: AttendanceRecord[],
   employees: EmployeeProfile[],
+  registrations: ShiftRegistration[] = [],
 ) {
   const rows = new Map<string, {
     employeeKey: string
@@ -4704,6 +4702,8 @@ function buildCompetitionRows(
     commission: number
     totalHours: number
     shiftCount: number
+    dayCount: number
+    monthCount: number
     role: Role
     targetRevenue: number
     progress: number
@@ -4714,7 +4714,7 @@ function buildCompetitionRows(
     employee.branchId === branchId
     && (employee.id === employeeKey || normalizeName(employee.name) === normalizeName(employeeName))
   )
-  for (const attendance of buildCompetitionAttendanceMetrics(attendanceRecords)) {
+  for (const attendance of buildCompetitionAttendanceMetrics(attendanceRecords, registrations)) {
     const employee = employeeFor(attendance.branchId, attendance.employeeKey, attendance.employeeName)
     const key = `${attendance.branchId}-${attendance.employeeKey}`
     const existing = rows.get(key)
@@ -4728,6 +4728,8 @@ function buildCompetitionRows(
       commission: existing?.commission || 0,
       totalHours: attendance.totalHours,
       shiftCount: attendance.shiftCount,
+      dayCount: attendance.dayCount,
+      monthCount: attendance.monthCount,
       role: employee?.role || 'staff',
       targetRevenue: existing?.targetRevenue || 0,
       progress: existing?.progress || 0,
@@ -4750,6 +4752,8 @@ function buildCompetitionRows(
       commission: row.commission,
       totalHours: existing?.totalHours || 0,
       shiftCount: existing?.shiftCount || 0,
+      dayCount: existing?.dayCount || 0,
+      monthCount: existing?.monthCount || 0,
       role: employee?.role || 'staff',
       targetRevenue: row.targetQuantity,
       progress: row.progress,

@@ -770,6 +770,17 @@ Hai kỳ dữ liệu khác nhau trong cùng một màn ⇒ khối 2 và khối 4
 - **Sổ phát sinh kho: phân trang thật.** `Pagination` (25/50/100, mặc định 50) + chip lọc theo loại phiếu (chỉ hiện loại có dữ liệu, kèm số đếm) + tìm không dấu theo tên/SKU/ghi chú. Bản cũ render MỌI phiếu của kỳ trong một khối — một chi nhánh ~90 phiếu/ngày.
 - Thanh tìm/chip dùng chung: `.admin-stock-filterbar`, `.admin-stock-search`, `.admin-stock-chips`, `.admin-ledger-filterbar`.
 
+### Bổ sung cùng ngày — bỏ chữ thừa + đổi mẫu số năng suất sang NGÀY/THÁNG
+> Chủ quán: "bỏ đi phần mô tả rườm rà" + "khả năng bán trung bình là tính tiền nhân viên đó bán trung bình bao nhiêu trên 1 tháng… bán mỗi ngày 100, cuối tuần 200 — tính theo tháng là bao nhiêu, theo ngày là bao nhiêu".
+
+- **Gỡ hết khối văn giải thích** trong màn Thi đua: `kpi-reading-guide` (xoá cả CSS), đoạn `<p>` dưới "Phân loại thi đua", `<p>` ở tiêu đề bảng xếp hạng, hai `commission-note`, mô tả dài của khối năng suất và `capacity-chart-note`. Thông tin thật sự cần giữ được chuyển sang chỗ đọc nhanh hơn: khác biệt kỳ dữ liệu của file "KPI theo ngày" nay là `title` của chính nút xuất; ý "thưởng chỉ có khi đạt ngưỡng" nằm ở thẻ tổng *Thưởng KPI* và dòng phụ ô thưởng từng người.
+- **`SalesCapacityMetric` đổi hẳn mẫu số:** `revenuePerShift|quantityPerShift|revenuePerHour` → **`revenuePerDay|quantityPerDay|revenuePerMonth`**. Lý do nghiệp vụ: **một người trực 2 ca trong cùng một ngày vẫn chỉ bán trong MỘT ngày** — chia theo ca làm loãng số. Muốn tách ngày thường/cuối tuần thì dùng sẵn bộ lọc *Loại ngày*.
+- `competitionFairness.buildCompetitionAttendanceMetrics(records, registrations?)` trả thêm `dayCount`/`monthCount` (đếm **distinct** `workDate`). **Truyền `registrations`** — ngày công lấy theo `workDate` của đăng ký ca, không suy từ `checkInTime`; ca qua nửa đêm mà suy từ giờ check-in là đếm nhầm sang hôm sau (đúng lớp lỗi BUG-109).
+- Bảng **Ca trưởng theo tháng** không có bản ghi chấm công ⇒ `dayCount`/`monthCount` lấy từ **distinct `businessDate` của `bag_shift_sessions`** mà người đó đứng tên.
+- Thi đua **"Theo ngày"** chỉ có một ngày trong kỳ ⇒ nút *Doanh thu / tháng* bị khoá và tự quay về *Doanh thu / ngày* (`capacityHasMonths`), giống cách `hasHours` từng khoá chỉ số theo giờ.
+- Dòng phụ cột *Kết quả* đổi từ giờ công sang **số ngày** để khớp mẫu số mới.
+- Test `test-employee-sales-capacity` viết lại theo mẫu số ngày/tháng, có case **4 ca / 2 ngày** khoá đúng quy tắc "mẫu số là ngày, không phải ca".
+
 ### QUY TẮC rút ra
 > **Một màn = một kỳ dữ liệu.** Nếu buộc phải có khối lấy khoảng ngày khác (ở đây là nút xuất Excel theo bộ lọc đầu trang) thì phải nói thẳng ra màn hình. Và **đừng liệt kê lại cùng một nhóm người bằng danh sách thứ hai** chỉ vì cần một cách xếp khác — thêm cột hoặc thêm nút sắp xếp.
 
