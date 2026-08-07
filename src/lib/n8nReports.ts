@@ -4,6 +4,8 @@ import type { AppUser } from '../types'
 
 export type N8nReportKind = 'shift-1' | 'shift-2' | 'day'
 const N8N_API_TIMEOUT_MS = 25_000
+/** Khoảng nghỉ giữa hai lượt gửi ảnh (main@7f4e914). */
+const N8N_REPORT_GAP_MS = 3_000
 
 export interface N8nReportImage {
   kind: N8nReportKind
@@ -128,7 +130,13 @@ export async function queueN8nReportImages(user: AppUser, input: QueueInput): Pr
 
   const jobs: Record<string, Record<string, unknown>> = {}
   const failures: string[] = []
+  // Độ trễ 3 giây GIỮA hai ảnh (giữ từ nhánh main, commit 7f4e914): workflow n8n
+  // dựng ảnh mất vài giây, bắn hai lượt sát nhau thì ảnh thứ hai (Tổng ngày) dễ
+  // trượt. Không áp cho ảnh ĐẦU TIÊN — chờ vô ích làm ca trưởng tưởng treo.
+  let isFirstReport = true
   for (const report of input.reports) {
+    if (!isFirstReport) await new Promise((resolve) => window.setTimeout(resolve, N8N_REPORT_GAP_MS))
+    isFirstReport = false
     let outcome: SingleReportOutcome = { ok: false, message: 'Chưa gửi.' }
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       outcome = await postSingleReport(user, input, report, accessToken)

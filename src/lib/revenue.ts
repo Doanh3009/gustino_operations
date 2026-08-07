@@ -18,6 +18,17 @@ export interface DailyRevenueRow {
   hasRevenueSummary?: boolean
 }
 
+// QUY TẮC ƯU TIÊN: sales_receipts (POS - nguồn chân lý) > report_snapshots
+// (chỉ cho ngày không có hóa đơn POS) > bag_allocations > stock_movements.
+// Báo cáo ca trưởng nộp giữa buổi/nộp thiếu sẽ không bao giờ đè lên số máy.
+// LƯU Ý: logic này được copy tay sang api/n8n/revenue.ts — sửa ở đây thì
+// NHỚ đồng bộ bên đó.
+//
+// 07/08/2026 (gộp `main` vào nhánh kho): luật này THAY luôn lớp "snapshot làm
+// nền + cộng thêm hóa đơn phát sinh sau bản kê" của BUG-104/BUG-119. Ngày nào
+// có hóa đơn POS thì đọc thẳng POS ⇒ **không còn đường nào cộng lặp Ca 2** nữa,
+// nên `liveReceiptRowsAfterSnapshots` bị gỡ. `snapshotStatementAt` GIỮ LẠI vì
+// vẫn cần mốc thời gian đúng để sắp xếp và cho ngày chỉ có snapshot.
 export function buildDailyRevenueRows(
   snapshots: ReportSnapshot[],
   allocations: BagAllocation[],
@@ -30,47 +41,25 @@ export function buildDailyRevenueRows(
   } = {},
 ) {
   const snapshotRows = latestSnapshotRows(snapshots, options)
-  // A partial/legacy snapshot can exist before its summary is populated. It must
-  // not hide authoritative POS receipts for the same branch/day.
-  const snapshotKeys = new Set(snapshotRows
+  const receiptRows = liveReceiptRows(options.receipts || [], options)
+  const receiptKeys0 = new Set(receiptRows.map((row) => `${row.branchId}|${row.reportDate}`))
+
+  // POS receipts là nguồn chân lý. Snapshot chỉ hiển thị cho ngày không có hóa đơn.
+  const displayedSnapshotRows = snapshotRows.filter(
+    (row) => !receiptKeys0.has(`${row.branchId}|${row.reportDate}`),
+  )
+  const snapshotKeys = new Set(displayedSnapshotRows
     .filter((row) => row.hasRevenueSummary)
     .map((row) => `${row.branchId}|${row.reportDate}`))
-  const receiptRows = liveReceiptRows(options.receipts || [], options)
-    .filter((row) => !snapshotKeys.has(`${row.branchId}|${row.reportDate}`))
-  // A report is a point-in-time statement. POS receipts written after that
-  // statement are authoritative live revenue until the day is re-finalized.
-  // Keeping the snapshot baseline and adding only the later receipts avoids
-  // double counting receipts that the saved report already includes.
-  const postSnapshotReceiptRows = liveReceiptRowsAfterSnapshots(
-    options.receipts || [],
-    snapshotRows.filter((row) => row.hasRevenueSummary),
-    options,
-  )
-  const postSnapshotReceiptsByKey = new Map(
-    postSnapshotReceiptRows.map((row) => [`${row.branchId}|${row.reportDate}`, row]),
-  )
-  const reconciledSnapshotRows = snapshotRows.map((row) => {
-    const liveDelta = postSnapshotReceiptsByKey.get(`${row.branchId}|${row.reportDate}`)
-    if (!liveDelta) return row
-    return {
-      ...row,
-      revenue: row.revenue + liveDelta.revenue,
-      totalSold: row.totalSold + liveDelta.totalSold,
-      createdAt: liveDelta.createdAt > row.createdAt ? liveDelta.createdAt : row.createdAt,
-    }
-  })
-  const receiptRowKeys = new Set(receiptRows.map((row) => `${row.branchId}|${row.reportDate}`))
-  const displayedSnapshotRows = reconciledSnapshotRows.filter((row) =>
-    row.hasRevenueSummary || !receiptRowKeys.has(`${row.branchId}|${row.reportDate}`),
-  )
-  const receiptKeys = new Set([...snapshotKeys, ...receiptRows.map((row) => `${row.branchId}|${row.reportDate}`)])
+
+  const receiptKeys = new Set([...receiptKeys0, ...snapshotKeys])
   const liveRows = liveAllocationRows(allocations, options)
     .filter((row) => !receiptKeys.has(`${row.branchId}|${row.reportDate}`))
   const liveKeys = new Set([...receiptKeys, ...liveRows.map((row) => `${row.branchId}|${row.reportDate}`)])
   const movementRows = liveMovementRows(movements, options)
     .filter((row) => !liveKeys.has(`${row.branchId}|${row.reportDate}`))
 
-  return [...displayedSnapshotRows, ...receiptRows, ...liveRows, ...movementRows]
+  return [...receiptRows, ...displayedSnapshotRows, ...liveRows, ...movementRows]
     .sort((a, b) => b.reportDate.localeCompare(a.reportDate) || b.createdAt.localeCompare(a.createdAt))
 }
 
@@ -151,20 +140,6 @@ function liveReceiptRows(
     rows.set(key, current)
   })
   return Array.from(rows.values())
-}
-
-function liveReceiptRowsAfterSnapshots(
-  receipts: SalesReceipt[],
-  snapshots: DailyRevenueRow[],
-  options: { branchId?: string; from?: string; to?: string },
-) {
-  const snapshotCreatedAt = new Map(
-    snapshots.map((row) => [`${row.branchId}|${row.reportDate}`, row.createdAt]),
-  )
-  return liveReceiptRows(receipts.filter((receipt) => {
-    const createdAt = snapshotCreatedAt.get(`${receipt.branchId}|${receipt.businessDate}`)
-    return Boolean(createdAt && receipt.createdAt > createdAt)
-  }), options)
 }
 
 function liveAllocationRows(

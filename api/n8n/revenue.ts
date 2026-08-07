@@ -4,8 +4,11 @@ declare const process: { env: Record<string, string | undefined> }
 
 // ---------------------------------------------------------------------------
 // API dành riêng cho n8n (hoặc bất kỳ hệ thống ngoài nào) lấy dữ liệu doanh
-// thu theo đúng logic gộp mà Dashboard Admin đang dùng (report_snapshots ưu
-// tiên cao nhất -> sales_receipts -> bag_allocations -> stock_movements).
+// thu theo đúng logic gộp mà Dashboard Admin đang dùng.
+//
+// QUY TẮC ƯU TIÊN (đồng bộ với src/lib/revenue.ts):
+//   sales_receipts (POS - nguồn chân lý) -> report_snapshots (chỉ cho ngày
+//   không có hóa đơn POS) -> bag_allocations -> stock_movements.
 //
 // LƯU Ý QUAN TRỌNG: File này KHÔNG import bất kỳ thứ gì (giá trị) từ thư mục
 // `src/` — chỉ tự chứa (self-contained) trong `api/`. Vercel Node Functions
@@ -228,7 +231,8 @@ function liveAllocationRows(allocations: any[], priceMap: Map<string, number>): 
     })
     if (sold <= 0) return
     const key = `${allocation.branch_id}|${reportDate}`
-    const current: DailyRevenueRow & { issued: number } = rows.get(key) || {      id: `live-${key}`,
+    const current: DailyRevenueRow & { issued: number } = rows.get(key) || {
+      id: `live-${key}`,
       branchId: allocation.branch_id,
       reportDate,
       revenue: 0,
@@ -296,7 +300,10 @@ function liveMovementRows(movements: any[], priceMap: Map<string, number>): Dail
   return Array.from(rows.values())
 }
 
-// ---- Gộp theo đúng thứ tự ưu tiên: report > receipt > allocation > movement
+// ---- Gộp theo thứ tự ưu tiên MỚI: receipt (POS) > report > allocation > movement
+// POS receipts là nguồn chân lý. Snapshot báo cáo ca chỉ dùng cho ngày
+// KHÔNG có hóa đơn POS — để báo cáo tay nộp giữa buổi/nộp thiếu không bao
+// giờ đè lên số máy. Đồng bộ với src/lib/revenue.ts.
 
 function buildDailyRevenueRows(
   snapshotRows: DailyRevenueRow[],
@@ -304,26 +311,29 @@ function buildDailyRevenueRows(
   allocationRows: DailyRevenueRow[],
   movementRows: DailyRevenueRow[],
 ): DailyRevenueRow[] {
-  // Chỉ coi là "đã có báo cáo chính thức" khi snapshot thực sự có dữ liệu
-  // (revenue > 0 hoặc totalSold > 0). Snapshot rỗng (placeholder) sẽ KHÔNG
-  // chặn dữ liệu live fallback xuống nữa.
-  const meaningfulSnapshots = snapshotRows.filter((row) => row.revenue > 0 || row.totalSold > 0)
-  const snapshotKeys = new Set(meaningfulSnapshots.map((row) => `${row.branchId}|${row.reportDate}`))
+  const receiptKeys0 = new Set(receiptRows.map((row) => `${row.branchId}|${row.reportDate}`))
 
-  const filteredReceipts = receiptRows.filter((row) => !snapshotKeys.has(`${row.branchId}|${row.reportDate}`))
-  const receiptKeys = new Set([...snapshotKeys, ...filteredReceipts.map((row) => `${row.branchId}|${row.reportDate}`)])
-  const filteredAllocations = allocationRows.filter((row) => !receiptKeys.has(`${row.branchId}|${row.reportDate}`))
-  const allocationKeys = new Set([...receiptKeys, ...filteredAllocations.map((row) => `${row.branchId}|${row.reportDate}`)])
-  const filteredMovements = movementRows.filter((row) => !allocationKeys.has(`${row.branchId}|${row.reportDate}`))
+  // Snapshot chỉ hiển thị cho ngày không có hóa đơn POS.
+  const displayedSnapshots = snapshotRows.filter(
+    (row) => !receiptKeys0.has(`${row.branchId}|${row.reportDate}`),
+  )
+  const meaningfulSnapshotKeys = new Set(displayedSnapshots
+    .filter((row) => row.revenue > 0 || row.totalSold > 0)
+    .map((row) => `${row.branchId}|${row.reportDate}`))
 
-  const emptySnapshots = snapshotRows.filter((row) => !(row.revenue > 0 || row.totalSold > 0))
-  const emptySnapshotsWithoutLiveData = emptySnapshots.filter(
-    (row) => !filteredReceipts.some((r) => r.branchId === row.branchId && r.reportDate === row.reportDate)
-      && !filteredAllocations.some((r) => r.branchId === row.branchId && r.reportDate === row.reportDate)
-      && !filteredMovements.some((r) => r.branchId === row.branchId && r.reportDate === row.reportDate),
+  const receiptKeys = new Set([...receiptKeys0, ...meaningfulSnapshotKeys])
+  const filteredAllocations = allocationRows.filter(
+    (row) => !receiptKeys.has(`${row.branchId}|${row.reportDate}`),
+  )
+  const allocationKeys = new Set([
+    ...receiptKeys,
+    ...filteredAllocations.map((row) => `${row.branchId}|${row.reportDate}`),
+  ])
+  const filteredMovements = movementRows.filter(
+    (row) => !allocationKeys.has(`${row.branchId}|${row.reportDate}`),
   )
 
-  return [...meaningfulSnapshots, ...filteredReceipts, ...filteredAllocations, ...filteredMovements, ...emptySnapshotsWithoutLiveData]
+  return [...receiptRows, ...displayedSnapshots, ...filteredAllocations, ...filteredMovements]
     .sort((a, b) => b.reportDate.localeCompare(a.reportDate) || b.createdAt.localeCompare(a.createdAt))
 }
 
