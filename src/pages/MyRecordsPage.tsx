@@ -18,7 +18,6 @@ export function MyRecordsPage({ user, onNavigate }: { user: AppUser; onNavigate:
           <div>
             <span className="eyebrow dark">KHO BÁO CÁO</span>
             <h1>Báo cáo đã chốt</h1>
-            <p>Kho lưu trữ báo cáo theo ngày, tháng, năm và chi nhánh. Lịch sử cá nhân chỉ dành cho nhân viên và ca trưởng.</p>
           </div>
         </div>
         <ReportArchiveContent user={user} />

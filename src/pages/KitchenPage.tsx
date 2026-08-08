@@ -239,7 +239,6 @@ export function KitchenPage({ user }: Props) {
           <div>
             <span className="eyebrow dark">TRA CỨU ĐƠN ĐẶT HÀNG</span>
             <h2>Danh sách đơn có phân loại</h2>
-            <p>Coi lại ngày đặt, lịch nhận và trạng thái bếp của tất cả đơn trong phạm vi được phép.</p>
           </div>
           <strong>{kitchenHistoryRequests.length} đơn</strong>
         </div>

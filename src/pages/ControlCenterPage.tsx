@@ -856,7 +856,6 @@ export function ControlCenterPage({ user }: { user: AppUser }) {
         <div>
           <span className="eyebrow dark">THIẾT LẬP THEO BA</span>
           <h1>Trung tâm quản trị vận hành</h1>
-          <p>Dữ liệu nền, phân quyền động và nhật ký thao tác cho hệ thống nội bộ.</p>
         </div>
         <div className="control-alert-grid">
           <article><span>SKU cấu hình</span><strong>{products.length}</strong><small>{customProductCount} thêm thủ công</small></article>

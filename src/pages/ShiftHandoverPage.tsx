@@ -572,7 +572,6 @@ export function ShiftHandoverPage({
         <div>
           <span className="eyebrow dark">BÀN GIAO CA</span>
           <h1>Nhận ca - xem bán hàng - chốt tồn</h1>
-          <p>Ca trưởng ghi nhận tồn thành phẩm cuối ca. Nhân viên bán hàng bán trực tiếp theo menu POS.</p>
         </div>
         <div className="handover-heading-actions">
           <span className={`handover-shift-chip ${openSession ? 'open' : ''}`}>

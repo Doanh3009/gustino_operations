@@ -172,7 +172,6 @@ export function MyTimesheetPage({ user }: Props) {
         <div>
           <span className="eyebrow dark">XEM CÔNG</span>
           <h1>Công của tôi · {monthNumber}/{yearNumber}</h1>
-          <p>Bấm vào từng ngày để xem giờ vào, giờ ra và tổng giờ làm của ngày đó.</p>
         </div>
         <div className="tsheet-month-nav" aria-label="Chọn tháng">
           <button type="button" onClick={() => changeMonth(-1)} aria-label="Tháng trước">‹</button>

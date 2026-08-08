@@ -48,7 +48,15 @@ assert.match(shell, /management-workspace/)
 assert.match(shell, /pos-workspace/)
 assert.match(styles, /Unified management\/POS visual system/)
 assert.match(styles, /\.management-workspace \.management-function-detail/)
-assert.match(styles, /\.pos-workspace \.checkout-button/)
+// Đổi tên từ `.checkout-button` sang `.pos-checkout-button`: tên cũ trùng đúng nút
+// Check-out của màn Chấm công và ĐÈ lên nó (cao 58px, chữ 18px, lề 16px, tràn khỏi
+// cột thao tác). Hai nút khác nghiệp vụ thì không được dùng chung một tên lớp.
+assert.match(styles, /\.pos-workspace \.pos-checkout-button/)
+assert.doesNotMatch(
+  styles,
+  /^\.checkout-button \{[^}]*min-height: 58px/m,
+  'Nút chốt hoá đơn POS không được dùng lại tên lớp của nút Check-out chấm công.',
+)
 assert.match(admin, /if \(section === 'overview'\) return new Set<ManagementDataKey>\(ALL_MANAGEMENT_DATA\)/)
 assert.doesNotMatch(admin, /if \(!focused \|\| section === 'overview'\)/)
 

@@ -321,7 +321,6 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
         <div>
           <span className="eyebrow dark">BÁN HÀNG</span>
           <h1>POS bán hàng PG</h1>
-          <p>Chọn món, nhập số lượng và tạo hóa đơn nội bộ. Nhân viên bán trực tiếp theo menu đang hiển thị.</p>
         </div>
         <div className="pos-topbar-actions">
           <label className="pos-date-filter">Ngày
@@ -451,7 +450,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
           {/* Nhân viên KHÔNG thu tiền: đã bỏ hẳn ô nhập tiền + chọn phương thức
               thanh toán. Chỉ xác nhận món + số lượng, hệ thống tự tính doanh thu
               theo giá cấu hình trong database. */}
-          <button className="checkout-button" disabled={!cartLines.length || checkoutBusy} onClick={() => void checkout()}>
+          <button className="pos-checkout-button" disabled={!cartLines.length || checkoutBusy} onClick={() => void checkout()}>
             {checkoutBusy ? 'Đang lưu...' : 'Xác nhận bán hàng'}
           </button>
 

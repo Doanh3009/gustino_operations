@@ -665,19 +665,19 @@ function SchedulePanel({
             <span>Vào: <strong>{formatTime(record.checkInTime)}</strong></span>
             <span>Ra: <strong>{record.checkOutTime ? formatTime(record.checkOutTime) : 'Chưa check-out'}</strong></span>
             {isOvertime && record.checkOutTime && <span>Giờ tăng ca: <strong>{formatWorkDurationBetween(record.checkInTime, record.checkOutTime)}</strong></span>}
-            {record.checkInAddress && <span className="attendance-location">Vị trí: <strong>{record.checkInAddress}</strong></span>}
-            {record.checkOutAddress && <span className="attendance-location">Vị trí ra: <strong>{record.checkOutAddress}</strong></span>}
+            {record.checkInAddress && <span className="attendance-location">Vị trí: <strong title={record.checkInAddress}>{record.checkInAddress}</strong></span>}
+            {record.checkOutAddress && <span className="attendance-location">Vị trí ra: <strong title={record.checkOutAddress}>{record.checkOutAddress}</strong></span>}
           </div>}
           {record && selfiePreviews[registration.id] && (
             <figure className="attendance-selfie-preview">
               <img src={selfiePreviews[registration.id]} alt="Ảnh chấm công đã đóng dấu" />
-              <figcaption>Ảnh chấm công vừa lưu</figcaption>
+              <figcaption>Ảnh đã lưu</figcaption>
             </figure>
           )}
           {localPreview && (
             <figure className="attendance-selfie-preview">
               <img src={localPreview} alt="Ảnh chuẩn bị chấm công" />
-              <figcaption>Ảnh sắp chấm - chụp lại nếu bị rung/mờ</figcaption>
+              <figcaption>Ảnh sắp chấm</figcaption>
             </figure>
           )}
         </div>
@@ -707,7 +707,6 @@ function SchedulePanel({
                   }}>{pendingDoubleCheckIn.autoClosing ? 'Tải lại trạng thái' : 'Về ca chưa check-out'}</button>
                 </div>
               )}
-              {busyId === registration.id && <small className="attendance-busy-hint">Đang xử lý, vui lòng giữ máy vài giây…</small>}
             </>}
             {canCheckOut && <>
               <label className="selfie-button checkout-selfie-button">
@@ -738,7 +737,6 @@ function SchedulePanel({
                   </button>
                 </div>
               )}
-              {busyId === record?.id && <small className="attendance-busy-hint">Đang xử lý, vui lòng giữ máy vài giây…</small>}
             </>}
             {checkOutTooEarly && (
               <small>Check-out mở lúc {checkInWindow.checkOutOpensAt.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} (30 phút trước giờ ra).</small>
@@ -1534,7 +1532,6 @@ function SharedScheduleBoard({
         <div>
           <span className="eyebrow dark">LỊCH CHUNG THEO CHI NHÁNH</span>
           <h2>Đăng ký ca trong tuần</h2>
-          <p>Thẻ của bạn được ghim lên đầu — chọn khung giờ cho từng ngày là xong. Nhân viên chỉ sửa thẻ của mình; Quản lý chỉnh được toàn bảng.</p>
           <div className="schedule-live-users"><i />{liveUsers.length ? `${liveUsers.join(', ')} đang xem lịch` : 'Lịch tự đồng bộ khi có người đăng ký'}</div>
           {canSetupShifts && (
             <button className="secondary-button schedule-setup-button" onClick={() => setSetupOpen((value) => !value)}>

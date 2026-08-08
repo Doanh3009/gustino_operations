@@ -1668,16 +1668,30 @@ button:disabled {
 .attendance-status.pending { background: #fff3d5; color: #95660e; }
 .attendance-status.approved { background: #eaf4cf; color: #58760b; }
 .attendance-status.rejected { background: #ffedf1; color: #b92749; }
-.attendance-times { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 10px; color: var(--muted); font-size: 9px; }
+.attendance-times { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; color: var(--muted); font-size: 9px; }
 .attendance-times strong { color: var(--navy); }
-.attendance-location { flex-basis: 100%; line-height: 1.5; }
-.shift-actions { min-width: 155px; display: grid; gap: 8px; justify-items: stretch; }
+/* Địa chỉ GPS dài hơn thẻ ca rất nhiều ("Lotte Mart, 23 Tháng 10, Phường Tây Nha
+   Trang, Nha Trang") — để nó xuống hàng là thẻ cao gấp đôi và lệch hẳn so với các
+   thẻ ca khác. Cắt một dòng, giữ đủ text trong tooltip. */
+.attendance-location { flex-basis: 100%; min-width: 0; line-height: 1.5; }
+.attendance-location strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shift-actions { min-width: 155px; display: grid; gap: 8px; align-content: start; justify-items: stretch; }
 .shift-actions > small { max-width: 150px; color: var(--muted); font-size: 8px; text-align: center; }
 .attendance-busy-hint { max-width: 160px; color: var(--green); font-size: 10px; font-weight: 700; text-align: center; animation: attendanceBusyPulse 1.2s ease-in-out infinite; }
 @keyframes attendanceBusyPulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+/* Nút "Chụp ảnh" và nút Check-in/Check-out đứng cạnh nhau nên phải CÙNG chiều cao,
+   cùng bo góc, cùng cỡ chữ — trước đây lệch 2px và lệch cả kiểu bo. */
+.selfie-button,
+.shift-actions .primary-button,
+.shift-actions .secondary-button {
+  min-height: 44px;
+  border-radius: 13px;
+  font-size: 10px;
+  padding: 0 13px;
+}
 .selfie-button {
-  min-height: 42px; display: grid; place-items: center; padding: 0 13px; border: 1px dashed #a7bf59;
-  border-radius: 12px; background: #f5f9e8; color: #57730d; font-size: 9px; font-weight: 900; cursor: pointer;
+  display: grid; place-items: center; border: 1px dashed #a7bf59;
+  background: #f5f9e8; color: #57730d; font-weight: 900; text-align: center; cursor: pointer;
 }
 .selfie-button input { display: none; }
 .attendance-selfie-preview {
@@ -4720,7 +4734,9 @@ textarea { min-height: 100px; resize: vertical; }
 /* Đơn đã gửi: gom theo ngày, danh sách gọn (không phải card to) */
 .orders-filter-bar {
   display: grid;
-  grid-template-columns: minmax(130px, .75fr) minmax(150px, .8fr) minmax(180px, 1.2fr) auto;
+  /* Xem ghi chú ở `.attendance-adjustment-form`: cột tối thiểu cố định làm thanh
+     lọc tràn khỏi vùng nội dung ngay cả ở khổ 1280px khi có sidebar. */
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   align-items: end;
   gap: 8px;
   margin: 14px 0 12px;
@@ -4822,7 +4838,9 @@ textarea { min-height: 100px; resize: vertical; }
   grid-row: 1 / span 2; grid-column: 2; min-height: 48px; padding: 0 16px;
   border: 0; border-radius: 14px; background: var(--navy); color: #d9f47d; font-weight: 900;
 }
-.kitchen-columns { display: grid; grid-template-columns: 1.15fr 1fr 1fr .9fr; gap: 16px; align-items: start; }
+/* Bảng bếp là 4 cột kanban cạnh nhau — để `align-items: start` thì cột nào ít
+   đơn sẽ thấp hơn hẳn, nhìn như bị lỗi. Kéo đều chiều cao cho thẳng hàng. */
+.kitchen-columns { display: grid; grid-template-columns: 1.15fr 1fr 1fr .9fr; gap: 16px; align-items: stretch; }
 .kitchen-column {
   min-width: 0; border: 1px solid var(--line); border-radius: 20px; background: white;
   padding: 16px; box-shadow: 0 16px 36px rgba(15,31,51,.07);
@@ -4862,10 +4880,13 @@ textarea { min-height: 100px; resize: vertical; }
 .kitchen-history-head h2 { margin: 5px 0; font-size: 25px; letter-spacing: -.03em; }
 .kitchen-history-head p { margin: 0; color: var(--muted); font-size: 12px; }
 .kitchen-history-head > strong { padding: 9px 13px; border-radius: 999px; background: #edf5d2; color: #58750d; white-space: nowrap; }
+/* Cùng lỗi với thanh lọc chấm công: tổng cột tối thiểu 660px + khe, mà khổ 768px
+   chỉ còn 438px cho nội dung ⇒ tràn 262px. Cho xuống hàng thay vì tràn. */
 .kitchen-history-filters {
-  display: grid; grid-template-columns: minmax(150px, .8fr) minmax(145px, .7fr) minmax(145px, .7fr) minmax(220px, 1.2fr) auto;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
   gap: 10px; align-items: end; margin: 18px 0;
 }
+.kitchen-history-filters > * { min-width: 0; }
 .kitchen-history-filters label { display: grid; gap: 6px; color: #637287; font-size: 9px; font-weight: 900; text-transform: uppercase; letter-spacing: .06em; }
 .kitchen-history-filters input, .kitchen-history-filters select { width: 100%; min-width: 0; min-height: 42px; border-radius: 10px; background: white; font-size: 11px; }
 .kitchen-history-filters button { min-height: 42px; }
@@ -5561,12 +5582,12 @@ textarea { min-height: 100px; resize: vertical; }
   border-color: #68a6ff;
   box-shadow: 0 4px 12px rgba(22,119,255,.12);
 }
-.pos-workspace .checkout-button {
+.pos-workspace .pos-checkout-button {
   border-radius: 8px;
   background: var(--workspace-blue);
   box-shadow: 0 5px 14px rgba(22,119,255,.22);
 }
-.pos-workspace .checkout-button:hover { background: var(--workspace-blue-dark); }
+.pos-workspace .pos-checkout-button:hover { background: var(--workspace-blue-dark); }
 
 @media (max-width: 720px) {
   .management-workspace .app-main,
@@ -9600,7 +9621,10 @@ img, svg, video, canvas { max-width: 100%; }
   font-size: 36px;
   line-height: 1;
 }
-.checkout-button {
+/* Nút chốt hoá đơn POS. Trước đây tên là `.checkout-button` — trùng đúng tên nút
+   Check-out của màn Chấm công, mà quy tắc này khai sau nên ĐÈ lên: nút Check-out
+   bị kéo thành khối cao 58px, chữ 18px, lề 16px, tràn khỏi cột thao tác. */
+.pos-checkout-button {
   width: calc(100% - 32px);
   min-height: 58px;
   margin: 0 16px 16px;
@@ -9612,7 +9636,7 @@ img, svg, video, canvas { max-width: 100%; }
   font-weight: 900;
   box-shadow: 0 14px 26px rgba(98,132,18,.22);
 }
-.checkout-button:disabled {
+.pos-checkout-button:disabled {
   opacity: .55;
   box-shadow: none;
 }
@@ -14459,12 +14483,17 @@ body,
   gap: 12px 22px !important;
 }
 /* Attendance adjustment documents + active users */
+/* `repeat(4, minmax(120px, 1fr)) auto` = 4×120 + nút + khe = ~550px BẤT KỂ khung
+   rộng bao nhiêu. Có sidebar thì vùng nội dung ở khổ 768px chỉ còn 446px ⇒ thanh
+   này tràn ra ngoài màn hình 100px, chữ và ô nhập bị cắt. `auto-fit` cho các ô
+   tự xuống hàng khi hẹp, vẫn đủ 4 cột khi rộng. */
 .attendance-adjustment-form {
   display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr)) auto;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
   align-items: end;
 }
+.attendance-adjustment-form > * { min-width: 0; }
 .attendance-adjustment-form label {
   display: grid;
   gap: 6px;
@@ -15291,18 +15320,27 @@ body,
   .competition-ranking-controls { grid-template-columns: 1fr; min-width: 0; width: 100%; }
   .competition-classification-title { align-items: flex-start; flex-direction: column; }
   .competition-classification-head { display: none; }
-  .competition-classification-row {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 10px 14px;
-    padding: 14px;
+  /* MỘT cột trên điện thoại. Bản cũ giữ 2 cột: màn 375px trừ lề còn ~347px, chia
+     đôi ra ~165px/ô mà mỗi ô còn phải chứa nhãn 72px ⇒ chỉ còn ~85px cho số tiền
+     "1.501.000đ" và tên chi nhánh ⇒ dòng nào cũng gãy 2–3 hàng, các thẻ cao thấp
+     khác nhau. Một cột thì nhãn trái - số phải, thẳng hàng và không xuống dòng. */
+  .competition-classification-row,
+  .competition-classification-table.with-reward .competition-classification-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding: 4px 14px 12px;
   }
-  .competition-classification-table.with-reward .competition-classification-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .competition-classification-row > span {
     display: grid;
-    grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
-    gap: 7px;
+    grid-template-columns: 86px minmax(0, 1fr);
+    gap: 10px;
     align-items: center;
+    min-height: 34px;
+    padding: 5px 0;
+    border-bottom: 1px dashed #eef1f5;
+    text-align: right;
   }
+  .competition-classification-row > span:last-child { border-bottom: 0; }
   .competition-classification-row > span::before {
     content: attr(data-label);
     color: #718297;
@@ -15310,19 +15348,25 @@ body,
     font-weight: 900;
     text-transform: uppercase;
     letter-spacing: .05em;
+    text-align: left;
   }
+  /* Số liệu là thứ người ta liếc vào — tuyệt đối không được gãy dòng. */
+  .competition-classification-row > span > b { white-space: nowrap; }
+  .competition-classification-row > span > small { margin-top: 1px; font-size: 9px; line-height: 1.3; }
   .competition-classification-row .competition-classification-person {
-    grid-column: 1 / -1;
-    grid-template-columns: 72px 38px minmax(0, 1fr);
+    grid-template-columns: 86px 32px minmax(0, 1fr);
+    gap: 10px;
+    text-align: left;
   }
   .competition-classification-row .competition-classification-person::before { grid-column: 1; }
-  .competition-classification-person .employee-top-avatar { grid-column: 2; }
-  .competition-classification-person strong { grid-column: 3; }
-  .competition-classification-row .competition-classification-result { grid-column: 1 / -1; align-items: stretch; }
+  .competition-classification-person .employee-top-avatar { flex: 0 0 32px; width: 32px; height: 32px; grid-column: 2; }
+  .competition-classification-person strong { grid-column: 3; font-size: 13px; }
+  .competition-classification-row .competition-classification-result { align-items: stretch; text-align: left; }
   .competition-classification-row .competition-classification-result::before { grid-column: 1; grid-row: 1 / span 2; }
   .competition-classification-row .competition-classification-result > span,
   .competition-classification-row .competition-classification-result > button { grid-column: 2; }
-  .competition-drilldown-trigger { min-height: 40px; text-align: center; }
+  .competition-classification-reward { padding: 5px 0; }
+  .competition-drilldown-trigger { min-height: 36px; margin-top: 6px; text-align: center; }
   .competition-drilldown-panel { padding: 14px; }
   .competition-drilldown-panel > header { align-items: stretch; flex-direction: column; }
   .competition-drilldown-totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -15380,7 +15424,9 @@ body,
 .report-toolbar {
   display: grid !important;
   grid-template-columns: minmax(220px, 1fr) minmax(0, auto) !important;
-  align-items: start !important;
+  /* Tiêu đề chỉ cao 17px còn cụm nút xuống hàng cao tới 159px — canh `start` làm
+     tiêu đề dính mép trên, nhìn như rơi khỏi thanh. Canh giữa cho cân. */
+  align-items: center !important;
   gap: 16px !important;
 }
 .report-toolbar > .report-toolbar-summary {
@@ -18174,36 +18220,9 @@ body { background: #f7f8f5; font-size: 14px; }
 .competition-day-row .ok { color: #4b7a10; font-weight: 900; }
 .competition-day-row .amber { color: #8b6208; font-weight: 900; }
 .competition-day-row .warn { color: #ba3b2a; font-weight: 900; }
-.competition-poster-toggle {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 13px 16px;
-  border: 1px solid #d8e2e7;
-  border-radius: 14px;
-  background: #fbfcfd;
-}
-.competition-poster-toggle > div { min-width: 0; }
-.competition-poster-toggle strong { display: block; color: var(--navy); font-size: 13.5px; }
-.competition-poster-toggle small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-weight: 700; line-height: 1.45; }
-.competition-poster-toggle button {
-  min-height: 40px;
-  padding: 0 16px;
-  border: 1px solid #cbd7df;
-  border-radius: 999px;
-  background: #fff;
-  color: var(--navy);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 850;
-  cursor: pointer;
-}
 /* Poster PHẢI ở lại trong DOM và có kích thước thật thì html2canvas mới chụp
-   được — thu gọn = đẩy ra ngoài khung nhìn, KHÔNG dùng display:none. */
+   được — luôn nằm ngoài khung nhìn, KHÔNG dùng display:none. */
 .competition-poster-stage { position: absolute; left: -10000px; top: 0; width: 1080px; }
-.competition-poster-stage.is-open { position: static; width: auto; }
 @media (max-width: 720px) {
   .competition-sort-bar { padding: 10px 14px; }
   .competition-sort-bar button { flex: 1 1 96px; }
@@ -18223,5 +18242,54 @@ body { background: #f7f8f5; font-size: 14px; }
     text-transform: uppercase;
     letter-spacing: .05em;
   }
-  .competition-poster-toggle button { width: 100%; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   CHUẨN GIAO DIỆN DÙNG CHUNG — đặt ở CUỐI file để thắng mọi khai báo riêng lẻ
+   của từng trang. Khối này giữ cho các thành phần lặp lại (dropdown, thẻ số
+   liệu, hàng bảng) trông giống nhau ở mọi màn, thay vì mỗi trang một kiểu.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Dropdown: 47 ô select của app dùng chung một mũi tên ────────────────────
+   Trước đây để mũi tên mặc định của hệ điều hành nên Windows / Android / iOS
+   mỗi nơi một kiểu, và nhiều ô còn khai `background: white` làm mất luôn nền.
+   Chữ dài thì chui xuống dưới mũi tên. Nay tự vẽ caret, chừa đúng chỗ cho nó
+   và cắt chữ bằng "…" nên dropdown không bao giờ xuống hàng. */
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%235b6b7d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+  background-size: 11px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+select::-ms-expand { display: none; }
+select:disabled { opacity: .6; cursor: not-allowed; }
+/* Ô select hẹp (số dòng/trang, số lượng) không đủ chỗ cho caret 30px. */
+.admin-pagination select,
+.compact-select {
+  padding-right: 22px;
+  background-position: right 6px center;
+  background-size: 9px 7px;
+}
+
+/* ── Vùng chạm trên điện thoại ───────────────────────────────────────────────
+   Bộ soát `scripts/audit-ui-layout.mjs` đo được 10 nút chỉ cao 22–30px ở khổ
+   390px — dưới ngưỡng chạm tối thiểu, ca trưởng đứng quầy bấm trượt liên tục.
+   Nâng đúng những nút đó lên 36px, không đụng tới chip/nhãn. */
+@media (max-width: 480px) {
+  .today-warning button,
+  .wh-linkrow button,
+  .text-button,
+  .admin-row-action,
+  .shift-photo-picker.compact .shift-photo-button,
+  .shift-photo-quick-actions .shift-photo-button {
+    min-height: 36px;
+    padding: 0 12px;
+  }
+  .admin-pagination-pages button { min-width: 36px; min-height: 36px; }
 }

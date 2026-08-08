@@ -40,7 +40,7 @@ export function RestaurantPage({ user, movements }: { user: AppUser; movements: 
   return (
     <div className="page restaurant-page">
       <div className="page-heading">
-        <div><span className="eyebrow dark">NHÀ HÀNG / CHI NHÁNH</span><h1>Tổng quan hoạt động</h1><p>Doanh thu từ báo cáo ca kết hợp với dữ liệu nhập – xuất – tồn kho.</p></div>
+        <div><span className="eyebrow dark">NHÀ HÀNG / CHI NHÁNH</span><h1>Tổng quan hoạt động</h1></div>
         <select className="branch-dashboard-select" value={branchId} onChange={(e) => setBranchId(e.target.value)} disabled>
           {branches.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select>

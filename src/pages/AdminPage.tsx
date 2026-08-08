@@ -421,7 +421,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [capacityMetric, setCapacityMetric] = useState<SalesCapacityMetric>('revenuePerDay')
   const [competitionSort, setCompetitionSort] = useState<CompetitionSortKey>('revenue')
   const [competitionShowAll, setCompetitionShowAll] = useState(false)
-  const [competitionPosterOpen, setCompetitionPosterOpen] = useState(false)
   const [savingRoleId, setSavingRoleId] = useState('')
   const [accountBusyId, setAccountBusyId] = useState('')
   const [pendingDeleteId, setPendingDeleteId] = useState('')
@@ -3030,19 +3029,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 scopeLabel={competitionRankingTitle}
               />
 
-              {/* Poster chỉ để xuất ảnh gửi Zalo. Khi thu gọn nó vẫn phải NẰM
-                  TRONG DOM và có kích thước thật thì html2canvas mới chụp được,
-                  nên đẩy ra ngoài khung nhìn thay vì display:none. */}
-              <div className="competition-poster-toggle">
-                <div>
-                  <strong>Ảnh thi đua (gửi Zalo)</strong>
-                  <small>TOP 10 tháng {rankingPeriod}</small>
-                </div>
-                <button type="button" onClick={() => setCompetitionPosterOpen((current) => !current)} aria-expanded={competitionPosterOpen}>
-                  {competitionPosterOpen ? 'Ẩn xem trước' : 'Xem trước ảnh'}
-                </button>
-              </div>
-              <div className={`competition-poster-stage${competitionPosterOpen ? ' is-open' : ''}`} aria-hidden={!competitionPosterOpen}>
+              {/* Poster chỉ dùng để XUẤT ảnh gửi Zalo, không còn khối xem trước.
+                  Nó vẫn phải NẰM TRONG DOM và có kích thước thật thì html2canvas
+                  mới chụp được, nên đẩy ra ngoài khung nhìn thay vì display:none. */}
+              <div className="competition-poster-stage" aria-hidden="true">
                 <EmployeeCompetitionPoster
                   posterRef={competitionPosterRef}
                   rows={competitionPosterRows}
@@ -3087,7 +3077,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   <div>
                     <span className="eyebrow dark">KHO THEO CHI NHÁNH</span>
                     <h3>Tình trạng tồn và luân chuyển hàng hóa</h3>
-                    <p>Mỗi chi nhánh một dòng — bấm để mở tồn từng SKU ngay bên dưới.</p>
                   </div>
                   <span className="inventory-branch-count">{branchInventorySummaries.length} điểm bán</span>
                 </div>
@@ -3622,7 +3611,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 if (!employee) return (
                   <div className="admin-crm-missing-employee section-card">
                     <strong>{loading ? 'Đang đồng bộ danh sách nhân sự…' : 'Hồ sơ nhân viên này không còn tồn tại.'}</strong>
-                    <p>Quay lại danh sách để tiếp tục quản lý nhân sự.</p>
                     <button type="button" className="secondary-button" onClick={() => navigateAdminHash('/admin/employees')}>Quay lại danh sách nhân sự</button>
                   </div>
                 )
@@ -4080,7 +4068,7 @@ function CompetitionClassificationTable({
       <div>
         <h3>{title} · Xếp hạng doanh thu</h3>
       </div>
-      <small>{totalRows} người có doanh thu</small>
+      <small>{totalRows} người</small>
     </div>
     <div className="competition-sort-bar" role="group" aria-label="Sắp xếp bảng thi đua">
       <span>Xếp theo</span>
@@ -4137,11 +4125,12 @@ function CompetitionClassificationTable({
               className="competition-drilldown-trigger"
               aria-expanded={expanded}
               aria-controls={detailId}
+              title={`${sources.length} nguồn · ${dayRows.length} ngày`}
               onClick={() => {
                 setDetailTab('sources')
                 setExpandedRowKey(expanded ? null : rowKey)
               }}
-            >{expanded ? 'Thu gọn chi tiết' : `Xem chi tiết (${sources.length} nguồn · ${dayRows.length} ngày)`}</button>
+            >{expanded ? 'Thu gọn' : 'Chi tiết'}</button>
           </span>
           <span data-label="Doanh thu" role="cell"><b>{formatMoney(row.revenue)}</b></span>
           <span

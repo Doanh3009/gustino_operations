@@ -66,7 +66,7 @@ export function HistoryPage({ user, movements, onChanged }: Props) {
   return (
     <div className="page">
       <div className="page-heading">
-        <div><span className="eyebrow dark">NHẬT KÝ HỆ THỐNG</span><h1>Lịch sử kho theo chứng từ</h1><p>Mỗi phiếu nhập, xuất hoặc mẻ chế biến được gom thành một mục để dễ kiểm soát.</p></div>
+        <div><span className="eyebrow dark">NHẬT KÝ HỆ THỐNG</span><h1>Lịch sử kho theo chứng từ</h1></div>
       </div>
       {feedback && <div className="feedback-bar">{feedback}<button onClick={() => setFeedback('')}>×</button></div>}
       {!groupsByDate.length && <section className="section-card"><p className="empty-state">Chưa có giao dịch kho.</p></section>}

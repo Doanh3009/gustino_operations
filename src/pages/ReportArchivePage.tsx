@@ -13,7 +13,6 @@ export function ReportArchivePage({ user }: { user: AppUser }) {
         <div>
           <span className="eyebrow dark">KHO BÁO CÁO</span>
           <h1>Bản lưu infographic đã chốt</h1>
-          <p>Xem lại báo cáo cuối ca/cuối ngày đã lưu tự động theo ngày, tháng và chi nhánh.</p>
         </div>
       </div>
       <ReportArchiveContent user={user} />

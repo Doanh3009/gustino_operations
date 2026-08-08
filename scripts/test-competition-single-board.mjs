@@ -56,7 +56,10 @@ assert.match(
 // ── 3. Poster ăn ĐÚNG bộ lọc đang hiển thị và không còn chiếm chỗ trên màn.
 assert.match(admin, /const competitionPosterRows = competitionExportRows/, 'Ảnh thi đua phải dùng đúng tập đã lọc.')
 assert.match(admin, /if \(!competitionPosterRows\.length\)/, 'Nút xuất ảnh phải kiểm tra đúng tập sẽ được chụp.')
-assert.ok(section.includes('className="competition-poster-toggle"'), 'Thiếu nút xem trước ảnh thi đua.')
+// 08/08/2026 — bỏ hẳn khối "Ảnh thi đua (gửi Zalo) · Xem trước ảnh" theo yêu cầu
+// chủ quán: nó chiếm một hàng ngang chỉ để mở lại đúng thứ nút Xuất ảnh đã làm.
+// Poster VẪN phải ở lại trong DOM thì html2canvas mới chụp được.
+assert.ok(!section.includes('competition-poster-toggle'), 'Khối xem trước ảnh thi đua đã bỏ, không được để lại.')
 assert.ok(section.includes('competition-poster-stage'), 'Poster phải nằm trong sân khấu ẩn được.')
 // html2canvas không chụp được phần tử display:none ⇒ thu gọn = đẩy ra ngoài khung nhìn.
 assert.match(
@@ -91,9 +94,10 @@ assert.match(
 // ── 5. Cột năng suất nằm trong chính bảng xếp hạng.
 assert.match(admin, /className=\{`competition-classification-capacity/, 'Thiếu cột năng suất trong bảng xếp hạng.')
 assert.match(admin, /competitionCapacityByKey\.get\(`\$\{row\.branchId\}-\$\{row\.employeeKey\}`\)/, 'Cột năng suất chưa lấy đúng dòng nhân sự.')
-for (const selector of ['.competition-sort-bar {', '.competition-overview {', '.competition-day-row {', '.competition-poster-toggle {']) {
+for (const selector of ['.competition-sort-bar {', '.competition-overview {', '.competition-day-row {']) {
   assert.ok(styles.includes(selector), `Thiếu CSS ${selector}`)
 }
+assert.ok(!styles.includes('.competition-poster-toggle'), 'CSS của khối xem trước đã bỏ, không để lại code chết.')
 
 console.log('COMPETITION_SINGLE_BOARD_OK')
 
