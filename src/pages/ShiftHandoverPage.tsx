@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ShiftPhotoButton } from '../components/ShiftPhotoButton'
 import { getProducts, getSaleProducts, isWarehouseProduct, productById, type ConfiguredProduct } from '../lib/constants'
 import { burstGuard, createId, imageFileToDataUrl } from '../lib/browser'
-import { calculateStock, ensureOperationDay, getOperationDay } from '../lib/store'
+import { calculateStock, getOperationDay } from '../lib/store'
+import { claimOperationalShift } from '../lib/shiftAutoOpen'
 import { formatQuantity } from '../lib/inventoryEntry'
 import { productsToCount } from '../lib/shiftCountScope'
 import { fetchAttendanceRecords, fetchShiftRegistrations, fetchWorkShifts, findAttendanceRecordForRegistration } from '../lib/attendance'
@@ -25,7 +26,6 @@ import {
   fetchBagShiftSessions,
   ownsBagShiftSession,
   reopenBagShift,
-  startBagShift,
   uploadBagShiftPhoto,
 } from '../lib/shiftLedger'
 import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
@@ -147,35 +147,39 @@ export function ShiftHandoverPage({
   // giờ vào ca của chính ngày đó, nên đăng ký cả ngày chỉ ôm cả hai ca khi hôm đó
   // KHÔNG có ca trưởng nào khác. Có người thứ hai là mỗi người đúng một ca.
   const canAutoStartScheduledShift = Boolean(startableRegistration) && !deputyMustWaitForPrimary
-  // Có ngày chi nhánh chỉ xếp đúng MỘT ca trưởng cho cả ngày. Khi đó không ai có
-  // lịch cho sequence còn lại nên ca vận hành sẽ không bao giờ mở, kéo theo không
-  // bàn giao và không chốt được ngày. Cho ca trưởng đang trong ca nhận tiếp,
-  // nhưng phải bấm + xác nhận (KHÔNG tự động) nên không tái phát BUG-100.
-  // Nếu có ca trưởng khác được xếp sequence kế tiếp thì vẫn phải chờ đúng người đó.
-  // `employmentType` đến từ join hồ sơ nhân sự nên có thể RỖNG (bản ghi cũ, đường LAN,
-  // hồ sơ chưa khai vị trí). Nếu coi rỗng là "không phải ca trưởng" thì hệ thống sẽ mời
-  // ca trưởng Ca 1 nhận tiếp Ca 2 dù ĐÃ xếp người khác — đúng lỗi BUG-100 cũ. Vì vậy
-  // rỗng phải hiểu là "có thể là ca trưởng" và tiếp tục chờ đúng người; chỉ loại khi
-  // biết chắc đó là ca part-time. Kẹt thì đã có nút "Chốt thay" và quản lý gỡ.
-  const anotherLeaderScheduledForNext = registrations.some((registration) =>
+  // Ai được xếp phiên ca kế tiếp theo lịch — dùng để ghi rõ trong lời xác nhận và
+  // trong sổ ca khi có người nhận ca ngoài lịch.
+  const otherLeadersScheduledForNext = registrations.filter((registration) =>
     registration.userId !== user.id
     && registration.workDate === today
     && operationalSequencesFor(registration, registrations, workShifts).includes(nextSequence),
   )
+  const scheduledLeaderNamesForNext = otherLeadersScheduledForNext.map((item) => item.userName).join(', ')
+  // Nút nhận ca thủ công KHÔNG còn bị khoá khi hệ thống đã xếp người khác cho ca này.
+  // Lịch xếp lệch là chuyện có thật (08/08/2026 Lotte 23/10: hai ca trưởng cùng đăng ký
+  // ca sáng nên ca trưởng ca tối rơi ra khỏi mọi phiên ca), và khoá nút đồng nghĩa cả
+  // chi nhánh đứng hình tới nửa đêm. Vẫn phải bấm + xác nhận, sổ ca vẫn ghi rõ ai nhận
+  // ngoài lịch, và quyền chủ ca vẫn tự trả về ca trưởng đúng lịch khi họ vào app —
+  // nên BUG-100 (lặng lẽ chiếm ca người khác) không tái phát.
   const canTakeOverNextShift = Boolean(
     !canAutoStartScheduledShift
-    && !anotherLeaderScheduledForNext
     && !deputyMustWaitForPrimary
     && nextSequence <= 2
+    && !dayLocked
+    && !branchOpenSession
     && activeAttendance
     && myApprovedRegistrations.length,
   )
   // Ca trưởng vắng thì chi nhánh vẫn phải bán được. Ca phó mở ca THAY bằng tay
   // (bấm + xác nhận), phiên ca ghi rõ là mở thay; khi ca trưởng vào app, quyền
   // chủ ca tự chuyển về đúng người (`reconcileOperationalShift`).
+  // Điều kiện là "đang trong ca", KHÔNG phải `startableRegistration`: đăng ký của ca
+  // phó không bao giờ đứng tên phiên ca nào (`isLeaderRegistration` loại ca phó), nên
+  // ràng buộc cũ luôn sai ⇒ nút mở thay chưa bao giờ hiện ra và ca phó kẹt y như cũ.
   const canStandInForPrimary = Boolean(
     deputyMustWaitForPrimary
-    && startableRegistration
+    && activeAttendance
+    && myApprovedRegistrations.length
     && !dayLocked
     && !branchOpenSession
     && nextSequence <= 2,
@@ -349,29 +353,23 @@ export function ShiftHandoverPage({
     }
     setBusy(true)
     try {
-      const day = await ensureOperationDay(user, today)
-      setOperationDay(day)
       const openingBalances = Object.fromEntries(countProducts.map((product) => [
         product.id,
         Math.max(0, availableBalances[product.id] || 0),
       ]))
-      // Ca phó mở thay phải để lại dấu vết trong sổ ca cho quản lý rà soát.
-      const standInNote = options.standIn
-        ? `[CA PHÓ ĐỨNG THAY] ${user.name} (ca phó) mở ${shiftLabel(nextSequence)} lúc `
-          + `${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} `
-          + `vì ${primaryLeaderNames || 'ca trưởng được xếp ca này'} chưa mở ca.`
-        : undefined
-      let session = await startBagShift(user, today, openingBalances, { note: standInNote })
-      if (openingPhoto && !session.openingPhotoUrl) {
-        session = await uploadBagShiftPhoto(user, session, 'opening', openingPhoto).catch(() => session)
-      }
+      // Một cửa nhận ca duy nhất cho cả app: kiểm tra điều kiện, mở ngày vận hành và
+      // ghi dấu khi nhận ngoài lịch đều nằm trong `claimOperationalShift`, nên trang
+      // Hôm nay và trang Bàn giao không thể lệch luật nhau.
+      const result = await claimOperationalShift(user, { openingBalances, openingPhoto })
       setAutoStartFailed(false)
       setStandInArmed(false)
       setTakeOverArmed(false)
-      setFeedback(options.standIn
-        ? `Đã mở ${shiftLabel(session.sequence)} thay ca trưởng. Sổ ca ghi rõ bạn là ca phó mở thay;`
+      setFeedback(result.standIn
+        ? `Đã mở ${shiftLabel(result.session.sequence)} thay ca trưởng. Sổ ca ghi rõ bạn là ca phó mở thay;`
           + ' khi ca trưởng vào ứng dụng, quyền chủ ca sẽ tự chuyển về ca trưởng.'
-        : `Đã nhận ${shiftLabel(session.sequence)}. Tồn đầu ca đã lấy từ kho thành phẩm hiện tại.`)
+        : result.scheduled
+          ? `Đã nhận ${shiftLabel(result.session.sequence)}. Tồn đầu ca đã lấy từ kho thành phẩm hiện tại.`
+          : `Đã nhận ${shiftLabel(result.session.sequence)} ngoài lịch — sổ ca đã ghi lại để quản lý rà soát.`)
       await refresh()
     } catch (error) {
       // Mở ca tự động có thể hỏng vì mạng chập chờn (điện thoại ngoài quầy).
@@ -633,14 +631,17 @@ export function ShiftHandoverPage({
           <span>1</span>
           <div>
             <small>{todaySessions.length === 0 ? 'CA SÁNG' : 'CA TỐI'}</small>
-            <h2>{autoStartFailed && canAutoStartScheduledShift ? 'Ca chưa mở được - hãy nhận ca thủ công' : deputyMustWaitForPrimary ? `Ca trưởng đứng ${shiftLabel(nextSequence)}` : canAutoStartScheduledShift && todaySessions.length === 1 ? 'Đang tự nhận Ca tối theo lịch' : canAutoStartScheduledShift ? 'Đang tự mở ca sau check-in' : canTakeOverNextShift ? `Hôm nay chưa xếp ca trưởng cho ${shiftLabel(nextSequence)}` : activeAttendance ? 'Đang chờ đúng ca trưởng theo lịch' : 'Check-in để ca tự mở'}</h2>
+            <h2>{autoStartFailed && canAutoStartScheduledShift ? 'Ca chưa mở được - hãy nhận ca thủ công' : deputyMustWaitForPrimary ? `Ca trưởng đứng ${shiftLabel(nextSequence)}` : canAutoStartScheduledShift && todaySessions.length === 1 ? 'Đang tự nhận Ca tối theo lịch' : canAutoStartScheduledShift ? 'Đang tự mở ca sau check-in' : canTakeOverNextShift ? (scheduledLeaderNamesForNext ? `${shiftLabel(nextSequence)} chưa được mở` : `Hôm nay chưa xếp ca trưởng cho ${shiftLabel(nextSequence)}`) : activeAttendance ? 'Đang chờ đúng ca trưởng theo lịch' : 'Check-in để ca tự mở'}</h2>
             <p>{autoStartFailed && canAutoStartScheduledShift
               ? 'Bạn có đủ lịch và đã check-in, nhưng lần mở ca tự động vừa rồi không thành công (thường do mạng chập chờn). Bấm nút bên dưới để nhận ca ngay.'
               : deputyMustWaitForPrimary
               ? `Bạn là ca phó nên không đứng tên chủ ca. ${primaryLeaderNames} sẽ là chủ ${shiftLabel(nextSequence)}. `
                 + 'Bạn vẫn chấm công, nhập kho, chế biến và bán hàng bình thường trong ca này.'
               : canTakeOverNextShift
-              ? 'Không có ca trưởng nào khác được xếp ca này nên hệ thống không tự mở. Bạn đang trong ca và có thể nhận tiếp để kịp bàn giao và chốt ngày.'
+              ? scheduledLeaderNamesForNext
+                ? `Theo lịch hôm nay ${scheduledLeaderNamesForNext} đứng ${shiftLabel(nextSequence)}, nhưng ca vẫn chưa được mở. `
+                  + 'Bạn đang trong ca nên có thể nhận ca này để chi nhánh bán và bàn giao được; sổ ca sẽ ghi rõ bạn nhận ngoài lịch.'
+                : 'Không có ca trưởng nào khác được xếp ca này nên hệ thống không tự mở. Bạn đang trong ca và có thể nhận tiếp để kịp bàn giao và chốt ngày.'
               : canAutoStartScheduledShift && todaySessions.length === 1
               ? 'Ca sáng đã bàn giao. Ca trưởng có lịch Ca 2 và đã check-in sẽ tự nhận Ca tối, không cần bấm nhận ca.'
               : canAutoStartScheduledShift
@@ -679,7 +680,10 @@ export function ShiftHandoverPage({
             {canTakeOverNextShift && takeOverArmed && (
               <div className="handover-takeover-confirm">
                 <p>
-                  {`Hôm nay không có ca trưởng nào khác được xếp ${shiftLabel(nextSequence)}. `}
+                  {scheduledLeaderNamesForNext
+                    ? `Lịch hôm nay xếp ${scheduledLeaderNamesForNext} đứng ${shiftLabel(nextSequence)}. `
+                      + 'Sổ ca sẽ ghi rõ bạn nhận ngoài lịch, và quyền chủ ca tự chuyển về ca trưởng đúng lịch khi họ vào ứng dụng. '
+                    : `Hôm nay không có ca trưởng nào khác được xếp ${shiftLabel(nextSequence)}. `}
                   {`Bạn nhận ${shiftLabel(nextSequence)} và chịu trách nhiệm chốt tồn, bàn giao ca này?`}
                 </p>
                 <button className="primary-button wide" disabled={busy} onClick={() => void handleStartShift({ takeOver: true })}>

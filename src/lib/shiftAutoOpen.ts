@@ -13,6 +13,7 @@ import {
   ownsBagShiftSession,
   startBagShift,
   transferBagShiftLeadership,
+  uploadBagShiftPhoto,
 } from './shiftLedger'
 import { calculateStock, ensureOperationDay, fetchMovements, getOperationDay } from './store'
 import { supabase } from './supabase'
@@ -238,6 +239,119 @@ export async function openShiftAfterLeaderCheckIn(
     if (latest.some((item) => item.status === 'open')) return ' Ca vận hành đã tự mở.'
     throw error
   }
+}
+
+export interface ShiftClaimOptions {
+  /** Tồn đầu ca do màn Bàn giao đếm sẵn. Bỏ trống thì đọc lại từ kho thật. */
+  openingBalances?: Record<string, number>
+  /** Ảnh quầy đầu ca đã chụp trước khi bấm nhận ca (data URL). */
+  openingPhoto?: string
+}
+
+export interface ShiftClaimResult {
+  session: BagShiftSession
+  /** Ca này có đúng lịch của người vừa nhận hay không. */
+  scheduled: boolean
+  /** Ca trưởng được xếp ca này theo lịch, nếu là người khác. */
+  scheduledLeaderNames: string[]
+  /** Người nhận là ca phó đứng thay ca trưởng. */
+  standIn: boolean
+}
+
+/**
+ * **Nhận ca bằng tay — lối thoát cuối cùng.**
+ *
+ * Bộ dò ca chỉ mở ca cho người ĐÚNG lịch, nên mỗi lần lịch bị xếp lệch là cả chi nhánh
+ * đứng hình: không ai mở được ca ⇒ không chụp được ảnh quầy, không phát túi, không bán,
+ * không bàn giao, không chốt ngày. Đã xảy ra nhiều lần với nhiều nguyên nhân khác nhau
+ * (cấu hình ca có rác, ba đăng ký ca trưởng trong ngày, mạng rớt lúc check-in).
+ *
+ * Hàm này cho người ĐANG TRONG CA nhận ca kể cả khi lịch không xếp họ, nhưng không phải
+ * cửa sau: vẫn bắt buộc có ca đã duyệt hôm nay + đang check-in (chưa check-out), vẫn
+ * chặn khi chi nhánh còn ca chưa bàn giao / đã đủ 2 ca / ngày đã chốt, và mọi lần nhận
+ * ngoài lịch đều ghi dấu vào sổ ca cho quản lý rà soát. Khi ca trưởng đúng lịch vào app,
+ * `reclaimShiftForPrimaryLeader` tự trả quyền chủ ca về đúng người.
+ */
+export async function claimOperationalShift(
+  user: AppUser,
+  options: ShiftClaimOptions = {},
+): Promise<ShiftClaimResult> {
+  if (user.role !== 'shift_leader') {
+    throw new Error('Chỉ ca trưởng hoặc ca phó mới nhận được ca vận hành.')
+  }
+  const today = localDateKey()
+  const sessions = await fetchBagShiftSessions(user, { branchId: user.branchId, date: today })
+  const openSession = sessions.find((item) => item.status === 'open')
+  if (openSession) {
+    if (ownsBagShiftSession(openSession, user)) {
+      return { session: openSession, scheduled: true, scheduledLeaderNames: [], standIn: false }
+    }
+    throw new Error(
+      `Ca ${openSession.sequence} đang do ${openSession.leaderName} phụ trách.`
+      + ' Ca đó phải chốt & bàn giao xong thì mới nhận được ca tiếp theo.',
+    )
+  }
+  if (sessions.length >= 2) throw new Error('Hôm nay đã đủ 2 ca vận hành. Không thể nhận thêm ca mới.')
+
+  const day = await getOperationDay(user.branchId, today, user).catch(() => null)
+  if (day?.status === 'closed') {
+    throw new Error('Ngày vận hành đã chốt. Hãy nhờ quản lý mở lại ngày trước khi nhận ca.')
+  }
+
+  const [registrations, attendance, workShifts] = await Promise.all([
+    fetchShiftRegistrations(user, { branchId: user.branchId, from: today, to: today }),
+    fetchAttendanceRecords(user, { branchId: user.branchId, userId: user.id, from: today, to: today }),
+    fetchWorkShifts(user),
+  ])
+  const openAttendances = attendance.filter((record) => !record.checkOutTime)
+  if (!openAttendances.length) {
+    throw new Error(attendance.length
+      ? 'Bạn đã check-out ca hôm nay nên không nhận được ca vận hành. Hãy check-in lại trong Chấm công.'
+      : 'Bạn chưa check-in hôm nay. Hãy vào Chấm công check-in rồi bấm nhận ca lại.')
+  }
+  const registration = registrations.find((item) =>
+    item.userId === user.id
+    && item.workDate === today
+    && item.status === 'approved'
+    && openAttendances.some((record) => record.shiftRegistrationId === item.id),
+  )
+  if (!registration) {
+    throw new Error('Lần check-in hiện tại chưa gắn với ca làm đã duyệt nào của hôm nay.'
+      + ' Hãy kiểm tra lịch ca trong Chấm công rồi thử lại.')
+  }
+
+  const sequence = nextOperationalSequence(sessions)
+  const scheduled = operationalSequencesFor(registration, registrations, workShifts).includes(sequence)
+  const scheduledLeaderNames = primaryLeadersScheduledFor(sequence, today, registrations, workShifts)
+    .filter((item) => item.userId !== user.id)
+    .map((item) => item.userName)
+  const standIn = !scheduled && isDeputyShiftLeader(user) && scheduledLeaderNames.length > 0
+
+  await ensureOperationDay(user, today)
+  const openingBalances = options.openingBalances || await buildOpeningBalances(user)
+  let session = await startBagShift(user, today, openingBalances, {
+    note: scheduled ? undefined : offScheduleClaimNote(user, sequence, standIn, scheduledLeaderNames),
+  })
+  if (options.openingPhoto && !session.openingPhotoUrl) {
+    session = await uploadBagShiftPhoto(user, session, 'opening', options.openingPhoto).catch(() => session)
+  }
+  return { session, scheduled, scheduledLeaderNames, standIn }
+}
+
+/** Mọi lần nhận ca ngoài lịch đều phải đọc được trong sổ ca, không im lặng. */
+function offScheduleClaimNote(
+  user: AppUser,
+  sequence: number,
+  standIn: boolean,
+  scheduledLeaderNames: string[],
+) {
+  const stamp = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+  const names = scheduledLeaderNames.join(', ')
+  if (standIn) {
+    return `[CA PHÓ ĐỨNG THAY] ${user.name} (ca phó) mở Ca ${sequence} lúc ${stamp} vì ${names} chưa mở ca.`
+  }
+  return `[NHẬN CA THỦ CÔNG] ${user.name} tự nhận Ca ${sequence} lúc ${stamp} `
+    + (names ? `(lịch hôm nay xếp ${names}).` : '(lịch hôm nay không xếp ai cho ca này).')
 }
 
 /** Ca vận hành do CHÍNH ca trưởng này đang giữ và chưa bàn giao. */

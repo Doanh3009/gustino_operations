@@ -80,16 +80,24 @@ const picked = bothRegistrations.find((registration) =>
 )
 assert(picked === regCa2, 'Khi giữ cả 2 đăng ký, hệ thống phải chọn đúng đăng ký Ca 2 để mở Ca 2.')
 
-// --- 4. Ngày chỉ xếp một ca trưởng: nhận tiếp có xác nhận, không tự động ---
+// --- 4. Nhận tiếp ca: luôn có lối, nhưng phải xác nhận và phải ghi dấu ---
+// Trước 08/08/2026 nút này bị khoá khi đã xếp người khác cho ca đó. Nhưng lịch xếp
+// lệch là chuyện có thật (Lotte 23/10: hai ca trưởng cùng đăng ký ca sáng nên ca
+// trưởng ca tối rơi ra khỏi mọi phiên ca) và khoá nút nghĩa là cả chi nhánh đứng
+// hình. Nay luôn có lối, đổi lại phải bấm + xác nhận + ghi rõ vào sổ ca.
 assert(
-  handover.includes('const anotherLeaderScheduledForNext = registrations.some((registration) =>')
+  handover.includes('const otherLeadersScheduledForNext = registrations.filter((registration) =>')
   && handover.includes('operationalSequencesFor(registration, registrations, workShifts).includes(nextSequence)'),
-  'Chưa kiểm tra xem có ca trưởng khác được xếp sequence kế tiếp hay không.',
+  'Chưa xác định được ai là ca trưởng theo lịch của sequence kế tiếp.',
 )
 assert(
-  handover.includes('!canAutoStartScheduledShift')
-  && handover.includes('&& !anotherLeaderScheduledForNext'),
-  'Nhận tiếp ca phải bị chặn khi đã có ca trưởng khác được xếp ca đó (giữ BUG-100).',
+  !handover.includes('&& !anotherLeaderScheduledForNext'),
+  'Nút nhận ca thủ công không được khoá lại theo lịch — đó chính là chỗ kẹt cũ.',
+)
+assert(
+  handover.includes('scheduledLeaderNamesForNext')
+  && handover.includes('Sổ ca sẽ ghi rõ bạn nhận ngoài lịch'),
+  'Lời xác nhận phải nêu đích danh ca trưởng theo lịch và cảnh báo sẽ ghi vào sổ ca.',
 )
 assert(
   handover.includes('takeOverArmed') && handover.includes('handleStartShift({ takeOver: true })'),
@@ -106,11 +114,19 @@ assert(
   'Nhận tiếp ca chỉ được gọi từ đúng nút xác nhận.',
 )
 
-// Ca trưởng khác CÓ lịch Ca 2 → không được phép nhận tiếp (chống BUG-100).
+// Ca trưởng khác CÓ lịch Ca 2 vẫn phải được nhận diện đúng — để nêu tên trong lời
+// xác nhận và để `reclaimShiftForPrimaryLeader` trả quyền chủ ca về cho họ.
 const otherLeaderCa2 = { ...regCa2, id: 'r2-other', userId: 'other', employmentType: 'leader' }
 assert(
   operationalSequencesFor(otherLeaderCa2, [regCa1, otherLeaderCa2], workShifts).includes(2),
   'Đăng ký Ca 2 của ca trưởng khác phải được nhận diện là giữ sequence 2.',
+)
+// Nhận ngoài lịch không được im lặng: sổ ca phải ghi lại cho quản lý rà soát.
+assert(
+  fs.readFileSync('src/lib/shiftAutoOpen.ts', 'utf8').includes('[NHẬN CA THỦ CÔNG]')
+  && fs.readFileSync('src/lib/shiftAutoOpen.ts', 'utf8').includes('[CA PHÓ ĐỨNG THAY]')
+  && fs.readFileSync('src/lib/shiftAutoOpen.ts', 'utf8').includes('note: scheduled ? undefined : offScheduleClaimNote('),
+  'Nhận ca ngoài lịch phải để lại dấu vết trong sổ ca.',
 )
 // PG part-time không bao giờ được tính là ca trưởng giữ ca vận hành.
 const partTimer = { id: 'r-pt', userId: 'u-pt', employmentType: 'part_time', positionTitle: 'Part-time', branchId, workDate, shiftId: 'ca-pt', startTime: '09:00', endTime: '13:00', status: 'approved' }

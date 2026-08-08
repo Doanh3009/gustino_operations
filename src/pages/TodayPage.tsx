@@ -4,6 +4,7 @@ import { PRODUCTS } from '../lib/constants'
 import { branchName } from '../lib/branches'
 import { calculateStock, fetchReportSnapshots, getOperationDay } from '../lib/store'
 import { fetchBagShiftSessions, ownsBagShiftSession, uploadBagShiftPhoto } from '../lib/shiftLedger'
+import { claimOperationalShift } from '../lib/shiftAutoOpen'
 import { burstGuard, imageFileToDataUrl } from '../lib/browser'
 import { ShiftPhotoButton } from '../components/ShiftPhotoButton'
 import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
@@ -53,6 +54,8 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   const [openingFeedback, setOpeningFeedback] = useState('')
   const [closingBusy, setClosingBusy] = useState(false)
   const [closingFeedback, setClosingFeedback] = useState('')
+  const [claimBusy, setClaimBusy] = useState(false)
+  const [claimFeedback, setClaimFeedback] = useState('')
   const [clockNow, setClockNow] = useState(() => new Date())
   const orderProductRef = useRef<HTMLInputElement>(null)
   const todayKey = localDateKey(clockNow)
@@ -232,6 +235,15 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   const nextStep = steps.find((step) => !step.done) || steps[steps.length - 1]
   const blockedByAttendance = !reportDone && !userCheckedInToday
   const needsOpeningPhoto = !reportDone && userCheckedInToday && Boolean(openBagSession) && !openBagSession?.openingPhotoUrl
+  // Ca chỉ TỰ mở cho người ĐÚNG lịch. Lịch xếp lệch một chút là ca trưởng đứng ngoài
+  // quầy không còn cửa nào để bắt đầu ca — kẹt luôn chụp hình, bán hàng và bàn giao.
+  // Nút này là lối thoát: ai đang trong ca bấm thì ca gán cho người đó, và mọi lần nhận
+  // ngoài lịch đều ghi dấu trong sổ ca (xem `claimOperationalShift`).
+  const claimableSequence = bagSessions.length + 1
+  const canClaimShift = user.role === 'shift_leader'
+    && !reportDone
+    && !openBagSession
+    && bagSessions.length < expectedDailyShifts
   const actionStep = blockedByAttendance
     ? {
         number: 0,
@@ -239,6 +251,14 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
         description: 'Hãy check-in trong mục Chấm công, sau đó mới nhập hàng, nhận ca và bán hàng.',
         action: () => onNavigate('attendance'),
         actionLabel: 'Mở chấm công',
+      }
+    : canClaimShift
+    ? {
+        number: 0,
+        title: `Nhận Ca ${claimableSequence} để bắt đầu`,
+        description: 'Chi nhánh chưa có ca nào đang mở. Bấm nhận ca để bắt đầu chụp hình quầy, bán hàng và bàn giao.',
+        action: () => void claimShift(),
+        actionLabel: claimBusy ? 'Đang nhận ca…' : `Nhận Ca ${claimableSequence} ngay`,
       }
     : needsOpeningPhoto
       ? {
@@ -283,10 +303,37 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
       : 'Chưa mở ca'
   const reportLabel = reportDone ? 'Đã chốt ngày' : reportReady ? 'Sẵn sàng xuất' : 'Chưa đủ dữ liệu'
 
+  async function claimShift() {
+    setClaimBusy(true)
+    setClaimFeedback('')
+    try {
+      const result = await claimOperationalShift(user)
+      const next = await fetchBagShiftSessions(user, { branchId: user.branchId, date: todayKey })
+      setBagSessions(next)
+      setClaimFeedback(result.scheduled
+        ? `Đã nhận Ca ${result.session.sequence}. Hãy chụp hình quầy đầu ca.`
+        : result.standIn
+          ? `Đã mở Ca ${result.session.sequence} thay ca trưởng. Sổ ca ghi rõ bạn mở thay;`
+            + ' quyền chủ ca sẽ tự chuyển về ca trưởng khi họ vào ứng dụng.'
+          : `Đã nhận Ca ${result.session.sequence} ngoài lịch — sổ ca đã ghi lại để quản lý rà soát.`
+            + ' Hãy chụp hình quầy đầu ca.')
+    } catch (error) {
+      setClaimFeedback(error instanceof Error ? error.message : 'Không thể nhận ca.')
+    } finally {
+      setClaimBusy(false)
+    }
+  }
+
+  // Hình quầy phải gắn vào MỘT phiên ca. Chưa có ca thì tải lại trang cũng vô ích —
+  // phải nhận ca trước, nên thông báo chỉ thẳng sang nút nhận ca.
+  const missingSessionMessage = canClaimShift
+    ? `Chưa có ca đang mở. Bấm "Nhận Ca ${claimableSequence} ngay" ở trên rồi chụp lại.`
+    : 'Chưa tìm thấy ca hôm nay để gắn hình. Hãy vào mục Bàn giao để nhận ca trước.'
+
   async function saveOpeningPhoto(file?: File) {
     if (!file) return
     if (!photoSession) {
-      setOpeningFeedback('Chưa tìm thấy ca hôm nay để gắn hình. Vui lòng tải lại trang rồi thử lại.')
+      setOpeningFeedback(missingSessionMessage)
       return
     }
     setOpeningBusy(true)
@@ -307,7 +354,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   async function saveClosingPhoto(file?: File) {
     if (!file) return
     if (!photoSession) {
-      setClosingFeedback('Chưa tìm thấy ca hôm nay để gắn hình. Vui lòng tải lại trang rồi thử lại.')
+      setClosingFeedback(missingSessionMessage)
       return
     }
     setClosingBusy(true)
@@ -381,6 +428,20 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
           <span className={reportDone ? 'shift-status closed' : !userCheckedInToday ? 'shift-status waiting' : openBagSession ? 'shift-status open' : 'shift-status waiting'}>
             <i /> {reportDone ? 'Đã chốt ngày' : !userCheckedInToday ? 'Cần check-in' : openBagSession ? shiftLabel : 'Chờ mở ca'}
           </span>
+          {canClaimShift && (
+            <div className="shift-claim-actions">
+              <button
+                type="button"
+                className="shift-claim-button"
+                disabled={claimBusy}
+                onClick={() => void claimShift()}
+              >
+                {claimBusy ? 'Đang nhận ca…' : `Nhận Ca ${claimableSequence} ngay`}
+              </button>
+              <small>Ca sẽ đứng tên bạn. Nếu lịch xếp người khác, sổ ca ghi lại và quyền chủ ca tự trả về ca trưởng đúng lịch.</small>
+            </div>
+          )}
+          {claimFeedback && <small className="shift-photo-quick-feedback">{claimFeedback}</small>}
           <div id="shift-photo-quick-actions" className="shift-photo-quick-actions" aria-label="Chụp hình đầu ca và cuối ca">
             <ShiftPhotoButton
               compact

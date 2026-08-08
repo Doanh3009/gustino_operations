@@ -9901,6 +9901,51 @@ img, svg, video, canvas { max-width: 100%; }
   font-weight: 750;
   text-align: right;
 }
+/* Nút nhận ca thủ công: lối thoát khi lịch xếp lệch, phải nổi hơn nút chụp hình. */
+.shift-claim-actions {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  margin-top: 10px;
+}
+.shift-claim-button {
+  min-height: 40px;
+  border: 0;
+  border-radius: 12px;
+  padding: 0 18px;
+  background: var(--green);
+  color: #10240a;
+  box-shadow: 0 10px 22px rgba(120, 160, 40, .3);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: .2px;
+  cursor: pointer;
+}
+.shift-claim-button:hover:not(:disabled) {
+  filter: brightness(1.04);
+}
+.shift-claim-button:disabled {
+  opacity: .6;
+  cursor: progress;
+}
+.shift-claim-actions small {
+  max-width: 320px;
+  color: #536579;
+  font-size: 10px;
+  font-weight: 750;
+  text-align: right;
+  line-height: 1.35;
+}
+@media (max-width: 640px) {
+  .shift-claim-actions {
+    justify-items: stretch;
+    width: 100%;
+  }
+  .shift-claim-actions small {
+    max-width: none;
+    text-align: left;
+  }
+}
 @media (max-width: 640px) {
   .shift-photo-quick-actions {
     display: grid;

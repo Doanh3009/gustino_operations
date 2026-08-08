@@ -100,6 +100,16 @@ assert.match(
   /const canAutoStartScheduledShift = Boolean\(startableRegistration\) && !deputyMustWaitForPrimary/,
 )
 assert.match(handoverSource, /canStandInForPrimary/)
-assert.match(handoverSource, /CA PHÓ ĐỨNG THAY/)
+// Nút "mở ca thay" chỉ cần ca phó ĐANG TRONG CA. Ràng buộc cũ (`startableRegistration`)
+// không bao giờ đúng với ca phó — đăng ký của ca phó không đứng tên phiên ca nào — nên
+// nút chưa từng hiện ra và ca phó kẹt y như khi chưa có nút.
+assert.doesNotMatch(
+  handoverSource,
+  /const canStandInForPrimary = Boolean\(\s*\n\s*deputyMustWaitForPrimary\s*\n\s*&& startableRegistration/,
+  'Điều kiện mở ca thay không được bám vào đăng ký đứng tên phiên ca của ca phó.',
+)
+// Dấu vết "ca phó mở thay" nằm ở cửa nhận ca dùng chung (`claimOperationalShift`),
+// nên trang Bàn giao lẫn trang Hôm nay đều ghi sổ ca giống nhau.
+assert.match(autoOpenSource, /\[CA PHÓ ĐỨNG THAY\]/)
 
 console.log('OK — chủ ca luôn là ca trưởng, ca phó vẫn làm việc trong ca.')

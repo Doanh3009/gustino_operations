@@ -72,10 +72,43 @@ export function leaderRegistrationsInOrder(
       || String(left.id).localeCompare(String(right.id)))
 }
 
+/** Khung giờ của một đăng ký — thứ quyết định phiên ca, xem `leaderShiftWindowsInOrder`. */
+function registrationWindowKey(registration: Pick<ShiftRegistration, 'startTime' | 'endTime'>) {
+  return `${String(registration.startTime || '').slice(0, 5)}-${String(registration.endTime || '').slice(0, 5)}`
+}
+
+/**
+ * Các KHUNG GIỜ ca trưởng của một ngày, xếp theo giờ vào ca. Ca 1 là khung sớm nhất,
+ * Ca 2 là khung muộn nhất.
+ *
+ * Phiên ca phải bám KHUNG GIỜ, không bám vị trí của từng đăng ký: một khung giờ có thể
+ * có nhiều hơn một ca trưởng (người kèm người mới, người trực bù, hai người cùng nhận
+ * ca sáng). Bản cũ đếm theo vị trí bản ghi nên chỉ cần ngày đó có 3 đăng ký ca trưởng
+ * là lệch hết — Lotte 23/10 ngày 08/08/2026: Võ Thảo Quyên và Nguyễn Thị Yến cùng đăng
+ * ký 07:15–15:15, chị Yến chiếm vị trí 2 nên được gán "Ca 2", còn Nguyễn Bình Thảo
+ * Nguyên (người đăng ký ĐÚNG ca tối 14:15–22:15) rơi xuống vị trí 3 ⇒ danh sách phiên
+ * ca RỖNG ⇒ ca tối không bao giờ tự mở, mà màn Bàn giao cũng không hiện nút nào vì hệ
+ * thống tưởng "đã có ca trưởng khác được xếp Ca 2".
+ */
+export function leaderShiftWindowsInOrder(
+  workDate: string,
+  branchId: string,
+  registrations: ShiftRegistration[],
+  workShifts: WorkShift[],
+) {
+  const windows: string[] = []
+  for (const registration of leaderRegistrationsInOrder(workDate, branchId, registrations, workShifts)) {
+    const key = registrationWindowKey(registration)
+    if (!windows.includes(key)) windows.push(key)
+  }
+  return windows
+}
+
 /**
  * Phiên ca mà đăng ký này được đứng tên: `[1]`, `[2]`, hoặc `[1, 2]` khi cả ngày chỉ có
- * MỘT ca trưởng (một người trực cả hai ca). Ca trưởng thứ ba trở đi không đứng tên ca
- * nào — chi nhánh chỉ có 2 phiên ca một ngày.
+ * MỘT khung giờ ca trưởng (một người — hoặc một nhóm cùng khung — trực cả hai ca).
+ * Khung giờ nằm giữa (ngày có từ 3 khung trở lên) không đứng tên ca nào: chi nhánh chỉ
+ * có 2 phiên ca một ngày, và người kẹt vẫn còn nút "Nhận ca ngay" để tự nhận.
  */
 export function operationalSequencesFor(
   registration: ShiftRegistration,
@@ -84,17 +117,18 @@ export function operationalSequencesFor(
 ) {
   if (registration.status !== 'approved') return []
   if (!isLeaderRegistration(registration, workShifts)) return []
-  const ordered = leaderRegistrationsInOrder(
+  const windows = leaderShiftWindowsInOrder(
     registration.workDate,
     registration.branchId,
     registrations,
     workShifts,
   )
-  const index = ordered.findIndex((item) => item.id === registration.id)
+  const index = windows.indexOf(registrationWindowKey(registration))
   if (index < 0) return []
-  // Cả ngày chỉ một ca trưởng đăng ký ⇒ người đó trực cả hai phiên ca.
-  if (ordered.length === 1) return [1, 2]
-  return index === 0 ? [1] : index === 1 ? [2] : []
+  // Cả ngày chỉ một khung giờ ca trưởng ⇒ khung đó trực cả hai phiên ca.
+  if (windows.length === 1) return [1, 2]
+  if (index === 0) return [1]
+  return index === windows.length - 1 ? [2] : []
 }
 
 /** Ca trưởng (không phải ca phó) được xếp đúng phiên ca này trong ngày. */
