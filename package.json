@@ -12,10 +12,12 @@
     "qa:roles": "node scripts/qa-roles.mjs"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^149.0.0",
     "@supabase/supabase-js": "^2.110.7",
     "exceljs": "^3.4.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
+    "puppeteer-core": "^25.5.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "recharts": "^3.9.1"
