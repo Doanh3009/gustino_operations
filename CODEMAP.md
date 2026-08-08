@@ -53,6 +53,18 @@
 - Ca trưởng vào app → `reclaimShiftForPrimaryLeader` chuyển quyền chủ ca về đúng người (`transferBagShiftLeadership`), chỉ giành lại từ ca phó, KHÔNG bao giờ chiếm ca của ca trưởng khác.
 - Trước bản vá: ai check-in trước thì thành chủ ca → 28/07 Gold Coast ca phó bấm sớm hơn 67 giây, cả Ca 1 mang tên ca phó, KPI ca tính theo chỉ tiêu ca phó. Test: `scripts/test-shift-owner-must-be-leader.mjs`.
 
+### Ai đứng tên phiên ca nào — xếp theo KHUNG GIỜ CA (sửa 2026-08-08)
+`operationalSequencesFor` (`operationalShiftAssignment.ts`) gom các đăng ký ca trưởng đã duyệt của ngày thành **danh sách khung giờ** (`leaderShiftWindowsInOrder`, khoá = `HH:MM-HH:MM`), rồi: khung sớm nhất → **Ca 1**, khung muộn nhất → **Ca 2**, chỉ có một khung → **cả [1, 2]**, khung nằm giữa → không đứng tên ca nào.
+- **Đừng bao giờ quay lại xếp theo VỊ TRÍ bản ghi.** Đã hỏng 2 lần theo 2 kiểu: (1) suy từ vị trí trong bảng cấu hình `shifts` — Lotte VT có ca thừa `07:15-22:15` đẩy "Ca 2" thật xuống vị trí 3; (2) suy từ vị trí trong danh sách đăng ký — **08/08/2026 Lotte 23/10**: Võ Thảo Quyên và Nguyễn Thị Yến cùng đăng ký khung sáng `07:15-15:15` nên chị Yến chiếm "Ca 2", đẩy Nguyễn Bình Thảo Nguyên (đăng ký ĐÚNG khung tối `14:15-22:15`) ra danh sách rỗng ⇒ ca tối không tự mở, màn Hôm nay kẹt "Chờ mở ca" và ảnh quầy báo "Chưa tìm thấy ca hôm nay để gắn hình".
+- Một khung giờ được phép có **nhiều hơn một ca trưởng** (kèm người mới, trực bù) — họ cùng thuộc một phiên ca, ai check-in trước thì đứng tên, người kia vẫn làm việc bình thường.
+- Test: `scripts/test-shift-sequence-by-window.mjs`.
+
+### Nhận ca thủ công — `claimOperationalShift` (`shiftAutoOpen.ts`, 2026-08-08)
+Một cửa nhận ca dùng chung cho **trang Hôm nay** (nút "Nhận Ca N ngay" cạnh trạng thái ca) và **màn Bàn giao** (nút "Nhận ca ngay" / "Nhận tiếp Ca N" / "Mở ca thay ca trưởng"). Bộ dò ca tự động chỉ mở cho người ĐÚNG lịch, nên phải luôn có lối thủ công — mỗi lần lịch xếp lệch mà không có nút là cả chi nhánh đứng hình tới nửa đêm.
+- Cho người **đang trong ca** nhận ca kể cả khi lịch không xếp họ, nhưng **không phải cửa sau**: vẫn bắt buộc có đăng ký đã duyệt hôm nay + đang check-in (chưa check-out); vẫn chặn khi chi nhánh còn ca chưa bàn giao / đã đủ 2 ca / ngày đã chốt.
+- Mọi lần nhận **ngoài lịch** đều ghi `[NHẬN CA THỦ CÔNG]` (hoặc `[CA PHÓ ĐỨNG THAY]`) vào `discrepancy_note`, và `reclaimShiftForPrimaryLeader` vẫn tự trả quyền chủ ca về ca trưởng đúng lịch khi họ vào app ⇒ BUG-100 (lặng lẽ chiếm ca người khác) không tái phát.
+- Nút ở màn Bàn giao **không còn bị khoá** khi lịch đã xếp người khác cho ca đó; đổi lại phải bấm + xác nhận, và lời xác nhận nêu đích danh ca trưởng theo lịch.
+
 `EmploymentType = 'leader' | 'full_time' | 'part_time'`
 
 ### Routing theo role (`App.tsx` `defaultPageForRole`)
@@ -110,7 +122,7 @@ Mọi lib theo pattern: **ưu tiên Supabase, fallback LAN `/api`**. Header LAN 
 | `supplyRequests.ts` | **Đặt hàng/yêu cầu bếp.** `supply_requests`, status pending→acknowledged→fulfilled→cancelled |
 | `reportSync.ts` | Đồng bộ dữ liệu báo cáo |
 | `attendance.ts` | **Chấm công (905 dòng, lớn nhất lib).** GPS bắt buộc (`getAttendanceLocation` THROW nếu từ chối), selfie, check-in/out window, đăng ký ca, lịch chia sẻ |
-| `shiftAutoOpen.ts` | **Bộ dò ca — nguồn sự thật duy nhất cho việc MỞ ca vận hành.** `reconcileOperationalShift` (chạy trong `App.tsx` mỗi 60s cho mọi `shift_leader`, ở BẤT KỲ trang nào — idempotent, thoát sớm khi ca đã mở/đủ 2 ca/ngày đã chốt), `openShiftAfterLeaderCheckIn` (đường check-in), `findOwnOpenShift`, `markShiftLeftWithoutHandover`. **Tồn đầu ca luôn đọc lại bằng `fetchMovements`** — đừng tin `movements` của trang gọi (trang Bán hàng không tải movement → sẽ ghi tồn đầu ca = 0). Xem BUG-112. |
+| `shiftAutoOpen.ts` | **Bộ dò ca — nguồn sự thật duy nhất cho việc MỞ ca vận hành.** `reconcileOperationalShift` (chạy trong `App.tsx` mỗi 60s cho mọi `shift_leader`, ở BẤT KỲ trang nào — idempotent, thoát sớm khi ca đã mở/đủ 2 ca/ngày đã chốt), `openShiftAfterLeaderCheckIn` (đường check-in), **`claimOperationalShift` (nhận ca thủ công — xem §2)**, `findOwnOpenShift`, `markShiftLeftWithoutHandover`. **Tồn đầu ca luôn đọc lại bằng `fetchMovements`** — đừng tin `movements` của trang gọi (trang Bán hàng không tải movement → sẽ ghi tồn đầu ca = 0). Xem BUG-112. |
 | `inventoryEntry.ts` | **Số học màn nhập/xuất/sửa tồn kho** (hàm thuần, không React). Hiển thị đủ 3 chữ số như DB (`formatQuantity`/`formatStockAmount`), `STOCK_EPSILON=0.0005`, đổi kg↔g + quy cách bao (`convertEntryToStockQuantity`), `planOutbound` (tự khớp về đúng tồn khi lệch ≤5 g ⇒ xuất hết là sạch kho), `planStockReset` (sửa tồn bằng movement `count`). Xem §5 + BUG-133 |
 | `constants.ts` | **Master data hardcode:** `BRANCHES` (3 chi nhánh), `PRODUCTS` (SKU), định mức chế biến `PROCESS_OUTPUT_BY_INPUT`, đóng gói `PACKING_OPTIONS_BY_OUTPUT`, `MOVEMENT_LABELS` |
 | `i18n.ts` | Đa ngôn ngữ (vi/en), `T[lang]`, `getLang()` |
