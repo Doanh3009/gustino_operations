@@ -1197,8 +1197,10 @@ function loadPermissions(): PermissionMatrix {
   }
   MODULES.forEach((module) => {
     matrix.manager[module.id] = allActions
-    // SUP MT chỉ XEM để đối chiếu lương/bảng công — không thao tác nghiệp vụ.
-    matrix.supmt[module.id] = ['dashboard', 'attendance', 'schedule', 'payroll', 'commission'].includes(module.id) ? viewOnly : []
+    // SUP MT giám sát toàn hệ thống: thấy đúng bộ dữ liệu của admin nhưng CHỈ xem và
+    // xuất báo cáo. Riêng chấm công có thêm quyền ghi cho ca của CHÍNH họ (RLS
+    // `supmt adds own shift anywhere`), không phải quyền sửa công người khác.
+    matrix.supmt[module.id] = ['pos', 'kitchen'].includes(module.id) ? [] : exportable
     matrix.shift_leader[module.id] = ['inventory', 'handover', 'report', 'orders', 'pos', 'attendance'].includes(module.id) ? operate : viewOnly
     matrix.staff[module.id] = ['pos', 'attendance', 'schedule'].includes(module.id) ? operate : []
     matrix.cashier[module.id] = module.id === 'pos' ? operate : []

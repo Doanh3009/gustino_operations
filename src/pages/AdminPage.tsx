@@ -20,7 +20,7 @@ import {
   updateEmployeeRole,
 } from '../lib/attendance'
 import { formatDecimalHoursAsDuration, formatWorkDurationBetween } from '../lib/workDuration'
-import { employeePositionLabel, roleLabel } from '../lib/access'
+import { canOpenAdminConsole, employeePositionLabel, isBranchlessRole, isReadOnlyConsoleRole, roleLabel } from '../lib/access'
 import { useLang } from '../lib/i18n'
 import { PRODUCTS, getPackingOptionsByOutput, getProducts, productById } from '../lib/constants'
 import { branchName as configuredBranchName, syncConfiguredBranchRows, useConfiguredBranches, writeConfiguredBranchRows, type ConfigBranch } from '../lib/branches'
@@ -276,6 +276,7 @@ const ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
   { value: 'cashier', label: 'Thu ngân POS' },
   { value: 'staff', label: 'Nhân viên' },
   { value: 'shift_leader', label: 'Ca trưởng' },
+  { value: 'supmt', label: 'Giám sát (SUP MT)' },
   { value: 'manager', label: 'Quản lý' },
 ]
 
@@ -368,6 +369,9 @@ function managementRealtimeTables(section: AdminSection, focused: boolean) {
 export function ManagementPage({ user, initialSection, focused = false }: { user: AppUser; initialSection?: AdminSection; focused?: boolean }) {
   const lang = useLang()
   const text = lang === 'en' ? ADMIN_TEXT_EN : ADMIN_TEXT.vi
+  // SUP MT xem đúng bộ dữ liệu của admin nhưng KHÔNG có nút ghi nào. Cờ này chỉ ẩn
+  // giao diện; RLS mới là lớp chặn thật (xem `20260808_supmt_readonly_access.sql`).
+  const readOnly = isReadOnlyConsoleRole(user.role)
   const branches = useConfiguredBranches({ user })
   const initialRange = monthRange()
   const [activeSection, setActiveSection] = useState<AdminSection>(initialSection || 'overview')
@@ -1360,7 +1364,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       const employee = await createEmployeeAccount(user, {
         name: accountName.trim(),
         username,
-        branchId: accountRole === 'manager' || accountRole === 'kitchen' ? undefined : accountBranchId,
+        branchId: isBranchlessRole(accountRole) ? undefined : accountBranchId,
         role: accountRole,
         employmentType: accountEmploymentType,
         positionTitle: accountPositionTitle.trim(),
@@ -2357,6 +2361,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           </div>
       </div>
 
+      {readOnly && <div className="feedback-bar">Chế độ giám sát (SUP MT): chỉ xem và xuất báo cáo, mọi thao tác chỉnh sửa dữ liệu đều do Admin thực hiện.</div>}
       {error && <div className="feedback-bar">{error}<button onClick={() => setError('')}>×</button></div>}
       {feedback && <div className="feedback-bar success">{feedback}<button onClick={() => setFeedback('')}>×</button></div>}
 
@@ -2699,7 +2704,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       <span className={`attendance-state ${row.status}`}>{attendanceDetailStatus(row.status)}</span>
                       <strong>{formatWorkDurationBetween(row.checkInTime, row.checkOutTime)}</strong>
                     </div>
-                    {row.attendanceRecordId ? (
+                    {!readOnly && (row.attendanceRecordId ? (
                       <div className="attendance-record-actions">
                         <button
                           type="button"
@@ -2741,7 +2746,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                           }}
                         >Xóa dòng</button>
                       </div>
-                    )}
+                    ))}
 
                     {row.note && (
                       <div className="attendance-detail-note">
@@ -2841,6 +2846,8 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
             </>
           )}
 
+          {/* Biểu mẫu bổ sung công + nút chốt giờ ra trong component này đã tự khóa theo
+              `user.role === 'admin'`, nên vai trò chỉ xem chỉ thấy chứng từ và nút xuất CSV. */}
           {activeSection === 'attendance' && <AttendanceAdjustmentArchive user={user} />}
 
           {/* ===== KPI DOANH THU ===== */}
@@ -3314,7 +3321,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   {!inventoryShiftReconciliationRows.length && <p className="empty-copy">Không có ca vận hành trong khoảng ngày và chi nhánh đã chọn.</p>}
                 </div>
               </section>
-              {user.role === 'admin' && <>
+              {canOpenAdminConsole(user.role) && <>
               {/* Sổ phát sinh kho: lọc theo loại phiếu + tìm không dấu + phân trang.
                   Bản cũ đổ thẳng mọi phiếu của kỳ ra một khối duy nhất. */}
               <div className="admin-ledger-filterbar">
@@ -3480,7 +3487,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   loading={loading}
                   createOpen={showCreateBranch}
                   deletingId={branchDeletingId}
-                  onToggleCreate={() => setShowCreateBranch((current) => !current)}
+                  onToggleCreate={readOnly ? undefined : () => setShowCreateBranch((current) => !current)}
                   onOpenBranch={(branch) => {
                     navigateAdminHash(`/admin/branches/${encodeURIComponent(branch.id)}/overview`)
                     setCrmBranchId(branch.id)
@@ -3490,7 +3497,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   onDeleteBranch={user.role === 'admin' ? (branch) => void removeBranchFromOperations(branch) : undefined}
                 />
               )}
-              {!crmEmployeeId && !crmBranchId && accountsDirectory === 'branches' && showCreateBranch && (
+              {!crmEmployeeId && !crmBranchId && accountsDirectory === 'branches' && showCreateBranch && !readOnly && (
                 <div className="admin-crm-create-panel">
                   <div className="admin-crm-subtitle"><strong>Tạo hồ sơ chi nhánh</strong><small>Chi nhánh mới sẽ có sẵn khung ca mặc định.</small></div>
                   <form className="admin-crm-branch-form" onSubmit={createBranchFromCrm}>
@@ -3660,16 +3667,18 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         ['overview', 'Tổng quan'],
                         ['attendance', 'Chấm công'],
                         ['sales', 'Doanh số'],
-                        ['account', 'Tài khoản'],
+                        // Tab Tài khoản chỉ chứa thao tác ghi (đổi vai trò, đặt lại mật khẩu, xóa)
+                        // nên vai trò chỉ xem không có tab này.
+                        ...(readOnly ? [] : [['account', 'Tài khoản'] as const]),
                       ] as const).map(([id, label]) => (
                         <button type="button" key={id} className={employeeProfileTab === id ? 'active' : ''} onClick={() => navigateAdminHash(`/admin/employees/${encodeURIComponent(crmEmployeeId)}/${id}`)}>{label}</button>
                       ))}
                     </nav>
-                    {employeeProfileTab === 'overview' && <div className="admin-crm-profile-grid single">
+                    {employeeProfileTab === 'overview' && !readOnly && <div className="admin-crm-profile-grid single">
                       <section className="admin-crm-profile-panel">
                         <div className="admin-crm-subtitle"><strong>Thông tin công việc</strong><small>Cập nhật hồ sơ của nhân viên này.</small></div>
                         <div className="employee-profile-editor">
-                          {employee.role === 'manager' || employee.role === 'kitchen' ? (
+                          {isBranchlessRole(employee.role) ? (
                             <label>Phạm vi<input value="Tất cả chi nhánh" disabled /></label>
                           ) : (
                             <label>Chi nhánh
@@ -3703,7 +3712,20 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         </div>
                       </section>
                     </div>}
-                    {employeeProfileTab === 'account' && <div className="admin-crm-profile-grid single">
+                    {/* Vai trò chỉ xem không có biểu mẫu sửa hồ sơ, nhưng vẫn cần thấy
+                        thông tin công việc để đối chiếu bảng công/doanh số. */}
+                    {employeeProfileTab === 'overview' && readOnly && <div className="admin-crm-profile-grid single">
+                      <section className="admin-crm-profile-panel">
+                        <div className="admin-crm-subtitle"><strong>Thông tin công việc</strong><small>Chế độ chỉ xem.</small></div>
+                        <div className="admin-crm-metrics">
+                          <article><span>Chi nhánh</span><strong>{isBranchlessRole(employee.role) ? 'Tất cả chi nhánh' : branchName(employee.branchId)}</strong><small>{roleLabel(employee.role, lang)}</small></article>
+                          <article><span>Nhóm ca</span><strong>{employeePositionLabel(employee)}</strong><small>{employee.employmentType || '—'}</small></article>
+                          <article><span>Ngày bắt đầu</span><strong>{employee.employmentStartDate ? formatDate(employee.employmentStartDate) : '—'}</strong><small>{employee.probationEndDate ? `Hết thử việc ${formatDate(employee.probationEndDate)}` : 'Chưa ghi nhận thử việc'}</small></article>
+                          <article><span>Ghi chú quản lý</span><strong>{employee.employmentNote ? '' : '—'}</strong><small>{employee.employmentNote || 'Không có'}</small></article>
+                        </div>
+                      </section>
+                    </div>}
+                    {employeeProfileTab === 'account' && !readOnly && <div className="admin-crm-profile-grid single">
                       <section className="admin-crm-profile-panel">
                         <div className="admin-crm-subtitle"><strong>Tài khoản & bảo mật</strong><small>Các thao tác chỉ áp dụng cho nhân viên này.</small></div>
                         <div className="admin-crm-account-actions">
@@ -3719,7 +3741,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                         </div>
                       </section>
                     </div>}
-                    {employeeProfileTab === 'overview' && <div className="admin-crm-history-grid single">
+                    {employeeProfileTab === 'overview' && !readOnly && <div className="admin-crm-history-grid single">
                       <section className="admin-crm-profile-panel">
                         <div className="admin-crm-subtitle"><strong>Tình trạng lao động</strong></div>
                         <div className="admin-crm-lifecycle-form">
@@ -3795,17 +3817,17 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   branches={visibleBranches}
                   loading={loading}
                   createOpen={showCreateAccount}
-                  onToggleCreate={() => setShowCreateAccount((current) => !current)}
+                  onToggleCreate={readOnly ? undefined : () => setShowCreateAccount((current) => !current)}
                   onOpenEmployee={openEmployeeCrm}
                 />
               )}
-              {!crmEmployeeId && !crmBranchId && accountsDirectory === 'employees' && showCreateAccount && <div className="admin-crm-create-panel">
+              {!crmEmployeeId && !crmBranchId && accountsDirectory === 'employees' && showCreateAccount && !readOnly && <div className="admin-crm-create-panel">
                 <div className="admin-crm-subtitle"><strong>Tạo hồ sơ nhân viên</strong><small>Thông tin đăng nhập và công việc ban đầu.</small></div>
                 <form className="employee-account-form" onSubmit={createAccount}>
                 <label>Họ tên<input value={accountName} onChange={(event) => setAccountName(event.target.value)} placeholder="Nguyễn Văn A" required /></label>
                 <label>Tên đăng nhập<input value={accountUsername} onChange={(event) => setAccountUsername(event.target.value)} placeholder="Ví dụ: ngoc, quanly" autoCapitalize="none" required /></label>
                 <label>Mật khẩu<input type="password" minLength={6} value={accountPassword} onChange={(event) => setAccountPassword(event.target.value)} placeholder="Quản lý tự đặt" required /></label>
-                {accountRole === 'manager' || accountRole === 'kitchen' ? (
+                {isBranchlessRole(accountRole) ? (
                   <label>Phạm vi
                     <input value="Tất cả chi nhánh" disabled />
                   </label>

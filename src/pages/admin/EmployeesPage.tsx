@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Pagination } from '../../components/admin/Pagination'
 import { ErpListToolbar } from '../../components/admin/ErpListToolbar'
-import { roleLabel } from '../../lib/access'
+import { isBranchlessRole, roleLabel } from '../../lib/access'
 import { emailToUsername } from '../../lib/authIdentity'
 import type { EmployeeProfile, EmploymentStatus, EmploymentType, Role } from '../../types'
 
@@ -10,7 +10,8 @@ interface EmployeesPageProps {
   branches: Array<{ id: string; name: string }>
   loading: boolean
   createOpen: boolean
-  onToggleCreate: () => void
+  // Bỏ trống với vai trò chỉ xem (SUP MT): thiếu handler thì ErpListToolbar không vẽ nút "Tạo mới".
+  onToggleCreate?: () => void
   onOpenEmployee: (employee: EmployeeProfile) => void
 }
 
@@ -43,7 +44,7 @@ export function EmployeesPage({
     ].filter(Boolean).join(' ')).includes(query)
     const matchesBranch = !branchId
       || employee.branchId === branchId
-      || ((employee.role === 'manager' || employee.role === 'kitchen') && branchId === 'all-branches')
+      || (isBranchlessRole(employee.role) && branchId === 'all-branches')
     const matchesStatus = status === 'all'
       || (status === 'inactive'
         ? employee.active === false
@@ -73,7 +74,7 @@ export function EmployeesPage({
         search={search}
         onSearchChange={setSearch}
         searchPlaceholder="Tìm tên, tài khoản, vị trí, chi nhánh…"
-        primaryLabel={createOpen ? 'Đóng' : 'Tạo mới'}
+        primaryLabel={onToggleCreate ? (createOpen ? 'Đóng' : 'Tạo mới') : undefined}
         onPrimary={onToggleCreate}
         filters={<div className="admin-employee-directory-filters">
         <label>Chi nhánh

@@ -30,7 +30,11 @@
 
 `Role = 'admin' | 'manager' | 'supmt' | 'shift_leader' | 'staff' | 'cashier' | 'kitchen'` (`src/types.ts`)
 
-- `supmt` (Giám sát SUP MT, thêm 2026-08-04, §47): CHỈ XEM để đối chiếu lương/bảng công toàn hệ thống + trả lời phản hồi lương. Không thao tác nghiệp vụ, không sửa lương (chỉ admin sửa). `canReviewPayroll = admin | supmt` (`access.ts`).
+- `supmt` (Giám sát SUP MT = Supervisor Market Trade, thêm 2026-08-04, mở rộng 2026-08-08): **bản sao chỉ-đọc của admin.** Vào đúng trang Quản trị `#/admin/*` với đủ 7 section (doanh thu, tổng quan, chấm công, thi đua, kho, đơn hàng, nhân sự) nhưng KHÔNG có bất kỳ nút ghi nào; thêm việc của chính họ: tự đăng ký ca + chấm công tại **bất kỳ chi nhánh nào** (vai trò đi thị trường, không gắn `branch_id`).
+  - `access.ts`: `canOpenAdminConsole = admin | supmt`, `isReadOnlyConsoleRole = supmt` (cờ ẩn nút trong `AdminPage`), `hasSystemWideScope = admin | supmt`, `isBranchlessRole = manager | kitchen | supmt` (phải khớp `branchlessRole` trong edge function `manage-employee`), `canReviewPayroll = admin | supmt`.
+  - **Chặn thật ở RLS, không phải ở giao diện:** `20260808_supmt_role_enum.sql` (thêm giá trị enum — trước đó `app_role` KHÔNG có `supmt` nên không tạo nổi tài khoản) + `20260808_supmt_readonly_access.sql` (15 policy SELECT trên profiles/shift_registrations/attendance_records/attendance_adjustment_requests/sales_receipts/sales_receipt_items/bag_allocations/bag_shift_sessions/commission_rules/employee_kpi_targets/stock_movements/inventory_reports/operation_days/report_snapshots/supply_requests + **đúng 1 policy INSERT**: `supmt adds own shift anywhere` cho `shift_registrations`). Check-in/out không cần policy mới vì policy cũ chỉ xét `user_id = auth.uid()`.
+  - Enum phải nằm ở migration RIÊNG: Postgres không cho dùng giá trị enum vừa thêm trong cùng transaction.
+  - Test: `scripts/test-supmt-readonly-permissions.mjs`.
 - `cashier` (Thu ngân POS): chỉ bán hàng tại chi nhánh được gán.
 
 `src/lib/access.ts` — các hàm kiểm tra quyền:
@@ -55,6 +59,7 @@
 - `kitchen` → `kitchen`
 - `staff` → `sales`
 - `admin/manager` → `dashboard` (Manager Dashboard)
+- `supmt` → `management` (trang Quản trị ở chế độ chỉ xem)
 - `shift_leader` → `today`
 - còn lại → `attendance`
 

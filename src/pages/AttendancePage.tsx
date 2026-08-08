@@ -39,7 +39,7 @@ import {
 } from '../lib/shiftAutoOpen'
 import { shouldUseLanApi, supabase, uniqueChannelName } from '../lib/supabase'
 import { addLocalDateKeyDays, localDateKey, localDateKeyWeekday, VN_UTC_OFFSET } from '../lib/dates'
-import { employeePositionLabel, roleLabel as accessRoleLabel } from '../lib/access'
+import { employeePositionLabel, hasSystemWideScope, roleLabel as accessRoleLabel } from '../lib/access'
 import { useLang } from '../lib/i18n'
 import { createAttendanceAdjustment } from '../lib/attendanceAdjustments'
 import { ATTENDANCE_OUTBOX_EVENT, inspectAttendanceOutbox, type AttendanceOutboxOp } from '../lib/attendanceOutbox'
@@ -959,6 +959,18 @@ function AttendanceAdjustmentForm({ user, onFeedback }: {
   )
 }
 
+/**
+ * Chi nhánh được phép chọn khi TỰ đăng ký ca / chấm công.
+ *
+ * SUP MT (giám sát thị trường) và admin không gắn chi nhánh cố định: đi giám sát chi
+ * nhánh nào thì đăng ký ca và chấm công tại chi nhánh đó. Nhân viên/ca trưởng vẫn khóa
+ * đúng chi nhánh của mình như cũ.
+ */
+function attendanceBranchOptions(user: AppUser) {
+  if (hasSystemWideScope(user.role) || user.role === 'manager') return permittedBranchIds(user)
+  return [user.branchId]
+}
+
 function RegistrationPanel({
   user, shifts, registrations, onChanged, onFeedback,
 }: {
@@ -968,9 +980,9 @@ function RegistrationPanel({
   onChanged: () => Promise<void>
   onFeedback: (message: string) => void
 }) {
-  const branchIds = user.role === 'manager' || user.role === 'admin' ? permittedBranchIds(user) : [user.branchId]
+  const branchIds = attendanceBranchOptions(user)
   const branches = useConfiguredBranches({ user })
-  const [branchId, setBranchId] = useState(user.branchId)
+  const [branchId, setBranchId] = useState(user.branchId || branchIds[0] || '')
   const [workDate, setWorkDate] = useState(localDateKey())
   const [shiftId, setShiftId] = useState('')
   const [startTime, setStartTime] = useState('08:00')
@@ -1096,7 +1108,7 @@ function SharedScheduleBoard({
   onFeedback: (message: string) => void
 }) {
   const isScheduleManager = canManageShiftSetup(user)
-  const [branchId, setBranchId] = useState(user.branchId)
+  const [branchId, setBranchId] = useState(user.branchId || attendanceBranchOptions(user)[0] || '')
   const from = range.from
   const [liveUsers, setLiveUsers] = useState<string[]>([])
   const [savingCell, setSavingCell] = useState('')
@@ -1129,7 +1141,7 @@ function SharedScheduleBoard({
     setFrom(isScheduleManager ? registrationWeekStartKey() : localDateKey())
   }
   const canSetupShifts = canManageShiftSetup(user)
-  const branchIds = isScheduleManager ? permittedBranchIds(user) : [user.branchId]
+  const branchIds = isScheduleManager ? permittedBranchIds(user) : attendanceBranchOptions(user)
   const branches = useConfiguredBranches({ user })
   const branchShifts = shifts.filter((shift) => shift.branchId === branchId)
   const fallbackShiftOptions: WorkShift[] = DEFAULT_WORK_SHIFT_TEMPLATES.map((template, index) => ({
@@ -1182,7 +1194,9 @@ function SharedScheduleBoard({
         id: user.id,
         profileId: user.id,
         name: user.name,
-        branchId: user.branchId,
+        // SUP MT/admin không có chi nhánh cố định: gắn theo chi nhánh đang xem để dòng
+        // của chính họ không bị lọc mất (bảng lịch lọc theo `person.branchId === branchId`).
+        branchId: user.branchId || branchId,
         employmentType: user.employmentType,
         positionTitle: user.positionTitle,
         active: true,
@@ -1204,7 +1218,7 @@ function SharedScheduleBoard({
       })
     }
     return [...byProfile.values(), ...unlinked]
-  }, [people, employees, user.id, user.name, user.branchId, user.employmentType, user.positionTitle])
+  }, [people, employees, branchId, user.id, user.name, user.branchId, user.employmentType, user.positionTitle])
   const schedulePeople = mergedPeople
     .filter((person) => person.branchId === branchId && person.active)
     .sort((a, b) => {

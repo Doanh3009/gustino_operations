@@ -31,6 +31,38 @@ export function canReviewPayroll(role: Role) {
   return role === 'admin' || role === 'supmt'
 }
 
+// Trang Quản trị (#/admin/*): admin vừa xem vừa thao tác, SUP MT chỉ xem.
+// SUP MT (Supervisor Market Trade) giám sát doanh thu/doanh số/lịch ca/chấm công
+// của TOÀN hệ thống nên nhìn thấy đúng những gì admin nhìn thấy.
+export const ADMIN_CONSOLE_ROLES: Role[] = ['admin', 'supmt']
+
+export function canOpenAdminConsole(role: Role) {
+  return ADMIN_CONSOLE_ROLES.includes(role)
+}
+
+/**
+ * Vai trò CHỈ ĐỌC trong trang Quản trị.
+ *
+ * Dùng để ẩn mọi nút/biểu mẫu ghi dữ liệu (chỉnh công, xóa ca, tạo tài khoản,
+ * đổi vai trò, đặt lại mật khẩu, tạo/xóa chi nhánh…). Đây là lớp chặn giao diện;
+ * lớp chặn thật nằm ở RLS — `supmt` không có mặt trong bất kỳ policy ghi nào
+ * ngoài chấm công/đăng ký ca của CHÍNH họ (xem `20260808_supmt_readonly_access.sql`).
+ */
+export function isReadOnlyConsoleRole(role: Role) {
+  return role === 'supmt'
+}
+
+// Vai trò giám sát toàn hệ thống: không gắn chi nhánh, đọc dữ liệu mọi chi nhánh.
+export function hasSystemWideScope(role: Role) {
+  return role === 'admin' || role === 'supmt'
+}
+
+// Vai trò không gắn một chi nhánh cố định. Phải khớp `branchlessRole` trong
+// edge function `manage-employee` — lệch nhau là tạo tài khoản lỗi ràng buộc.
+export function isBranchlessRole(role: Role) {
+  return role === 'manager' || role === 'kitchen' || role === 'supmt'
+}
+
 export function normalizeRole(role: Role): Role {
   return role
 }

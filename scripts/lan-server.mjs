@@ -502,7 +502,9 @@ async function persistSupabaseN8nDelivery(operator, snapshot, shiftId, delivery)
 }
 
 function canAccessBranch(user, branchId) {
-  if (['admin', 'manager', 'kitchen'].includes(user.role)) return true
+  // `supmt` (giám sát SUP MT) đọc mọi chi nhánh như admin; quyền GHI vẫn bị chặn ở
+  // từng route vì các danh sách vai trò cho phép ghi không có supmt.
+  if (['admin', 'manager', 'kitchen', 'supmt'].includes(user.role)) return true
   return user.branchId === branchId || user.branchIds.includes(branchId)
 }
 
@@ -527,7 +529,7 @@ function closeOutstandingBagSession(session, userId, note = 'Auto closed.') {
 }
 
 function attendanceRowsAllowed(user, rows, ownerField = 'userId') {
-  if (['admin', 'manager', 'shift_leader'].includes(user.role)) return rows.filter((item) => canAccessBranch(user, item.branchId))
+  if (['admin', 'manager', 'shift_leader', 'supmt'].includes(user.role)) return rows.filter((item) => canAccessBranch(user, item.branchId))
   return rows.filter((item) => item[ownerField] === user.id)
 }
 
@@ -618,7 +620,7 @@ async function handleApi(request, response, url) {
   if (url.pathname === '/api/commission-rules' && request.method === 'GET') {
     const user = actor(request)
     if (!user.id) return json(response, 401, { error: 'Chưa đăng nhập.' })
-    const branchIds = ['admin', 'manager'].includes(user.role)
+    const branchIds = ['admin', 'manager', 'supmt'].includes(user.role)
       ? (store.branches || []).map((branch) => branch.id)
       : Array.from(new Set([user.branchId, ...(user.branchIds || [])]))
     return json(response, 200, (store.commissionRules || []).filter((rule) => branchIds.includes(rule.branchId)))
@@ -690,7 +692,7 @@ async function handleApi(request, response, url) {
     const user = actor(request)
     if (!user.id) return json(response, 401, { error: 'Chưa đăng nhập.' })
     const requestedBranchIds = (url.searchParams.get('branchIds') || user.branchId).split(',').filter(Boolean)
-    const allowedBranchIds = ['admin', 'manager'].includes(user.role)
+    const allowedBranchIds = ['admin', 'manager', 'supmt'].includes(user.role)
       ? requestedBranchIds.filter((id) => canAccessBranch(user, id))
       : [user.branchId]
     const rows = (store.supplyRequests || [])
@@ -1081,7 +1083,7 @@ async function handleApi(request, response, url) {
         return json(response, 401, { error: 'Tên đăng nhập hoặc mật khẩu không đúng.' })
       }
       const authToken = randomBytes(32).toString('hex')
-      const branchIds = ['admin', 'manager', 'kitchen'].includes(profile.role)
+      const branchIds = ['admin', 'manager', 'kitchen', 'supmt'].includes(profile.role)
         ? Array.from(new Set([profile.branchId, ...(profile.branchIds || [])]))
         : [profile.branchId]
       sessions.set(authToken, {

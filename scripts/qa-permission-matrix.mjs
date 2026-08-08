@@ -12,6 +12,8 @@ const canUseSales = (r) => ['shift_leader', 'staff', 'cashier'].includes(r)
 const canUseOperations = (r) => r === 'shift_leader'
 const canUseManagement = (r) => ['admin', 'manager'].includes(r)
 const canUseKitchen = (r) => ['admin', 'kitchen'].includes(r)
+// Trang Quản trị: admin thao tác, SUP MT chỉ xem (ManagementPage tự khóa nút ghi).
+const canOpenAdminConsole = (r) => ['admin', 'supmt'].includes(r)
 const managerSections = ['manager-revenue', 'manager-business', 'manager-inventory']
 
 function canAccess(role, page) {
@@ -26,7 +28,7 @@ function canAccess(role, page) {
   if (page === 'inventory') return canUseOperations(role)
   // Admin theo dõi đơn ở trang Quản trị, không lập phiếu đặt hàng của chi nhánh.
   if (page === 'orders') return role !== 'admin' && (canUseManagement(role) || canUseOperations(role))
-  if (page === 'management') return role === 'admin'
+  if (page === 'management') return canOpenAdminConsole(role)
   // Đồng bộ App.tsx/AppShell: hai route vận hành nhân sự/đơn hàng này chỉ admin.
   if (page === 'manager-attendance' || page === 'manager-requests') return canUseAdmin(role)
   if (managerSections.includes(page)) return role === 'manager'
@@ -41,7 +43,7 @@ function defaultPage(role) {
   if (role === 'staff' || role === 'cashier') return 'sales'
   if (role === 'admin') return 'management'
   if (role === 'manager') return 'dashboard'
-  if (role === 'supmt') return 'attendance'
+  if (role === 'supmt') return 'management'
   if (canUseOperations(role)) return 'today'
   return 'attendance'
 }
@@ -71,6 +73,8 @@ const roles = [
   { role: 'shift_leader', id: 'demo-shift-leader', name: 'Ca trưởng Demo', branchId: 'gold-coast', branchIds: ['gold-coast'] },
   { role: 'staff', id: 'demo-staff', name: 'Nhân viên Demo', branchId: 'gold-coast', branchIds: ['gold-coast'] },
   { role: 'kitchen', id: 'demo-kitchen', name: 'Bếp Demo', branchId: 'gold-coast', branchIds: ['gold-coast'] },
+  // SUP MT không gắn chi nhánh cố định (giống manager/kitchen ở edge function manage-employee).
+  { role: 'supmt', id: 'demo-supmt', name: 'Giám sát SUP MT Demo', branchId: '', branchIds: ['gold-coast', 'lotte-2310', 'lotte-vt'] },
 ]
 
 const browser = await chromium.launch({

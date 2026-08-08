@@ -7,6 +7,7 @@ import {
   type AttendanceOutboxDurability,
   type AttendanceOutboxOp,
 } from './attendanceOutbox'
+import { hasSystemWideScope, isBranchlessRole } from './access'
 import { detectDeviceEnvironment } from './deviceReadiness'
 import { branchIds, branchName } from './branches'
 import { localDateKey } from './dates'
@@ -102,7 +103,7 @@ function queryString(filters: AttendanceFilters) {
 
 export function permittedBranchIds(user: AppUser) {
   // SUP MT là vai trò giám sát/đối chiếu toàn hệ thống — xem được mọi chi nhánh như admin.
-  if (user.role === 'admin' || user.role === 'supmt') return branchIds()
+  if (hasSystemWideScope(user.role)) return branchIds()
   if (user.role === 'manager' || user.role === 'kitchen') {
     const scopedIds = Array.from(new Set([user.branchId, ...(user.branchIds || [])].filter(Boolean)))
     return scopedIds.length ? scopedIds : branchIds()
@@ -150,12 +151,14 @@ export async function fetchEmployees(user: AppUser, options: { includeInactive?:
   const client = supabase!
   let query = client.from('profiles').select('id, full_name, email, role, branch_id, active, employment_type, position_title, avatar_url, employment_status, employment_start_date, probation_end_date, employment_end_date, employment_note').order('full_name')
   if (!options.includeInactive) query = query.eq('active', true)
-  if (user.role !== 'admin') query = query.in('branch_id', branches)
+  // Vai trò toàn hệ thống (admin, SUP MT) không lọc theo chi nhánh: lọc `branch_id in (...)`
+  // sẽ cắt mất chính các tài khoản không gắn chi nhánh (quản lý, bếp, giám sát).
+  if (!hasSystemWideScope(user.role)) query = query.in('branch_id', branches)
   let { data, error } = await query as { data: any[] | null; error: any }
   if (error) throw error
   const rows = options.includeInactive
     ? (data || [])
-    : (data || []).filter((row) => row.role === 'admin' || row.role === 'manager' || row.role === 'kitchen' || isActiveBranch(row.branch_id, activeBranches))
+    : (data || []).filter((row) => row.role === 'admin' || isBranchlessRole(row.role) || isActiveBranch(row.branch_id, activeBranches))
   return rows.map((row) => ({
     id: row.id,
     name: row.full_name,

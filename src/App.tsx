@@ -10,7 +10,7 @@ import { LauncherPage } from './pages/LauncherPage'
 import { LoginPage } from './pages/LoginPage'
 import type { AdminSection } from './pages/AdminPage'
 import { adminRouteForSection, adminSectionForRoute } from './pages/admin/routeMap'
-import { canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseSales, normalizeRole } from './lib/access'
+import { canOpenAdminConsole, canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseSales, hasSystemWideScope, normalizeRole } from './lib/access'
 import { clearSessionStart, markSessionStart, sessionOverdueMs, setSessionExpiredNotice } from './lib/sessionExpiry'
 import { fetchConfiguredProducts, subscribeConfiguredProducts } from './lib/products'
 import type { AppUser, StockMovement } from './types'
@@ -362,7 +362,7 @@ function App() {
     void (async () => {
       let nextBranchIds: string[] = []
       // SUP MT đối chiếu toàn hệ thống nên nhận mọi chi nhánh active như admin.
-      if (user.role === 'admin' || user.role === 'supmt') {
+      if (hasSystemWideScope(user.role)) {
         const { data } = await supabase
           .from('branches')
           .select('id')
@@ -510,7 +510,7 @@ function App() {
         )}
         {page === 'orders' && <OrdersPage user={user} movements={movements} />}
         {page === 'attendance' && <AttendancePage user={user} movements={movements} onNavigate={navigate} />}
-        {page === 'management' && canUseManagement(user.role) && <ManagementPage user={user} initialSection={mgmtSection} />}
+        {page === 'management' && canOpenAdminConsole(user.role) && <ManagementPage user={user} initialSection={mgmtSection} />}
         {page === 'manager-revenue' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="revenue" focused />}
         {page === 'manager-business' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="commission" focused />}
         {page === 'manager-inventory' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="inventory" focused />}
@@ -637,7 +637,8 @@ function canAccessPage(user: AppUser, page: Page) {
   // Admin không phải người đặt hàng: admin theo dõi/lọc/xuất đơn ở mục Đặt hàng trong trang
   // Quản trị (#/management/requests), nên không vào trang lập phiếu đặt hàng của chi nhánh.
   if (page === 'orders') return user.role !== 'admin' && (canUseManagement(user.role) || canUseOperations(user.role))
-  if (page === 'management') return user.role === 'admin'
+  // SUP MT vào cùng trang Quản trị với admin, nhưng ManagementPage khóa mọi thao tác ghi.
+  if (page === 'management') return canOpenAdminConsole(user.role)
   if (page === 'manager-attendance') return canUseAdmin(user.role)
   if (page === 'manager-requests') return canUseAdmin(user.role)
   if (['manager-revenue', 'manager-business', 'manager-inventory'].includes(page)) return user.role === 'manager'
@@ -652,7 +653,8 @@ function defaultPageForRole(user: AppUser): Page {
   if (user.role === 'staff' || user.role === 'cashier') return 'sales'
   if (user.role === 'admin') return 'management'
   if (user.role === 'manager') return 'dashboard'
-  if (user.role === 'supmt') return 'attendance'
+  // SUP MT mở thẳng trang Quản trị (chỉ xem); màn chấm công cá nhân nằm ở mục riêng.
+  if (user.role === 'supmt') return 'management'
   if (canUseOperations(user.role)) return 'today'
   return 'attendance'
 }

@@ -13,7 +13,8 @@ interface Props {
   loading: boolean
   createOpen: boolean
   deletingId?: string
-  onToggleCreate: () => void
+  // Bỏ trống với vai trò chỉ xem (SUP MT): thiếu handler thì ErpListToolbar không vẽ nút "Tạo mới".
+  onToggleCreate?: () => void
   onOpenBranch: (branch: Branch) => void
   onDeleteBranch?: (branch: Branch) => void
 }
@@ -51,7 +52,7 @@ export function BranchesPage({ branches, employees, receipts, from, to, loading,
         search={search}
         onSearchChange={setSearch}
         searchPlaceholder="Tìm tên, địa chỉ, quản lý…"
-        primaryLabel={createOpen ? 'Đóng' : 'Tạo mới'}
+        primaryLabel={onToggleCreate ? (createOpen ? 'Đóng' : 'Tạo mới') : undefined}
         onPrimary={onToggleCreate}
       />
       <div className="admin-data-table-scroll">

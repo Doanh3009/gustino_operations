@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useRef } from 'react'
-import { canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseSales, displayUserName, roleLabel } from '../lib/access'
+import { canOpenAdminConsole, canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseSales, displayUserName, roleLabel } from '../lib/access'
 import { toggleLang, useLang } from '../lib/i18n'
 import { heartbeatActiveUser } from '../lib/activeUsers'
 import {
@@ -76,6 +76,21 @@ const ADMIN_NAV: NavItem[] = [
   { id: 'management', section: 'commission', label: 'Thi đua nhân viên', icon: <IconChart />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'report-archive', label: 'Báo cáo', icon: <IconReport />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'control', label: 'Cài đặt', icon: <IconSettings />, canShow: (user) => canUseAdmin(user.role) },
+]
+
+// SUP MT (giám sát thị trường) đi cùng bộ mục với admin để đối chiếu số liệu toàn
+// hệ thống, chỉ khác là mọi thao tác ghi bị khóa trong ManagementPage. Hai mục cuối
+// là việc của chính họ: chấm công và xem bảng công cá nhân.
+const SUPMT_NAV: NavItem[] = [
+  { id: 'management', section: 'revenue', label: 'Doanh thu', icon: <IconChart />, canShow: () => true },
+  { id: 'management', section: 'overview', label: 'Tổng quan', icon: <IconDashboard />, canShow: () => true },
+  { id: 'management', section: 'attendance', label: 'Chấm công NV', shortLabel: 'Công NV', icon: <IconClock />, canShow: () => true },
+  { id: 'management', section: 'commission', label: 'Thi đua nhân viên', shortLabel: 'Thi đua', icon: <IconChart />, canShow: () => true },
+  { id: 'management', section: 'inventory', label: 'Kho hàng', icon: <IconBox />, canShow: () => true },
+  { id: 'management', section: 'requests', label: 'Đơn hàng', icon: <IconClipboard />, canShow: () => true },
+  { id: 'management', section: 'accounts', label: 'Nhân sự', icon: <IconUsers />, canShow: () => true },
+  { id: 'attendance', label: 'Chấm công của tôi', shortLabel: 'Chấm công', icon: <IconUsers />, canShow: () => true },
+  { id: 'my-timesheet', label: 'Xem công', shortLabel: 'Công', icon: <IconClock />, canShow: () => true },
 ]
 
 const MANAGER_NAV: NavItem[] = [
@@ -201,9 +216,11 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   const [reportReminderDismissed, setReportReminderDismissed] = useState(false)
   const baseNav = user.role === 'admin'
     ? ADMIN_NAV
-    : user.role === 'manager'
-      ? MANAGER_NAV
-      : NAV_ITEMS
+    : user.role === 'supmt'
+      ? SUPMT_NAV
+      : user.role === 'manager'
+        ? MANAGER_NAV
+        : NAV_ITEMS
   const visibleNav = baseNav.filter((item) => item.canShow(user)).map((item) => ({
     ...item,
     ...(lang === 'en' ? EN_NAV_LABELS[item.id] : null),
@@ -212,7 +229,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   const initials = shownName.slice(0, 2).toUpperCase() || 'G'
   const isActive = (item: NavItem) => {
     if (item.id !== page) return false
-    if (item.id === 'management' && user.role === 'admin') {
+    if (item.id === 'management' && canOpenAdminConsole(user.role)) {
       return item.section ? currentSection === item.section : !currentSection
     }
     return item.section ? (currentSection || 'revenue') === item.section : true
