@@ -382,7 +382,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   useEffect(() => setReportReminderDismissed(false), [reportPending?.shiftId, reportPending?.sequence])
 
   return (
-    <div className={`app-shell${sidebarOpen ? ' mobile-sidebar-open' : ''}${user.role === 'admin' && (page === 'management' || page === 'control') ? ' management-workspace' : ''}${user.role === 'manager' ? ' legacy-manager-workspace' : ''}${page === 'sales' ? ' pos-workspace' : ''}`} onClick={() => { setMenuOpen(false); setSidebarOpen(false) }}>
+    <div className={`app-shell${sidebarOpen ? ' mobile-sidebar-open' : ''}${canOpenAdminConsole(user.role) && (page === 'management' || page === 'control') ? ' management-workspace' : ''}${user.role === 'manager' ? ' legacy-manager-workspace' : ''}${page === 'sales' ? ' pos-workspace' : ''}`} onClick={() => { setMenuOpen(false); setSidebarOpen(false) }}>
       {/* ===== DESKTOP LEFT SIDEBAR ===== */}
       <aside className="app-sidebar" onClick={(event) => event.stopPropagation()}>
         {/* Brand */}
