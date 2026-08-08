@@ -5,7 +5,7 @@
 import fs from 'node:fs'
 import {
   canOpenNextScheduledOperationalShift,
-  scheduledOperationalSequences,
+  operationalSequencesFor,
 } from '../src/lib/operationalShiftAssignment.ts'
 
 const handover = fs.readFileSync('src/pages/ShiftHandoverPage.tsx', 'utf8')
@@ -56,34 +56,34 @@ const workShifts = [
   { id: 'ca-2', branchId, startTime: '14:15', endTime: '22:15', employmentTypes: ['leader', 'full_time'], active: true },
   { id: 'ca-pt', branchId, startTime: '09:00', endTime: '13:00', employmentTypes: ['part_time'], active: true },
 ]
-const regCa1 = { branchId, workDate, shiftId: 'ca-1', startTime: '07:15', endTime: '15:15', status: 'approved' }
-const regCa2 = { branchId, workDate, shiftId: 'ca-2', startTime: '14:15', endTime: '22:15', status: 'approved' }
+const regCa1 = { id: 'r1', userId: 'u-1', employmentType: 'leader', positionTitle: 'Ca trưởng', branchId, workDate, shiftId: 'ca-1', startTime: '07:15', endTime: '15:15', status: 'approved' }
+const regCa2 = { id: 'r2', userId: 'u-1', employmentType: 'leader', positionTitle: 'Ca trưởng', branchId, workDate, shiftId: 'ca-2', startTime: '14:15', endTime: '22:15', status: 'approved' }
 const closedCa1 = [{ branchId, businessDate: workDate, sequence: 1, status: 'closed' }]
+// Một ca trưởng giữ CẢ hai đăng ký trong ngày (Vũng Tàu hay xếp kiểu này).
+const bothRegistrations = [regCa1, regCa2]
 
 assert(
-  canOpenNextScheduledOperationalShift(regCa1, [], workShifts),
+  canOpenNextScheduledOperationalShift(regCa1, [], bothRegistrations, workShifts),
   'Đăng ký Ca 1 phải mở được ca vận hành đầu tiên.',
 )
 assert(
-  !canOpenNextScheduledOperationalShift(regCa1, closedCa1, workShifts),
+  !canOpenNextScheduledOperationalShift(regCa1, closedCa1, bothRegistrations, workShifts),
   'Đăng ký Ca 1 không được phép mở Ca 2 (giữ nguyên quy tắc BUG-100).',
 )
 assert(
-  canOpenNextScheduledOperationalShift(regCa2, closedCa1, workShifts),
+  canOpenNextScheduledOperationalShift(regCa2, closedCa1, bothRegistrations, workShifts),
   'Đăng ký Ca 2 phải mở được Ca 2 sau khi Ca 1 đã chốt, kể cả khi cùng một ca trưởng.',
 )
 // Chính là tình huống Vũng Tàu: một người giữ cả 2 đăng ký, Ca 1 đã chốt.
-const bothRegistrations = [regCa1, regCa2]
 const picked = bothRegistrations.find((registration) =>
-  canOpenNextScheduledOperationalShift(registration, closedCa1, workShifts),
+  canOpenNextScheduledOperationalShift(registration, closedCa1, bothRegistrations, workShifts),
 )
 assert(picked === regCa2, 'Khi giữ cả 2 đăng ký, hệ thống phải chọn đúng đăng ký Ca 2 để mở Ca 2.')
 
 // --- 4. Ngày chỉ xếp một ca trưởng: nhận tiếp có xác nhận, không tự động ---
 assert(
   handover.includes('const anotherLeaderScheduledForNext = registrations.some((registration) =>')
-  && handover.includes("registration.employmentType === 'leader'")
-  && handover.includes('scheduledOperationalSequences(registration, workShifts).includes(nextSequence)'),
+  && handover.includes('operationalSequencesFor(registration, registrations, workShifts).includes(nextSequence)'),
   'Chưa kiểm tra xem có ca trưởng khác được xếp sequence kế tiếp hay không.',
 )
 assert(
@@ -107,15 +107,15 @@ assert(
 )
 
 // Ca trưởng khác CÓ lịch Ca 2 → không được phép nhận tiếp (chống BUG-100).
-const otherLeaderCa2 = { ...regCa2, userId: 'other', employmentType: 'leader' }
+const otherLeaderCa2 = { ...regCa2, id: 'r2-other', userId: 'other', employmentType: 'leader' }
 assert(
-  scheduledOperationalSequences(otherLeaderCa2, workShifts).includes(2),
+  operationalSequencesFor(otherLeaderCa2, [regCa1, otherLeaderCa2], workShifts).includes(2),
   'Đăng ký Ca 2 của ca trưởng khác phải được nhận diện là giữ sequence 2.',
 )
 // PG part-time không bao giờ được tính là ca trưởng giữ ca vận hành.
-const partTimer = { branchId, workDate, shiftId: 'ca-pt', startTime: '09:00', endTime: '13:00', status: 'approved' }
+const partTimer = { id: 'r-pt', userId: 'u-pt', employmentType: 'part_time', positionTitle: 'Part-time', branchId, workDate, shiftId: 'ca-pt', startTime: '09:00', endTime: '13:00', status: 'approved' }
 assert(
-  scheduledOperationalSequences(partTimer, workShifts).length === 0,
+  operationalSequencesFor(partTimer, [regCa1, regCa2, partTimer], workShifts).length === 0,
   'Ca part-time không được coi là ca trưởng giữ ca vận hành.',
 )
 
@@ -139,7 +139,7 @@ assert(
   'Bộ dò ca thiếu điều kiện dừng, có thể mở ca sai.',
 )
 assert(
-  autoOpen.includes('canOpenNextScheduledOperationalShift(item, sessions, workShifts)')
+  autoOpen.includes('canOpenNextScheduledOperationalShift(item, sessions, registrations, workShifts)')
   && autoOpen.includes('openAttendances.some((record) => record.shiftRegistrationId === item.id)'),
   'Bộ dò ca phải giữ quy tắc BUG-100: đúng lịch VÀ đang check-in.',
 )
@@ -211,9 +211,19 @@ assert(
 // --- 8. Vị trí công việc rỗng không được biến thành "chưa xếp ai" ---
 // `employmentType` đến từ join hồ sơ nên có thể rỗng. Coi rỗng là "không phải ca
 // trưởng" sẽ mời ca trưởng Ca 1 nhận tiếp Ca 2 dù đã xếp người khác (tái phát BUG-100).
+// Từ 08/08/2026 luật này nằm trong `isLeaderRegistration` của lõi xếp ca, dùng chung
+// cho mọi màn — nhưng rỗng KHÔNG được thoáng tới mức nhận cả part-time, nên còn phải
+// đối chiếu ca đã đăng ký có nằm trong nhóm ca của ca trưởng hay không.
+const assignmentSource = fs.readFileSync('src/lib/operationalShiftAssignment.ts', 'utf8')
 assert(
-  handover.includes("(registration.employmentType === 'leader' || registration.employmentType === undefined)"),
-  'Đăng ký thiếu vị trí công việc đang bị bỏ qua khi xét "đã có ca trưởng cho ca kế tiếp".',
+  assignmentSource.includes("if (registration.employmentType === 'leader') return true")
+  && assignmentSource.includes('if (registration.employmentType) return false'),
+  'Đăng ký thiếu vị trí công việc đang bị bỏ qua khi xét ai là ca trưởng.',
+)
+const blankTypeLeader = { ...regCa2, id: 'r-blank', userId: 'u-blank', employmentType: undefined, positionTitle: undefined }
+assert(
+  operationalSequencesFor(blankTypeLeader, [regCa1, blankTypeLeader], workShifts).includes(2),
+  'Vị trí rỗng mà đăng ký đúng ca của ca trưởng thì vẫn phải được tính là ca trưởng.',
 )
 
 console.log('HANDOVER_SHIFT_RECOVERY_OK')

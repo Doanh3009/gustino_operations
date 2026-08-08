@@ -6,7 +6,7 @@ import {
   isDeputyShiftLeader,
   nextOperationalSequence,
   primaryLeadersScheduledFor,
-  scheduledOperationalSequences,
+  operationalSequencesFor,
 } from './operationalShiftAssignment'
 import {
   fetchBagShiftSessions,
@@ -45,8 +45,6 @@ export type ShiftAutoOpenSkip =
   | 'not-scheduled'
   /** Ca phó: ca trưởng được xếp ca này mới là chủ ca. */
   | 'deputy-not-owner'
-  /** Lịch cả ngày: ca trưởng được xếp đích danh ca này mới là chủ ca. */
-  | 'defer-to-scheduled-leader'
 
 function skip(reason: ShiftAutoOpenSkip): ShiftAutoOpenResult {
   return { status: 'skipped', reason }
@@ -98,7 +96,7 @@ export async function reconcileOperationalShift(user: AppUser): Promise<ShiftAut
     && item.workDate === today
     && item.status === 'approved'
     && openAttendances.some((record) => record.shiftRegistrationId === item.id)
-    && canOpenNextScheduledOperationalShift(item, sessions, workShifts),
+    && canOpenNextScheduledOperationalShift(item, sessions, registrations, workShifts),
   )
   if (!registration) return skip('not-scheduled')
 
@@ -107,38 +105,10 @@ export async function reconcileOperationalShift(user: AppUser): Promise<ShiftAut
   // phải bấm tay ở màn Bàn giao, có xác nhận và ghi rõ vào ghi chú ca.
   const sequence = nextOperationalSequence(sessions)
   if (blockedAsDeputy(user, sequence, today, registrations, workShifts)) return skip('deputy-not-owner')
-  if (blockedByScheduledPrimary(registration, sequence, today, registrations, workShifts)) {
-    return skip('defer-to-scheduled-leader')
-  }
 
   await ensureOperationDay(user, today)
   const session = await startBagShift(user, today, await buildOpeningBalances(user))
   return { status: 'opened', sequence: session.sequence }
-}
-
-/**
- * Lịch CẢ NGÀY không được giành ca của ca trưởng xếp ĐÍCH DANH ca đó.
- *
- * Đăng ký không gắn ca cụ thể (`shift_id` rỗng, vd 07:15–22:15) phủ giờ của cả Ca 1 lẫn
- * Ca 2 nên `scheduledOperationalSequences` trả về [1, 2] — người đó tự mở được cả hai ca
- * và ca trưởng được xếp đúng Ca 2 thì vĩnh viễn "Chưa nhận ca", không chốt được ca
- * (Lotte Vũng Tàu 07–08/08/2026).
- *
- * Chỉ chặn khi lịch của mình MƠ HỒ (phủ >1 ca) mà người kia được xếp ĐÚNG MỘT ca là ca
- * kế tiếp. Hai ca trưởng cùng được xếp đích danh Ca 2 thì không ai bị chặn — nếu chặn cả
- * hai thì không ai mở được ca, còn tệ hơn.
- */
-function blockedByScheduledPrimary(
-  registration: ShiftRegistration,
-  sequence: number,
-  workDate: string,
-  registrations: ShiftRegistration[],
-  workShifts: WorkShift[],
-) {
-  if (scheduledOperationalSequences(registration, workShifts).length <= 1) return false
-  return primaryLeadersScheduledFor(sequence, workDate, registrations, workShifts).some((item) =>
-    item.userId !== registration.userId
-    && scheduledOperationalSequences(item, workShifts).length === 1)
 }
 
 /** Có ca trưởng khác được xếp phiên ca này, còn người đang đăng nhập là ca phó. */
@@ -189,7 +159,7 @@ async function reclaimShiftForPrimaryLeader(
   const holder = registrations.find((item) => item.userId === session.leaderId && item.workDate === workDate)
   const holderOwnsThisSequence = Boolean(holder)
     && !isDeputyShiftLeader(holder)
-    && scheduledOperationalSequences(holder!, workShifts).includes(session.sequence)
+    && operationalSequencesFor(holder!, registrations, workShifts).includes(session.sequence)
   if (holderOwnsThisSequence) return skip('shift-already-open')
 
   const openAttendances = attendance.filter((record) => !record.checkOutTime)
@@ -198,7 +168,7 @@ async function reclaimShiftForPrimaryLeader(
     && item.workDate === workDate
     && item.status === 'approved'
     && openAttendances.some((record) => record.shiftRegistrationId === item.id)
-    && scheduledOperationalSequences(item, workShifts).includes(session.sequence),
+    && operationalSequencesFor(item, registrations, workShifts).includes(session.sequence),
   )
   if (!registration) return skip('shift-already-open')
 
@@ -232,19 +202,23 @@ export async function openShiftAfterLeaderCheckIn(
       : ' Ca vận hành đang mở.'
   }
   if (sessions.length >= 2) return ' Hôm nay đã đủ 2 ca vận hành.'
-  const workShifts = await fetchWorkShifts(user)
-  if (!canOpenNextScheduledOperationalShift(registration, sessions, workShifts)) {
+  // Phải có CẢ danh sách đăng ký của ngày: phiên ca được xếp theo thứ tự vào ca của
+  // các ca trưởng trong ngày, không suy từ riêng đăng ký của một người.
+  const [workShifts, registrations] = await Promise.all([
+    fetchWorkShifts(user),
+    fetchShiftRegistrations(user, {
+      branchId: user.branchId,
+      from: registration.workDate,
+      to: registration.workDate,
+    }),
+  ])
+  if (!canOpenNextScheduledOperationalShift(registration, sessions, registrations, workShifts)) {
     const nextSequence = nextOperationalSequence(sessions)
     return nextSequence === 2
       ? ' Đã check-in Ca 1, nhưng chỉ ca trưởng có lịch Ca 2 mới được tự nhận Ca 2.'
       : ' Đã check-in, đang chờ ca trưởng được xếp Ca 1 tự mở ca vận hành.'
   }
   const sequence = nextOperationalSequence(sessions)
-  const registrations = await fetchShiftRegistrations(user, {
-    branchId: user.branchId,
-    from: registration.workDate,
-    to: registration.workDate,
-  })
   if (isDeputyShiftLeader(user)) {
     const primaryLeaders = primaryLeadersScheduledFor(sequence, registration.workDate, registrations, workShifts)
       .filter((item) => item.userId !== user.id)
@@ -254,17 +228,6 @@ export async function openShiftAfterLeaderCheckIn(
         + ' Bạn vẫn nhập kho, chế biến và bán hàng bình thường.'
         + ' Nếu ca trưởng vắng, vào mục Bàn giao để mở ca thay.'
     }
-  }
-  // Lịch cả ngày không được giành ca của ca trưởng xếp đích danh ca đó.
-  if (blockedByScheduledPrimary(registration, sequence, registration.workDate, registrations, workShifts)) {
-    const names = primaryLeadersScheduledFor(sequence, registration.workDate, registrations, workShifts)
-      .filter((item) => item.userId !== user.id
-        && scheduledOperationalSequences(item, workShifts).length === 1)
-      .map((item) => item.userName)
-      .join(', ')
-    return ` Lịch của bạn hôm nay phủ cả ngày nên không gắn riêng Ca ${sequence};`
-      + ` ${names} được xếp đích danh ca này nên sẽ là chủ Ca ${sequence}.`
-      + ' Bạn vẫn nhập kho, chế biến và bán hàng bình thường.'
   }
   await ensureOperationDay(user, registration.workDate)
   try {

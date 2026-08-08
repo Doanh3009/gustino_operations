@@ -83,7 +83,7 @@ assert.match(autoOpenSource, /reclaimShiftForPrimaryLeader/)
 // Ca 1 chưa bàn giao vẫn không bị chiếm: người giữ có lịch đúng sequence 1.
 assert.match(
   autoOpenSource,
-  /const holderOwnsThisSequence = Boolean\(holder\)\s*\n\s*&& !isDeputyShiftLeader\(holder\)\s*\n\s*&& scheduledOperationalSequences\(holder!, workShifts\)\.includes\(session\.sequence\)/,
+  /const holderOwnsThisSequence = Boolean\(holder\)\s*\n\s*&& !isDeputyShiftLeader\(holder\)\s*\n\s*&& operationalSequencesFor\(holder!, registrations, workShifts\)\.includes\(session\.sequence\)/,
   'Phải xét người giữ ca có lịch đúng phiên ca này hay không, không chỉ xét ca phó.',
 )
 assert.match(autoOpenSource, /if \(holderOwnsThisSequence\) return skip\('shift-already-open'\)/)
@@ -95,11 +95,9 @@ assert.doesNotMatch(
 assert.match(ledgerSource, /export async function transferBagShiftLeadership/)
 
 // 4. Màn Bàn giao: ca phó không tự nhận ca, nhưng vẫn mở thay được khi ca trưởng vắng.
-// 08/08/2026: thêm vế `!mustDeferToScheduledPrimary` (lịch cả ngày nhường lịch đích
-// danh — xem test-allday-registration-not-steal-shift). Vế ca phó phải còn nguyên.
 assert.match(
   handoverSource,
-  /const canAutoStartScheduledShift = Boolean\(startableRegistration\)\s*\n\s*&& !deputyMustWaitForPrimary/,
+  /const canAutoStartScheduledShift = Boolean\(startableRegistration\) && !deputyMustWaitForPrimary/,
 )
 assert.match(handoverSource, /canStandInForPrimary/)
 assert.match(handoverSource, /CA PHÓ ĐỨNG THAY/)

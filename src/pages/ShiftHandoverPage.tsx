@@ -16,7 +16,7 @@ import {
   isDeputyShiftLeader,
   nextOperationalSequence,
   primaryLeadersScheduledFor,
-  scheduledOperationalSequences,
+  operationalSequencesFor,
 } from '../lib/operationalShiftAssignment'
 import { writeHandoverReportRequest, type HandoverReportRequest } from '../lib/handoverReportRequest'
 import type { Page } from '../components/AppShell'
@@ -131,7 +131,7 @@ export function ShiftHandoverPage({
   // đúng sequence kế tiếp. Quy tắc BUG-100 giữ nguyên: vẫn phải có lịch + đã check-in.
   const startableRegistration = myApprovedRegistrations.find((registration) =>
     openAttendances.some((record) => record.shiftRegistrationId === registration.id)
-    && canOpenNextScheduledOperationalShift(registration, todaySessions, workShifts),
+    && canOpenNextScheduledOperationalShift(registration, todaySessions, registrations, workShifts),
   )
   const nextSequence = nextOperationalSequence(todaySessions)
   // Chủ ca luôn là CA TRƯỞNG. Ca phó dùng chung role `shift_leader` nên trước
@@ -143,25 +143,10 @@ export function ShiftHandoverPage({
     .filter((registration) => registration.userId !== user.id)
   const primaryLeaderNames = primaryLeadersForNextShift.map((registration) => registration.userName).join(', ')
   const deputyMustWaitForPrimary = Boolean(viewerIsDeputy && primaryLeadersForNextShift.length)
-  // Đăng ký CẢ NGÀY (không gắn ca cụ thể) phủ giờ của cả Ca 1 lẫn Ca 2, nên người đó
-  // đủ điều kiện tự mở CẢ HAI ca và giành mất ca của ca trưởng được xếp ĐÍCH DANH ca
-  // đó — ca trưởng thật thì "Chưa nhận ca", không chốt được (Lotte Vũng Tàu 07-08/08).
-  // Luật: lịch cụ thể thắng lịch cả ngày. Chỉ chặn khi lịch của mình mơ hồ (phủ >1 ca)
-  // MÀ có ca trưởng khác được xếp đúng một ca là ca kế tiếp — nên hai ca trưởng cùng
-  // được xếp Ca 2 vẫn không ai bị chặn (không có chuyện cả hai cùng chờ nhau).
-  const myScheduledSequences = startableRegistration
-    ? scheduledOperationalSequences(startableRegistration, workShifts)
-    : []
-  const specificPrimaryForNextShift = primaryLeadersForNextShift.filter((registration) =>
-    scheduledOperationalSequences(registration, workShifts).length === 1,
-  )
-  const mustDeferToScheduledPrimary = Boolean(
-    myScheduledSequences.length > 1 && specificPrimaryForNextShift.length,
-  )
-  const specificPrimaryNames = specificPrimaryForNextShift.map((registration) => registration.userName).join(', ')
-  const canAutoStartScheduledShift = Boolean(startableRegistration)
-    && !deputyMustWaitForPrimary
-    && !mustDeferToScheduledPrimary
+  // Không cần luật "nhường ca" riêng nữa: `operationalSequencesFor` xếp ca trưởng theo
+  // giờ vào ca của chính ngày đó, nên đăng ký cả ngày chỉ ôm cả hai ca khi hôm đó
+  // KHÔNG có ca trưởng nào khác. Có người thứ hai là mỗi người đúng một ca.
+  const canAutoStartScheduledShift = Boolean(startableRegistration) && !deputyMustWaitForPrimary
   // Có ngày chi nhánh chỉ xếp đúng MỘT ca trưởng cho cả ngày. Khi đó không ai có
   // lịch cho sequence còn lại nên ca vận hành sẽ không bao giờ mở, kéo theo không
   // bàn giao và không chốt được ngày. Cho ca trưởng đang trong ca nhận tiếp,
@@ -175,9 +160,7 @@ export function ShiftHandoverPage({
   const anotherLeaderScheduledForNext = registrations.some((registration) =>
     registration.userId !== user.id
     && registration.workDate === today
-    && registration.status === 'approved'
-    && (registration.employmentType === 'leader' || registration.employmentType === undefined)
-    && scheduledOperationalSequences(registration, workShifts).includes(nextSequence),
+    && operationalSequencesFor(registration, registrations, workShifts).includes(nextSequence),
   )
   const canTakeOverNextShift = Boolean(
     !canAutoStartScheduledShift
@@ -650,17 +633,12 @@ export function ShiftHandoverPage({
           <span>1</span>
           <div>
             <small>{todaySessions.length === 0 ? 'CA SÁNG' : 'CA TỐI'}</small>
-            <h2>{autoStartFailed && canAutoStartScheduledShift ? 'Ca chưa mở được - hãy nhận ca thủ công' : deputyMustWaitForPrimary ? `Ca trưởng đứng ${shiftLabel(nextSequence)}` : mustDeferToScheduledPrimary ? `${shiftLabel(nextSequence)} đã có ca trưởng theo lịch` : canAutoStartScheduledShift && todaySessions.length === 1 ? 'Đang tự nhận Ca tối theo lịch' : canAutoStartScheduledShift ? 'Đang tự mở ca sau check-in' : canTakeOverNextShift ? `Hôm nay chưa xếp ca trưởng cho ${shiftLabel(nextSequence)}` : activeAttendance ? 'Đang chờ đúng ca trưởng theo lịch' : 'Check-in để ca tự mở'}</h2>
+            <h2>{autoStartFailed && canAutoStartScheduledShift ? 'Ca chưa mở được - hãy nhận ca thủ công' : deputyMustWaitForPrimary ? `Ca trưởng đứng ${shiftLabel(nextSequence)}` : canAutoStartScheduledShift && todaySessions.length === 1 ? 'Đang tự nhận Ca tối theo lịch' : canAutoStartScheduledShift ? 'Đang tự mở ca sau check-in' : canTakeOverNextShift ? `Hôm nay chưa xếp ca trưởng cho ${shiftLabel(nextSequence)}` : activeAttendance ? 'Đang chờ đúng ca trưởng theo lịch' : 'Check-in để ca tự mở'}</h2>
             <p>{autoStartFailed && canAutoStartScheduledShift
               ? 'Bạn có đủ lịch và đã check-in, nhưng lần mở ca tự động vừa rồi không thành công (thường do mạng chập chờn). Bấm nút bên dưới để nhận ca ngay.'
               : deputyMustWaitForPrimary
               ? `Bạn là ca phó nên không đứng tên chủ ca. ${primaryLeaderNames} sẽ là chủ ${shiftLabel(nextSequence)}. `
                 + 'Bạn vẫn chấm công, nhập kho, chế biến và bán hàng bình thường trong ca này.'
-              : mustDeferToScheduledPrimary
-              ? `Lịch của bạn hôm nay phủ cả ngày nên không gắn riêng ${shiftLabel(nextSequence)}, `
-                + `còn ${specificPrimaryNames} được xếp đích danh ca này nên sẽ là chủ ca. `
-                + 'Bạn vẫn chấm công, nhập kho, chế biến và bán hàng bình thường. '
-                + `Nếu ${specificPrimaryNames} vắng, quản lý xếp lại lịch hoặc dùng "Chốt thay" khi cần.`
               : canTakeOverNextShift
               ? 'Không có ca trưởng nào khác được xếp ca này nên hệ thống không tự mở. Bạn đang trong ca và có thể nhận tiếp để kịp bàn giao và chốt ngày.'
               : canAutoStartScheduledShift && todaySessions.length === 1

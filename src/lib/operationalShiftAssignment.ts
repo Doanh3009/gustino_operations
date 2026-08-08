@@ -21,6 +21,82 @@ export function isDeputyShiftLeader(person?: { positionTitle?: string } | null) 
   return /(^|[^a-z])pho([^a-z]|$)/.test(title)
 }
 
+/**
+ * Đăng ký này có phải của MỘT CA TRƯỞNG đứng tên phiên ca hay không.
+ *
+ * `employmentType` rỗng (bản ghi cũ/đường LAN) phải hiểu là "có thể là ca trưởng" —
+ * cùng lý do với BUG-100, không được loại nhầm người đúng lịch. Nhưng rỗng KHÔNG được
+ * hiểu thoáng tới mức nhận cả part-time: khi rỗng thì phải có thêm bằng chứng là ca
+ * đã đăng ký nằm trong nhóm ca dành cho ca trưởng.
+ */
+function isLeaderRegistration(registration: ShiftRegistration, workShifts: WorkShift[]) {
+  if (isDeputyShiftLeader(registration)) return false
+  if (registration.employmentType === 'leader') return true
+  if (registration.employmentType) return false
+  return workShifts.some((shift) =>
+    shift.branchId === registration.branchId
+    && shift.active !== false
+    && shift.employmentTypes?.includes('leader')
+    && (registration.shiftId ? shift.id === registration.shiftId : registrationCoversShift(registration, shift)))
+}
+
+/**
+ * Xếp CA TRƯỞNG của một ngày theo giờ vào ca: sớm hơn đứng Ca 1, người còn lại Ca 2.
+ *
+ * ĐÂY LÀ NGUỒN SỰ THẬT cho việc ai đứng tên phiên ca nào (chủ quán xác nhận 08/08/2026):
+ * mỗi chi nhánh chỉ có 2 ca trưởng; một ngày hoặc hai người đăng ký — người đăng ký ca
+ * sáng nhận Ca 1, người kia nhận Ca 2 — hoặc chỉ một ca trưởng làm cả hai ca.
+ *
+ * Bản cũ suy ra phiên ca từ VỊ TRÍ của bản ghi trong bảng cấu hình `shifts`, nên chỉ cần
+ * ai đó tạo thừa một ca trưởng là cả chi nhánh lệch: Lotte Vũng Tàu có ca thừa
+ * "07:15-22:15" (0 đăng ký) trùng giờ mở với Ca 1 nên chen vào vị trí 2, đẩy "Ca 2" thật
+ * xuống vị trí 3 — mà code chỉ nhận vị trí 1–2 ⇒ ca trưởng đăng ký đúng Ca 2 ra danh
+ * sách RỖNG, vĩnh viễn "Chưa nhận ca" và không chốt được ca. Xếp theo đăng ký thật thì
+ * cấu hình ca có rác cũng không ảnh hưởng.
+ */
+export function leaderRegistrationsInOrder(
+  workDate: string,
+  branchId: string,
+  registrations: ShiftRegistration[],
+  workShifts: WorkShift[],
+) {
+  return registrations
+    .filter((registration) =>
+      registration.workDate === workDate
+      && registration.branchId === branchId
+      && registration.status === 'approved'
+      && isLeaderRegistration(registration, workShifts))
+    .sort((left, right) =>
+      String(left.startTime || '').localeCompare(String(right.startTime || ''))
+      || String(left.endTime || '').localeCompare(String(right.endTime || ''))
+      || String(left.id).localeCompare(String(right.id)))
+}
+
+/**
+ * Phiên ca mà đăng ký này được đứng tên: `[1]`, `[2]`, hoặc `[1, 2]` khi cả ngày chỉ có
+ * MỘT ca trưởng (một người trực cả hai ca). Ca trưởng thứ ba trở đi không đứng tên ca
+ * nào — chi nhánh chỉ có 2 phiên ca một ngày.
+ */
+export function operationalSequencesFor(
+  registration: ShiftRegistration,
+  registrations: ShiftRegistration[],
+  workShifts: WorkShift[],
+) {
+  if (registration.status !== 'approved') return []
+  if (!isLeaderRegistration(registration, workShifts)) return []
+  const ordered = leaderRegistrationsInOrder(
+    registration.workDate,
+    registration.branchId,
+    registrations,
+    workShifts,
+  )
+  const index = ordered.findIndex((item) => item.id === registration.id)
+  if (index < 0) return []
+  // Cả ngày chỉ một ca trưởng đăng ký ⇒ người đó trực cả hai phiên ca.
+  if (ordered.length === 1) return [1, 2]
+  return index === 0 ? [1] : index === 1 ? [2] : []
+}
+
 /** Ca trưởng (không phải ca phó) được xếp đúng phiên ca này trong ngày. */
 export function primaryLeadersScheduledFor(
   sequence: number,
@@ -30,12 +106,7 @@ export function primaryLeadersScheduledFor(
 ) {
   return registrations.filter((registration) =>
     registration.workDate === workDate
-    && registration.status === 'approved'
-    && !isDeputyShiftLeader(registration)
-    // `employmentType` rỗng (bản ghi cũ/đường LAN) phải hiểu là "có thể là ca
-    // trưởng" — cùng lý do với BUG-100, không được loại nhầm người đúng lịch.
-    && (registration.employmentType === 'leader' || registration.employmentType === undefined)
-    && scheduledOperationalSequences(registration, workShifts).includes(sequence))
+    && operationalSequencesFor(registration, registrations, workShifts).includes(sequence))
 }
 
 /** Số thứ tự phiên ca kế tiếp của chi nhánh trong ngày (1 hoặc 2). */
@@ -43,45 +114,24 @@ export function nextOperationalSequence(sessions: BagShiftSession[]) {
   return sessions.length ? Math.max(...sessions.map((session) => session.sequence)) + 1 : 1
 }
 
-/**
- * The operational ledger has exactly two sessions per business date. The
- * leader must be resolved from the configured leader shift, not merely from
- * whichever leader still has an open attendance record after the prior close.
- */
+/** Phiên ca duy nhất của đăng ký này, hoặc `undefined` nếu người đó trực cả hai ca. */
 export function scheduledOperationalSequence(
-  registration: Pick<ShiftRegistration, 'branchId' | 'shiftId' | 'startTime' | 'endTime'>,
+  registration: ShiftRegistration,
+  registrations: ShiftRegistration[],
   workShifts: WorkShift[],
 ) {
-  const sequences = scheduledOperationalSequences(registration, workShifts)
+  const sequences = operationalSequencesFor(registration, registrations, workShifts)
   return sequences.length === 1 ? sequences[0] : undefined
 }
 
-export function scheduledOperationalSequences(
-  registration: Pick<ShiftRegistration, 'branchId' | 'shiftId' | 'startTime' | 'endTime'>,
-  workShifts: WorkShift[],
-) {
-  const leaderShifts = workShifts
-    .filter((shift) => shift.branchId === registration.branchId && shift.active !== false)
-    .filter((shift) => shift.employmentTypes?.includes('leader'))
-    .sort((left, right) => left.startTime.localeCompare(right.startTime) || left.id.localeCompare(right.id))
-  if (!registration.shiftId) {
-    return leaderShifts
-      .map((shift, index) => ({ shift, sequence: index + 1 }))
-      .filter(({ shift }) => registrationCoversShift(registration, shift))
-      .map(({ sequence }) => sequence)
-      .filter((sequence) => sequence <= 2)
-  }
-  const index = leaderShifts.findIndex((shift) => shift.id === registration.shiftId)
-  return index >= 0 && index < 2 ? [index + 1] : []
-}
-
 export function canOpenNextScheduledOperationalShift(
-  registration: Pick<ShiftRegistration, 'branchId' | 'workDate' | 'shiftId' | 'startTime' | 'endTime' | 'status'>,
+  registration: ShiftRegistration,
   sessions: BagShiftSession[],
+  registrations: ShiftRegistration[],
   workShifts: WorkShift[],
 ) {
   if (registration.status !== 'approved') return false
-  const assignedSequences = scheduledOperationalSequences(registration, workShifts)
+  const assignedSequences = operationalSequencesFor(registration, registrations, workShifts)
   if (!assignedSequences.length) return false
   const existingSequences = sessions
     .filter((session) => session.branchId === registration.branchId && session.businessDate === registration.workDate)
