@@ -95,7 +95,12 @@ assert.doesNotMatch(
 assert.match(ledgerSource, /export async function transferBagShiftLeadership/)
 
 // 4. Màn Bàn giao: ca phó không tự nhận ca, nhưng vẫn mở thay được khi ca trưởng vắng.
-assert.match(handoverSource, /const canAutoStartScheduledShift = Boolean\(startableRegistration\) && !deputyMustWaitForPrimary/)
+// 08/08/2026: thêm vế `!mustDeferToScheduledPrimary` (lịch cả ngày nhường lịch đích
+// danh — xem test-allday-registration-not-steal-shift). Vế ca phó phải còn nguyên.
+assert.match(
+  handoverSource,
+  /const canAutoStartScheduledShift = Boolean\(startableRegistration\)\s*\n\s*&& !deputyMustWaitForPrimary/,
+)
 assert.match(handoverSource, /canStandInForPrimary/)
 assert.match(handoverSource, /CA PHÓ ĐỨNG THAY/)
 
