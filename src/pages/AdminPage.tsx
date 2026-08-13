@@ -3693,10 +3693,12 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               <p className="competition-reward-rule" role="note">
                 <b>Chỉ tính thưởng KPI theo từng ngày.</b> Thưởng tuần, thưởng tháng và giải tháng không cộng vào tiền KPI.
               </p>
+              {/* Cố tình truyền `visibleBranches` (toàn bộ chi nhánh trong quyền)
+                  chứ KHÔNG phải `selectedBranches`: đây là bảng cấu hình, đặt chỉ
+                  tiêu thì phải nhìn cả chuỗi để so. */}
               <BranchKpiSettings
                 user={user}
                 branches={visibleBranches}
-                selectedBranchId={branchId}
                 readOnly={readOnly}
                 onChanged={() => setKpiFormulaVersion((value) => value + 1)}
               />

@@ -161,5 +161,21 @@ check(
 )
 check(/kpiOverridesReady/.test(adminPage), 'Trang quan tri chua cho muc KPI override san sang truoc khi ve bang KPI.')
 
+// 13/08/2026 — chu he thong: "may chi nhanh con lai dau". Bang CAU HINH phai liet
+// ke DU MOI CHI NHANH, khong an theo bo loc chi nhanh o dau trang: dat chi tieu
+// thi phai nhin ca chuoi de so. Bo loc chi chi phoi BAO CAO, khong chi phoi cau hinh.
+check(
+  !/selectedBranchId:/.test(settingsUi),
+  'Bang chinh KPI khong duoc nhan bo loc chi nhanh dau trang — no phai hien du moi chi nhanh.',
+)
+check(
+  /branches\.slice\(\)\.sort\(/.test(settingsUi),
+  'Bang chinh KPI phai liet ke toan bo chi nhanh, xep theo ten.',
+)
+check(
+  /branches=\{visibleBranches\}/.test(adminPage),
+  'Trang quan tri phai truyen TOAN BO chi nhanh trong quyen, khong phai selectedBranches.',
+)
+
 assert.deepEqual(failures, [], `\n${failures.join('\n')}`)
 console.log('BRANCH_KPI_SETTINGS_OK')

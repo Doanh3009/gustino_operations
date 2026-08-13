@@ -21,8 +21,9 @@ import { VUNG_TAU_NEW_KPI_FROM, VUNG_TAU_NEW_KPI_TO, type KpiPositionKey } from 
 
 interface Props {
   user: AppUser
+  /** TẤT CẢ chi nhánh trong quyền xem — bảng cấu hình cố tình KHÔNG nhận bộ lọc
+   *  chi nhánh của trang cha, xem ghi chú ở `scopedBranches`. */
   branches: Branch[]
-  selectedBranchId: string
   readOnly: boolean
   /** Gọi lại khi mức KPI đổi để trang cha tính lại bảng xếp hạng ngay. */
   onChanged?: () => void
@@ -99,11 +100,23 @@ function AmountInput({ value, onChange, disabled, label }: {
   )
 }
 
-export function BranchKpiSettings({ user, branches, selectedBranchId, readOnly, onChanged }: Props) {
+export function BranchKpiSettings({ user, branches, readOnly, onChanged }: Props) {
   const editable = user.role === 'admin' && !readOnly
+  /**
+   * ĐÂY LÀ BẢNG CẤU HÌNH, KHÔNG PHẢI BÁO CÁO — nên nó liệt kê ĐỦ MỌI CHI NHÁNH,
+   * bất kể bộ lọc chi nhánh ở đầu trang.
+   *
+   * 13/08/2026 — chủ hệ thống: "mấy chi nhánh còn lại đâu". Bản cũ lọc theo
+   * `selectedBranchId`: đang xem doanh thu của một chi nhánh rồi mở bảng chỉnh
+   * KPI thì chỉ thấy đúng chi nhánh đó, trông y như mất dữ liệu. Mà đặt chỉ tiêu
+   * thì luôn phải nhìn cả chuỗi để so — chi nhánh này 13,9tr thì chi nhánh kia
+   * bao nhiêu. Mỗi chi nhánh vẫn lưu riêng bằng nút của chính nó.
+   *
+   * Đây KHÔNG phải bộ lọc thứ hai (§59) — nó bỏ qua bộ lọc, không dựng thêm.
+   */
   const scopedBranches = useMemo(
-    () => branches.filter((branch) => !selectedBranchId || branch.id === selectedBranchId),
-    [branches, selectedBranchId],
+    () => branches.slice().sort((a, b) => a.name.localeCompare(b.name, 'vi')),
+    [branches],
   )
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -253,6 +266,8 @@ export function BranchKpiSettings({ user, branches, selectedBranchId, readOnly, 
           {feedback && <div className="feedback-bar">{feedback}<button type="button" onClick={() => setFeedback('')}>×</button></div>}
 
           <p className="kpi-settings-note" role="note">
+            Bảng này liệt kê <b>đủ {scopedBranches.length} chi nhánh</b>, không theo bộ lọc chi nhánh ở đầu trang — đặt chỉ tiêu
+            thì phải nhìn được cả chuỗi để so. Mỗi chi nhánh lưu riêng bằng nút của chính nó.
             Ô nào chưa chỉnh sẽ hiện đúng mức mặc định hệ thống đang chạy. <b>Số người</b> chỉ dùng để cộng ra KPI team
             của chi nhánh (Ca trưởng chạy theo KPI team thì để chỉ tiêu cá nhân bằng 0).
             Riêng kỳ Vũng Tàu {VUNG_TAU_NEW_KPI_FROM.split('-').reverse().join('/')}–{VUNG_TAU_NEW_KPI_TO.split('-').reverse().join('/')} đã
@@ -262,7 +277,7 @@ export function BranchKpiSettings({ user, branches, selectedBranchId, readOnly, 
           {showInitialLoading && <p className="empty-copy">Đang đọc mức KPI đang cấu hình…</p>}
           {loading && hasDrafts && <p className="kpi-settings-sync">Đang đồng bộ mức KPI mới nhất…</p>}
 
-          {!showInitialLoading && !scopedBranches.length && <p className="empty-copy">Không có chi nhánh nào trong bộ lọc hiện tại.</p>}
+          {!showInitialLoading && !scopedBranches.length && <p className="empty-copy">Chưa có chi nhánh nào trong hệ thống.</p>}
 
           {!showInitialLoading && scopedBranches.map((branch) => (
             <article key={branch.id} className="kpi-settings-branch">

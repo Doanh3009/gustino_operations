@@ -906,7 +906,6 @@ export function ControlCenterPage({ user }: { user: AppUser }) {
         <BranchKpiSettings
           user={user}
           branches={activeBranches}
-          selectedBranchId={branchId}
           readOnly={false}
         />
       )}
