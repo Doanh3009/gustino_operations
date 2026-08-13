@@ -12,7 +12,9 @@ const managerNav = shell.slice(shell.indexOf('const MANAGER_NAV'), shell.indexOf
 
 assert.match(
   managerNav,
-  /id: 'report-archive'[^}\n]+label: 'Báo cáo ngày'[^}\n]+canShow: \(user\) => canUseManagement\(user\.role\)/,
+  // 13/08/2026: MANAGER_NAV chỉ dành cho vai trò `manager` nên không cần lọc
+  // lại quyền trong `canShow` — nhưng mục Báo cáo ngày phải còn.
+  /id: 'report-archive'[^}\n]+label: 'Báo cáo ngày'/,
   'Menu Quản lý phải hiển thị Báo cáo ngày theo đúng quyền đọc hiện có',
 )
 assert.match(

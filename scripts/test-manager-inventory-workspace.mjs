@@ -1,105 +1,163 @@
+// Màn Kho trong trang Quản trị — hợp đồng sau redesign 13/08/2026 (§29–§59).
+//
+// Điều đổi: Kho không còn là một trang liệt kê chi nhánh rồi mới xổ SKU. Nó là
+// ẢNH CHỤP TỒN TẠI MỘT NGÀY, danh sách SKU phẳng, bấm một SKU mở drawer đối
+// chiếu. Đối soát ca, sổ phát sinh, hao hụt chi tiết và Excel KHÔNG bị xoá —
+// chúng chuyển vào menu `•••` và các drawer tương ứng.
+//
+// Điều KHÔNG đổi (và test này khoá): mọi số lượng kèm đơn vị, hao hụt có danh
+// sách dòng chi tiết, đối chiếu ca lọc sẵn ca cần xem, sổ phát sinh có tìm/lọc/
+// phân trang, Excel đủ 7 sheet, và tất cả phải đọc được trên điện thoại.
 import { readFile } from 'node:fs/promises'
 
-const [admin, styles] = await Promise.all([
+const [admin, ui, styles] = await Promise.all([
   readFile(new URL('../src/pages/AdminPage.tsx', import.meta.url), 'utf8'),
+  readFile(new URL('../src/ui.css', import.meta.url), 'utf8'),
   readFile(new URL('../src/styles.css', import.meta.url), 'utf8'),
 ])
 
 const failures = []
-const inventorySection = sourceBetween(
-  admin,
-  "{/* ===== BÁO CÁO KHO ===== */}",
-  "{/* ===== ĐẶT HÀNG ===== */}",
-)
+const inventorySection = sourceBetween(admin, '{/* ===== KHO HÀNG =====', '{/* ===== ĐẶT HÀNG ===== */}')
+// 13/08/2026 — không còn drawer. Chi tiết SKU bung ngay dưới dòng, còn đối
+// soát ca / sổ phát sinh / hao hụt nằm thẳng trên trang trong khối gấp.
+const skuInline = sourceBetween(admin, 'Mở NGAY TẠI DÒNG', '── HAO HỤT')
+const wasteBlock = sourceBetween(admin, '── HAO HỤT', '<strong>Đối soát theo ca</strong>')
+const shiftBlock = sourceBetween(admin, '<strong>Đối soát theo ca</strong>', '<strong>Sổ phát sinh kho</strong>')
+const ledgerBlock = sourceBetween(admin, '<strong>Sổ phát sinh kho</strong>', '===== ĐẶT HÀNG =====')
 
-if (!admin.includes("const [inventoryDetailBranchId, setInventoryDetailBranchId] = useState('')")) {
-  failures.push('Chi tiết kho chi nhánh chưa có trạng thái chọn ổn định do React quản lý.')
+if (!inventorySection) failures.push('Không tìm thấy khối màn Kho trong trang Quản trị.')
+
+// ── Ngày là trọng tâm (§34) ─────────────────────────────────────────────────
+if (!admin.includes('const [inventoryDate, setInventoryDate]')) {
+  failures.push('Màn tồn kho phải làm việc trên MỘT ngày cụ thể.')
 }
-if (inventorySection.includes('<details className="loss-stock-item"')) {
-  failures.push('Chi tiết SKU vẫn xổ dài ngay giữa danh sách và đẩy các chi nhánh còn lại khỏi màn hình.')
+if (!inventorySection.includes("inventoryDate === todayKey ? 'Tồn hiện tại' : `Tồn cuối")) {
+  failures.push('Ngày quá khứ phải đổi tên cột thành "Tồn cuối ngày", không được gọi là "Tồn hiện tại".')
 }
-// 07/08/2026: bỏ lưới thẻ (`inventory-branch-grid`/`inventory-branch-card`) —
-// mỗi chi nhánh là MỘT DÒNG, cùng luật "không dùng card" với màn Kho ca trưởng.
-if (!inventorySection.includes('className="admin-stock-branches"') || !inventorySection.includes('className={`admin-stock-branch-row')) {
-  failures.push('Các chi nhánh chưa được trình bày thành bảng dòng kho, dễ so sánh.')
-}
-if (inventorySection.includes('inventory-branch-card')) {
-  failures.push('Thẻ chi nhánh dạng card đã bị gỡ — đừng dựng lại.')
-}
-// Bảng tồn của chi nhánh phải tìm được và lọc được, không bắt cuộn hết 30 SKU.
-if (!inventorySection.includes('aria-label="Tìm mặt hàng trong kho chi nhánh"')
-  || !inventorySection.includes('aria-label="Lọc trạng thái tồn"')) {
-  failures.push('Bảng tồn chi nhánh thiếu ô tìm không dấu hoặc chip lọc trạng thái.')
-}
-if (!admin.includes('const inventoryStockLines = useMemo(') || !admin.includes('severity(a) - severity(b)')) {
-  failures.push('Bảng tồn chưa xếp theo mức độ cần xử lý (hết → sắp hết → còn hàng).')
-}
-// Sổ phát sinh kho phải phân trang: một tháng là vài nghìn phiếu.
-if (!inventorySection.includes('aria-label="Tìm trong sổ phát sinh kho"')
-  || !inventorySection.includes('aria-label="Lọc loại phiếu kho"')
-  || !inventorySection.includes('<Pagination')) {
-  failures.push('Sổ phát sinh kho chưa có lọc loại phiếu, tìm kiếm và phân trang.')
-}
-// Đối chiếu ca mặc định chỉ hiện ca cần xem (đang mở hoặc lệch số).
-if (!admin.includes('const inventoryShiftIssueRows =') || !inventorySection.includes('inventoryShiftVisibleRows.map')) {
-  failures.push('Bảng đối chiếu ca chưa lọc sẵn về nhóm ca cần xem.')
-}
-if (!inventorySection.includes('aria-expanded={isSelected}') || !inventorySection.includes('aria-controls="inventory-branch-detail-panel"')) {
-  failures.push('Nút mở chi tiết chi nhánh chưa công bố đúng trạng thái đóng/mở cho trình duyệt.')
-}
-if (!inventorySection.includes('id="inventory-branch-detail-panel"') || !inventorySection.includes('inventory-branch-detail-shell')) {
-  failures.push('Chưa có bảng chi tiết riêng nằm sau toàn bộ danh sách chi nhánh.')
-}
-if (inventorySection.includes('Ngưỡng cảnh báo') || inventorySection.includes('inventory-stock-threshold')) {
-  failures.push('Bảng tồn SKU vẫn còn cột ngưỡng cảnh báo mà chủ hệ thống yêu cầu bỏ.')
-}
-if (!inventorySection.includes('inventory-stock-status')) {
-  failures.push('Bảng tồn SKU phải giữ trạng thái dễ đọc sau khi bỏ cột ngưỡng.')
+if (!admin.includes('item.shiftDate <= inventoryDate')) {
+  failures.push('Tồn cuối ngày phải tính bằng cách cắt sổ tới hết ngày đó, không phải lấy tồn hiện tại.')
 }
 if (admin.includes('inventorySalesDate')) {
-  failures.push('Bảng xuất bán/bàn giao vẫn bị khóa vào một ngày riêng thay vì khoảng ngày báo cáo.')
+  failures.push('Đối soát xuất bán vẫn bị khóa vào một ngày riêng thay vì khoảng ngày báo cáo.')
 }
+
+// ── Không lặp bộ lọc chi nhánh (§33) ────────────────────────────────────────
+if ((admin.match(/<BranchSelector/g) || []).length !== 1) {
+  failures.push('Chi nhánh chỉ được chọn đúng một lần ở thanh lọc đầu trang.')
+}
+if (!inventorySection.includes('{!branchId && <span>Chi nhánh</span>}')) {
+  failures.push('Chỉ thêm cột Chi nhánh khi đang xem tất cả chi nhánh.')
+}
+
+// ── Summary nhỏ, không KPI card lớn (§35) ───────────────────────────────────
+if (!inventorySection.includes('<SummaryLine') || !admin.includes('const inventoryDaySummary')) {
+  failures.push('Kho phải dùng summary một dòng thay cho hàng KPI card.')
+}
+for (const label of ['mặt hàng', 'sắp hết', 'hết hàng', 'âm kho']) {
+  if (!inventorySection.includes(label)) failures.push(`Summary kho thiếu chỉ số "${label}".`)
+}
+
+// ── Tìm + lọc + xếp theo mức độ cần xử lý (§36) ─────────────────────────────
+if (!inventorySection.includes('<SearchInput') || !inventorySection.includes('<FilterChips')) {
+  failures.push('Bảng tồn thiếu ô tìm không dấu hoặc chip lọc nhóm mặt hàng.')
+}
+if (!admin.includes('const inventoryVisibleLines = useMemo(') || !admin.includes('severity(a) - severity(b)')) {
+  failures.push('Bảng tồn chưa xếp theo mức độ cần xử lý (âm → hết → sắp hết → đủ dùng).')
+}
+if (!inventorySection.includes('Âm kho') || !inventorySection.includes('Hết hàng') || !inventorySection.includes('Sắp hết')) {
+  failures.push('Trạng thái tồn phải nói rõ bằng CHỮ, không chỉ bằng màu (§85).')
+}
+
+// ── Lớp 2: drawer đối chiếu SKU (§39) ───────────────────────────────────────
+if (!admin.includes('const [inventorySkuDetail, setInventorySkuDetail]') || !skuInline) {
+  failures.push('Bấm một SKU phải bung chi tiết NGAY TẠI DÒNG, giải thích vì sao tồn ra con số đó.')
+}
+if (admin.includes('Drawer của màn Kho')) {
+  failures.push('Kho không được quay lại kiểu mở panel bên phải — chủ hệ thống đã bác.')
+}
+for (const row of ['Tồn đầu ngày', 'Nhập kho', 'Thành phẩm tạo ra', 'Bán hàng', 'Hao hụt', 'Điều chỉnh (kiểm kê)']) {
+  if (!skuInline.includes(row)) failures.push(`Bảng đối chiếu trong ngày thiếu dòng "${row}".`)
+}
+if (!skuInline.includes('Biến động trong ngày')) {
+  failures.push('Drawer SKU thiếu timeline biến động trong ngày.')
+}
+if (!admin.includes('const inventorySkuCheckpoint') || !skuInline.includes('kiểm kê đã xác nhận')) {
+  failures.push('Thiếu cảnh báo checkpoint kiểm kê cho ngày quá khứ (§50).')
+}
+if (!admin.includes("item.type === 'waste' && item.sourceProductId")) {
+  failures.push('Hao hụt chế biến bị trừ tồn hai lần — phải loại khỏi phép cộng đối chiếu.')
+}
+
+// ── Lớp 4: báo cáo/audit chuyển vào `•••`, KHÔNG bị xoá (§32, §57, §58) ─────
+for (const item of ['Xuất Excel', 'Xuất hao hụt', 'Đối soát theo ca', 'Sổ phát sinh kho', 'Hao hụt']) {
+  if (!inventorySection.includes(item)) failures.push(`Màn kho thiếu mục "${item}".`)
+}
+if (!inventorySection.includes('canOpenAdminConsole(user.role)')) {
+  failures.push('Sổ phát sinh đầy đủ phải giữ đúng ranh giới quyền cũ (Admin/SUP MT).')
+}
+if (!ledgerBlock.includes('label="Tìm trong sổ phát sinh kho"')
+  || !ledgerBlock.includes('aria-label="Lọc loại phiếu kho"')
+  || !ledgerBlock.includes('<Pagination')) {
+  failures.push('Sổ phát sinh kho chưa có lọc loại phiếu, tìm kiếm và phân trang.')
+}
+if (!admin.includes('const inventoryShiftIssueRows =') || !shiftBlock.includes('inventoryShiftVisibleRows.map')) {
+  failures.push('Bảng đối chiếu ca chưa lọc sẵn về nhóm ca cần xem.')
+}
+if (!shiftBlock.includes('Out chính thức = Tồn đầu + Nhập thêm − Tồn bàn giao − Hao hụt')) {
+  failures.push('Đối soát ca phải nói rõ công thức Out chính thức và vai trò đối chiếu của POS.')
+}
+if (!wasteBlock.includes('inventoryWasteDetailRows.map')) {
+  failures.push('Chi tiết hao hụt theo từng dòng đã biến mất.')
+}
+
+// ── Màn chính không đổ dữ liệu thô (§56) ────────────────────────────────────
+// Hao hụt: yêu cầu trực tiếp của chủ hệ thống — xem theo ngày/tháng/năm kèm biểu đồ.
+for (const [needle, message] of [
+  ['const [wasteGrouping', 'Thiếu chế độ xem hao hụt theo ngày/tháng/năm.'],
+  ['inventoryWasteSeries', 'Thiếu chuỗi dữ liệu hao hụt theo kỳ.'],
+  ['<BarChart', 'Hao hụt phải có biểu đồ, không chỉ bảng số.'],
+]) {
+  if (!admin.includes(needle)) failures.push(message)
+}
+if (!admin.includes("row.unit === 'kg'")) {
+  failures.push('Biểu đồ hao hụt phải tách theo đơn vị — cộng lẫn kg với cái/túi là con số vô nghĩa (§54).')
+}
+for (const id of ["{ id: 'day', label: 'Ngày' }", "{ id: 'month', label: 'Tháng' }", "{ id: 'year', label: 'Năm' }"]) {
+  if (!wasteBlock.includes(id)) failures.push(`Hao hụt thiếu chế độ xem ${id}.`)
+}
+
+// ── Các hợp đồng số liệu cũ giữ nguyên ──────────────────────────────────────
 if (!admin.includes("item.type === 'sale_out'") || !admin.includes('item.shiftDate >= from') || !admin.includes('item.shiftDate <= to')) {
   failures.push('Bảng xuất trong kỳ chưa lọc đúng movement sale_out trong khoảng Từ ngày–Đến ngày.')
-}
-if (!inventorySection.includes('Xuất bán và tồn bàn giao') || !inventorySection.includes('inventory-shift-reconciliation-table')) {
-  failures.push('Màn kho chưa có bảng đối chiếu Out theo bàn giao và POS cho quản lý.')
 }
 if (!admin.includes('formatInventoryQuantity') || !admin.includes('summarizeInventoryQuantities')) {
   failures.push('Số kho chưa có định dạng kèm đơn vị và chưa tách tổng theo kg/cái.')
 }
-if (/formatNumber\((stockUnits|inbound|outbound)\)/.test(inventorySection)) {
-  failures.push('Card chi nhánh vẫn hiển thị tổng số trộn nhiều đơn vị mà không có kg/cái.')
-}
-for (const sheetName of ['Tổng hợp kho', 'Đối chiếu ca', 'Xuất bán trong kỳ', 'Nhật ký kho', 'Tồn hiện tại', 'Phiếu kiểm kê']) {
+for (const sheetName of ['Tổng hợp kho', 'Danh sách hao hụt', 'Đối chiếu ca', 'Xuất bán trong kỳ', 'Nhật ký kho', 'Tồn hiện tại', 'Phiếu kiểm kê']) {
   if (!admin.includes(`addWorksheet('${sheetName}')`)) failures.push(`Excel kho thiếu sheet ${sheetName}.`)
 }
-if (!inventorySection.includes('Hao hụt cần chú ý') || !inventorySection.includes('inventory-loss-panel')) {
-  failures.push('Chi tiết chi nhánh chưa tách khu vực hao hụt cần chú ý.')
+if (!admin.includes('buildWasteDetailRows') || !admin.includes('inventoryWasteDetailRows')) {
+  failures.push('Hao hụt kho chưa có danh sách dòng chi tiết riêng, đang còn nguy cơ tính bình quân.')
+}
+if (!admin.includes('exportInventoryLoss') || !admin.includes('danh-sach-hao-hut')) {
+  failures.push('Chưa có nút/file Excel riêng cho danh sách hao hụt cụ thể.')
 }
 
-for (const selector of [
-  '.inventory-branch-section',
-  '.admin-stock-branches',
-  '.admin-stock-branch-row',
-  '.admin-stock-chips',
-  '.admin-stock-search',
-  '.inventory-branch-detail-shell',
-  '.inventory-stock-table',
-  '.inventory-loss-panel',
-  '.inventory-shift-reconciliation',
-  '.inventory-shift-reconciliation-table',
-]) {
-  if (!styles.includes(selector)) failures.push(`Thiếu CSS giao diện kho: ${selector}.`)
+// ── Không quay lại kiểu card, và phải chạy được trên điện thoại ─────────────
+if (inventorySection.includes('inventory-branch-card') || inventorySection.includes('className="section-card')) {
+  failures.push('Màn kho không được quay lại dạng thẻ (card).')
 }
-if (/^\.inventory-branch-card/m.test(styles)) {
-  failures.push('CSS thẻ chi nhánh cũ phải được dọn cùng lúc với markup.')
+for (const selector of ['.gt-list__row', '.gt-inline-detail', '.gt-fold', '.gt-recon', '.gt-timeline', '.gt-badge']) {
+  if (!ui.includes(selector)) failures.push(`Thiếu CSS design system: ${selector}.`)
 }
-if (!/@media \(max-width: 680px\)[\s\S]*\.admin-stock-branch-row \{ grid-template-columns: minmax\(0, 1fr\)/.test(styles)) {
-  failures.push('Bảng chi nhánh chưa có khóa một cột an toàn trên điện thoại.')
+if (!/@media \(max-width: 900px\)[\s\S]*\.gt-list__head \{ display: none/.test(ui)) {
+  failures.push('Bảng ngang chưa được chuyển thành dòng dọc trên điện thoại (§38, §72).')
 }
-if (!/@media \(max-width: 680px\)[\s\S]*\.inventory-stock-row/.test(styles)) {
-  failures.push('Bảng SKU chưa có bố cục responsive riêng cho điện thoại.')
+if (!/@media \(max-width: 900px\)[\s\S]*\.gt-inline-detail__grid \{ grid-template-columns: minmax\(0, 1fr\)/.test(ui)) {
+  failures.push('Khối chi tiết bung tại dòng chưa xếp một cột trên điện thoại.')
+}
+if (!styles.includes("@import './ui.css'")) {
+  failures.push('Design system chưa được nạp vào bảng style chính.')
 }
 
 if (failures.length) {

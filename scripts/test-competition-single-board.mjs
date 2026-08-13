@@ -43,14 +43,17 @@ assert.deepEqual(
   `Màn Thi đua phải chỉ còn một danh sách nhân sự, đang có: ${presentLists.join(', ')}`,
 )
 
-// ── 2. Đúng MỘT dải số tổng, và nó ăn theo kỳ thi đua chứ không phải bộ lọc đầu trang.
-assert.ok(section.includes('className="competition-overview"'), 'Thiếu dải tổng của màn Thi đua.')
+// ── 2. KHÔNG còn dải số tổng nào ở đầu màn (13/08/2026, chủ hệ thống: "bỏ các
+//      tổng hợp đầu bảng như vậy, bỏ luôn chữ mô tả"). Mọi con số của dải cũ đọc
+//      được ngay trong bảng xếp hạng; chip đạt KPI vẫn ở tiêu đề section.
+assert.ok(!section.includes('className="competition-overview"'), 'Dải tổng đầu màn Thi đua đã bỏ, không được dựng lại.')
+assert.ok(!section.includes('competition-leader-separation-note'), 'Đoạn mô tả tách Ca trưởng đã bỏ, không được dựng lại.')
 assert.ok(!section.includes('payroll-summary-grid'), 'Còn dải tổng thứ hai lấy khoảng ngày khác.')
 assert.ok(!section.includes('capacity-summary-grid'), 'Còn dải tổng thứ ba của khối năng suất.')
 assert.match(
   admin,
-  /const competitionAchievedCount = competitionFilteredRows\.filter\(\(row\) => row\.progress >= 100\)\.length/,
-  'Chip "đạt KPI" phải đếm trên đúng tập nhân sự của bảng xếp hạng, không phải bộ lọc đầu trang.',
+  /const competitionAchievedCount = competitionRankingMode === 'leaders'[\s\S]*?competitionFilteredRows\.filter\(\(row\) => row\.achievedDays > 0\)\.length/,
+  'Chip nhân viên phải đếm người có ngày đạt KPI trên đúng tập của bảng; mode Ca trưởng giữ KPI kỳ riêng.',
 )
 
 // ── 3. Poster ăn ĐÚNG bộ lọc đang hiển thị và không còn chiếm chỗ trên màn.
@@ -94,9 +97,11 @@ assert.match(
 // ── 5. Cột năng suất nằm trong chính bảng xếp hạng.
 assert.match(admin, /className=\{`competition-classification-capacity/, 'Thiếu cột năng suất trong bảng xếp hạng.')
 assert.match(admin, /competitionCapacityByKey\.get\(`\$\{row\.branchId\}-\$\{row\.employeeKey\}`\)/, 'Cột năng suất chưa lấy đúng dòng nhân sự.')
-for (const selector of ['.competition-sort-bar {', '.competition-overview {', '.competition-day-row {']) {
+for (const selector of ['.competition-sort-bar {', '.competition-day-row {']) {
   assert.ok(styles.includes(selector), `Thiếu CSS ${selector}`)
 }
+assert.ok(!styles.includes('.competition-overview {'), 'CSS dải tổng đã bỏ, không để lại code chết.')
+assert.ok(!styles.includes('.competition-leader-separation-note {'), 'CSS đoạn mô tả đã bỏ, không để lại code chết.')
 assert.ok(!styles.includes('.competition-poster-toggle'), 'CSS của khối xem trước đã bỏ, không để lại code chết.')
 
 console.log('COMPETITION_SINGLE_BOARD_OK')

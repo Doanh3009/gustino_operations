@@ -1,5 +1,14 @@
 import { forwardRef, useEffect, useMemo, useRef, useState } from 'react'
-import { INBOUND_PRODUCTS, PACKING_OPTIONS_BY_OUTPUT, getInboundProducts, getProcessInputProducts, getProcessingOutputOptions, getProducts, productById } from '../lib/constants'
+import { INBOUND_PRODUCTS, MOVEMENT_LABELS as MOVEMENT_TYPE_LABELS, PACKING_OPTIONS_BY_OUTPUT, getInboundProducts, getProcessInputProducts, getProcessingOutputOptions, getProducts, productById } from '../lib/constants'
+import {
+  ActionSheet,
+  DateField,
+  Drawer,
+  OverflowMenu,
+  PageHeader,
+  ReconRow,
+  type SheetAction,
+} from '../components/ui'
 import { canvasToBlob, createId, shareOrDownloadBlob } from '../lib/browser'
 import { confirmBlockedMessage, confirmRisky } from '../lib/deviceReadiness'
 import {
@@ -28,6 +37,7 @@ import {
 } from '../lib/warehouseScope'
 import { addMovements, calculateStock, deleteMovements, ensureOperationDay, saveInventoryReport } from '../lib/store'
 import { branchName as configuredBranchName } from '../lib/branches'
+import { importChunk } from '../lib/lazyRoute'
 import { localDateKey } from '../lib/dates'
 import { fetchConfiguredProducts } from '../lib/products'
 import type {
@@ -103,7 +113,7 @@ const newProcessLine = (kind: 'input' | 'output'): ProcessLine => ({
 })
 
 export function InventoryPage({ user, movements, movementsStatus = 'ready', onChanged, initialTab = 'overview', onNavigate }: Props) {
-  const canOperateInventory = ['admin', 'manager', 'shift_leader'].includes(user.role)
+  const canOperateInventory = ['admin', 'manager', 'shift_leader', 'shift_deputy'].includes(user.role)
   const [mode, setMode] = useState<InventoryMode>(modeFromTab(initialTab))
   const [inboundEntries, setInboundEntries] = useState<EntryMap>({})
   const [voucherNote, setVoucherNote] = useState('')
@@ -119,6 +129,12 @@ export function InventoryPage({ user, movements, movementsStatus = 'ready', onCh
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [productTick, setProductTick] = useState(0)
+  /** §40: mọi loại phiếu đi qua một action sheet, không còn hàng tab ngang. */
+  const [entrySheetOpen, setEntrySheetOpen] = useState(false)
+  /** §39: SKU đang mở drawer đối chiếu. */
+  const [detailProductId, setDetailProductId] = useState('')
+  /** §56/§58: lịch sử đầy đủ nằm trong drawer, không đổ ra màn chính. */
+  const [historyOpen, setHistoryOpen] = useState(false)
   const reportRef = useRef<HTMLDivElement>(null)
   const today = localDateKey()
   // Dropdown nguyên liệu nhập kho / chế biến lấy từ SKU admin cấu hình.
@@ -500,7 +516,7 @@ export function InventoryPage({ user, movements, movementsStatus = 'ready', onCh
 
   async function exportInfographic() {
     if (!reportRef.current) return
-    const { default: html2canvas } = await import('html2canvas')
+    const { default: html2canvas } = await importChunk(() => import('html2canvas'))
     const canvas = await html2canvas(reportRef.current, {
       scale: 2,
       backgroundColor: '#f7f5ec',
@@ -522,38 +538,109 @@ export function InventoryPage({ user, movements, movementsStatus = 'ready', onCh
       : 'Trình duyệt đã nhận file ảnh kho. Hãy kiểm tra mục Tệp tải về.')
   }
 
-  const visibleModes: InventoryMode[] = canOperateInventory
-    ? ['stock', 'inbound', 'processing', 'outbound', 'reset', 'count']
-    : ['stock', 'outbound']
+  const viewingPastDay = selectedDate !== today
+  /**
+   * §34: màn tồn làm việc trên MỘT ngày. Chọn ngày quá khứ thì cột đổi tên thành
+   * "Tồn cuối ngày …" — tuyệt đối không gọi số của ngày cũ là "Tồn hiện tại".
+   * Cắt sổ tới hết ngày đó rồi đưa vào đúng `calculateStock` cũ nên mọi luật
+   * (mốc kiểm kê, `<=`, hao hụt chế biến) giữ nguyên.
+   */
+  const dayStock = useMemo(() => {
+    if (!viewingPastDay) return warehouseStock
+    return splitWarehouseLines(calculateStock(movements.filter((item) => item.shiftDate <= selectedDate))).managed
+  }, [viewingPastDay, warehouseStock, movements, selectedDate, productTick])
+  const dayOpeningStock = useMemo(() => {
+    const previous = addDayKey(selectedDate, -1)
+    return new Map(
+      calculateStock(movements.filter((item) => item.shiftDate <= previous))
+        .map((line) => [line.product.id, line.expected]),
+    )
+  }, [movements, selectedDate, productTick])
+
+  /** Lớp 2 (§31/§39): SKU đang mở drawer đối chiếu. */
+  const detailLine = dayStock.find((line) => line.product.id === detailProductId) || null
+  const detailBreakdown = useMemo(() => {
+    if (!detailLine) return null
+    const rows = movements
+      .filter((item) => item.productId === detailLine.product.id && item.shiftDate === selectedDate)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    const sumOf = (types: MovementType[]) => rows
+      .filter((item) => types.includes(item.type))
+      // Hao hụt chế biến chỉ để thông tin — đã nằm trong chênh lệch vào/ra của mẻ.
+      .filter((item) => !(item.type === 'waste' && item.sourceProductId))
+      .reduce((sum, item) => sum + item.quantity, 0)
+    return {
+      rows,
+      opening: dayOpeningStock.get(detailLine.product.id) || 0,
+      inbound: sumOf(['inbound', 'opening']),
+      produced: sumOf(['processing_in', 'packing_in']),
+      consumed: sumOf(['processing_out', 'packing_out']),
+      sold: sumOf(['sale_out']),
+      waste: sumOf(['waste']),
+      closing: detailLine.expected,
+    }
+  }, [detailLine, movements, selectedDate, dayOpeningStock])
+  /** §50: ngày đang xem nằm trước một lần kiểm kê đã xác nhận? */
+  const detailCheckpoint = useMemo(() => {
+    if (!detailLine) return ''
+    const later = movements.filter((item) =>
+      item.type === 'count' && item.productId === detailLine.product.id && item.shiftDate > selectedDate,
+    )
+    if (!later.length) return ''
+    return later.reduce((earliest, item) => item.shiftDate < earliest.shiftDate ? item : earliest).shiftDate
+  }, [detailLine, movements, selectedDate])
+
+  /** §40: một cửa duy nhất cho mọi loại phiếu, thay cho hàng tab cũ. */
+  const entryActions: SheetAction[] = [
+    { id: 'inbound', label: 'Nhập kho', hint: 'Hàng về kho — nhiều mặt hàng trong một phiếu' },
+    { id: 'processing', label: 'Chế biến', hint: 'Nguyên liệu ra, thành phẩm vào, hao hụt của mẻ' },
+    { id: 'outbound', label: 'Xuất kho', hint: 'Lấy hàng ra khỏi kho' },
+    { id: 'reset', label: 'Sửa tồn (điều chỉnh)', hint: 'Khai số thực tế — hệ thống ghi phiếu kiểm kê làm mốc' },
+    { id: 'count', label: 'Kiểm kê cuối ca', hint: 'Đếm thực tế và chốt báo cáo kho' },
+  ]
 
   return (
     <div className="page wh">
-      <header className="wh-head">
-        <div className="wh-head-line">
-          <b>Kho</b>
-          <span title={configuredBranchName(user.branchId) || user.branchId}>
-            {configuredBranchName(user.branchId) || user.branchId}
-          </span>
-          <em>{loadingStock ? 'đang tải…' : `${warehouseStock.length} mặt hàng${totals.low ? ` · ${totals.low} sắp hết` : ''}`}</em>
-        </div>
-        <nav className="wh-tabs" role="tablist" aria-label="Chức năng kho">
-          {visibleModes.map((item) => (
-            <button
-              type="button"
-              key={item}
-              role="tab"
-              aria-selected={mode === item}
-              className={mode === item ? 'active' : ''}
-              onClick={() => setMode(item)}
-            >
-              {MODE_LABELS[item]}
-              {item === 'inbound' && totals.inbound ? <b>{totals.inbound}</b> : null}
-              {item === 'outbound' && totals.outbound ? <b>{totals.outbound}</b> : null}
-              {item === 'count' && totals.count ? <b>{totals.count}</b> : null}
-            </button>
-          ))}
-        </nav>
-      </header>
+      <div className="gt-page" style={{ gap: 'var(--gt-3)' }}>
+        <PageHeader
+          title="KHO HÀNG"
+          subtitle={`${configuredBranchName(user.branchId) || user.branchId} · ${viewingPastDay ? `Đang xem dữ liệu ngày ${formatDayLabel(selectedDate)}` : 'Đang xem kho hôm nay'}`}
+          context={
+            /* §33: chi nhánh cố định theo tài khoản nên KHÔNG hiện selector; chỉ
+               còn ngày — và ngày là trọng tâm của màn này. */
+            <DateField label="Ngày" value={selectedDate} max={today} onChange={setSelectedDate} />
+          }
+          actions={
+            <>
+              {canOperateInventory && (
+                <button
+                  type="button"
+                  className="gt-btn gt-btn--primary"
+                  disabled={viewingPastDay}
+                  title={viewingPastDay ? 'Về ngày hôm nay để ghi phiếu — phiếu mới luôn ghi vào ngày hiện tại.' : undefined}
+                  onClick={() => setEntrySheetOpen(true)}
+                >+ Phát sinh kho</button>
+              )}
+              <OverflowMenu items={[
+                { label: 'Sao chép bảng tồn', onSelect: copyTextReport },
+                { label: 'Xuất ảnh báo cáo kho', onSelect: () => void exportInfographic() },
+                { label: 'Xem lịch sử đầy đủ', onSelect: () => setHistoryOpen(true), separatorBefore: true },
+              ]} />
+            </>
+          }
+        />
+
+        {viewingPastDay && (
+          <div className="gt-callout gt-callout--info">
+            <strong>Đang xem lại ngày {formatDayLabel(selectedDate)}.</strong>
+            <p>
+              Cột tồn là <b>tồn cuối ngày</b> đó, không phải tồn hiện tại. Phiếu mới luôn được ghi vào ngày hôm nay,
+              nên hãy quay về hôm nay trước khi nhập/xuất.{' '}
+              <button type="button" className="gt-btn gt-btn--ghost gt-btn--sm" onClick={() => setSelectedDate(today)}>Về hôm nay</button>
+            </p>
+          </div>
+        )}
+      </div>
 
       {movementsStatus === 'error' && !movements.length && (
         <p className="wh-alert" role="alert">
@@ -567,16 +654,149 @@ export function InventoryPage({ user, movements, movementsStatus = 'ready', onCh
         </p>
       )}
 
+      {/* Đang ở một biểu mẫu phát sinh: luôn có lối quay lại màn tồn. */}
+      {mode !== 'stock' && (
+        <div className="wh-linkrow">
+          <button type="button" onClick={() => setMode('stock')}>← Về tồn kho</button>
+          <strong style={{ alignSelf: 'center', fontSize: 13 }}>{MODE_LABELS[mode]}</strong>
+        </div>
+      )}
+
+      <ActionSheet
+        open={entrySheetOpen}
+        onClose={() => setEntrySheetOpen(false)}
+        title="Phát sinh kho"
+        description="Chọn loại phiếu cần ghi. Mọi phiếu đều lưu vào sổ kho và có thể tra lại trong lịch sử."
+        actions={entryActions}
+        onPick={(id) => setMode(id as InventoryMode)}
+      />
+
       {/* ── TỒN KHO ── */}
       {mode === 'stock' && (
         <StockOverview
-          lines={warehouseStock}
+          lines={dayStock}
           loading={loadingStock}
-          finishedToday={summarizeFinishedToday(todayMovements, today)}
-          onCopy={copyTextReport}
-          onExport={() => void exportInfographic()}
+          columnLabel={viewingPastDay ? `Tồn cuối ${formatDayLabel(selectedDate)}` : 'Tồn hiện tại'}
+          dayLabel={viewingPastDay ? `ngày ${formatDayLabel(selectedDate)}` : 'hôm nay'}
+          finishedToday={summarizeFinishedToday(dayMovements, selectedDate)}
+          onSelect={setDetailProductId}
         />
       )}
+
+      {/* Lớp 2 — vì sao con số tồn ra như vậy (§39). */}
+      <Drawer
+        open={Boolean(detailLine && detailBreakdown)}
+        onClose={() => setDetailProductId('')}
+        title={detailLine?.product.name || 'Chi tiết mặt hàng'}
+        subtitle={detailLine ? `${detailLine.product.sku} · ${configuredBranchName(user.branchId) || user.branchId}` : undefined}
+      >
+        {detailLine && detailBreakdown && (
+          <>
+            <div>
+              <span className="gt-metric__label">{viewingPastDay ? `Tồn cuối ngày ${formatDayLabel(selectedDate)}` : 'Tồn hiện tại'}</span>
+              <strong className="gt-metric__value" style={{ display: 'block' }}>
+                {formatStockAmount(detailBreakdown.closing, detailLine.product.unit)}
+              </strong>
+              {detailBreakdown.closing < -STOCK_EPSILON && (
+                <p className="gt-metric__hint" style={{ color: 'var(--gt-bad)' }}>
+                  Âm kho — đã bán/xuất nhiều hơn lượng đã ghi nhận. Có thể thiếu giao dịch chế biến hoặc nhập kho.
+                  Kiểm tra dữ liệu trước khi sửa, đừng đặt lại tồn cho xong.
+                </p>
+              )}
+            </div>
+
+            <div>
+              <span className="gt-metric__label">Đối chiếu trong ngày</span>
+              <div className="gt-recon">
+                <ReconRow label="Tồn đầu ngày" value={formatStockAmount(detailBreakdown.opening, detailLine.product.unit)} />
+                <ReconRow label="Nhập kho" value={`+${formatStockAmount(detailBreakdown.inbound, detailLine.product.unit)}`} tone="pos" />
+                <ReconRow label="Thành phẩm tạo ra" value={`+${formatStockAmount(detailBreakdown.produced, detailLine.product.unit)}`} tone="pos" />
+                <ReconRow label="Dùng để chế biến / đóng gói" value={`−${formatStockAmount(detailBreakdown.consumed, detailLine.product.unit)}`} tone="neg" />
+                <ReconRow label="Bán hàng" value={`−${formatStockAmount(detailBreakdown.sold, detailLine.product.unit)}`} tone="neg" />
+                <ReconRow label="Hao hụt" value={`−${formatStockAmount(detailBreakdown.waste, detailLine.product.unit)}`} tone="neg" />
+                <ReconRow
+                  label={viewingPastDay ? 'Tồn cuối ngày' : 'Tồn hiện tại'}
+                  value={formatStockAmount(detailBreakdown.closing, detailLine.product.unit)}
+                  total
+                />
+              </div>
+              <p className="gt-metric__hint">
+                Chênh lệch giữa dòng cuối và phép cộng ở trên (nếu có) là phần phiếu kiểm kê đã đặt lại — xem dòng
+                “Sửa tồn / Kiểm kê” trong biến động bên dưới.
+              </p>
+            </div>
+
+            {detailCheckpoint && (
+              <div className="gt-callout gt-callout--warn">
+                <strong>Ngày này nằm trước một lần kiểm kê đã xác nhận ({formatDayLabel(detailCheckpoint)}).</strong>
+                <p>
+                  Số đếm thực tế của lần kiểm kê đó là mốc chốt: tồn sau mốc luôn tính từ số đã đếm, không cộng dồn
+                  ngược các phiếu trước mốc.
+                </p>
+              </div>
+            )}
+
+            <div>
+              <span className="gt-metric__label">Biến động trong ngày</span>
+              <div className="gt-timeline">
+                {detailBreakdown.rows.map((item) => {
+                  const outbound = ['processing_out', 'packing_out', 'sale_out', 'waste'].includes(item.type)
+                  return (
+                    <div className="gt-timeline__item" key={item.id}>
+                      <time>{formatClock(item.createdAt)}</time>
+                      <span>
+                        {MOVEMENT_TYPE_LABELS[item.type]}
+                        {item.note ? <small style={{ display: 'block', color: 'var(--gt-muted)' }}>{item.note}</small> : null}
+                      </span>
+                      <b className={outbound ? 'gt-delta-out' : 'gt-delta-in'}>
+                        {item.type === 'count' ? '' : outbound ? '−' : '+'}
+                        {formatStockAmount(item.quantity, detailLine.product.unit)}
+                      </b>
+                    </div>
+                  )
+                })}
+                {!detailBreakdown.rows.length && (
+                  <p className="wh-empty">Mặt hàng này không phát sinh phiếu nào trong ngày đang xem.</p>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </Drawer>
+
+      {/* Lớp 4 — lịch sử đầy đủ, không đổ ra màn chính (§56, §58). */}
+      <Drawer
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        title="Lịch sử phát sinh kho"
+        subtitle={`${dayMovements.length} phiếu ngày ${formatDayLabel(selectedDate)}`}
+        wide
+      >
+        <DateFilterBar value={selectedDate} dates={availableDates} onChange={setSelectedDate} />
+        <div className="gt-timeline">
+          {dayMovements
+            .slice()
+            .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+            .map((item) => {
+              const product = productById(item.productId)
+              const outbound = ['processing_out', 'packing_out', 'sale_out', 'waste'].includes(item.type)
+              return (
+                <div className="gt-timeline__item" key={item.id}>
+                  <time>{formatClock(item.createdAt)}</time>
+                  <span>
+                    <strong>{MOVEMENT_TYPE_LABELS[item.type]} · {product?.name || item.productId}</strong>
+                    {item.note ? <small style={{ display: 'block', color: 'var(--gt-muted)' }}>{item.note}</small> : null}
+                  </span>
+                  <b className={outbound ? 'gt-delta-out' : 'gt-delta-in'}>
+                    {item.type === 'count' ? '' : outbound ? '−' : '+'}
+                    {formatStockAmount(item.quantity, product?.unit || 'đơn vị')}
+                  </b>
+                </div>
+              )
+            })}
+          {!dayMovements.length && <p className="wh-empty">Không có phát sinh kho trong ngày này.</p>}
+        </div>
+      </Drawer>
 
       {/* ── NHẬP HÀNG ── */}
       {mode === 'inbound' && canOperateInventory && <>
@@ -730,13 +950,17 @@ export function InventoryPage({ user, movements, movementsStatus = 'ready', onCh
    ──────────────────────────────────────────────────────────────────────────── */
 
 function StockOverview({
-  lines, loading, finishedToday, onCopy, onExport,
+  lines, loading, finishedToday, columnLabel, dayLabel, onSelect,
 }: {
   lines: ReturnType<typeof calculateStock>
   loading: boolean
   finishedToday: ReturnType<typeof summarizeFinishedToday>
-  onCopy: () => void
-  onExport: () => void
+  /** §34: "Tồn hiện tại" hay "Tồn cuối ngày …" — không bao giờ gọi nhầm. */
+  columnLabel: string
+  /** "hôm nay" hoặc "ngày 12/08/2026" — dùng cho tiêu đề khối thành phẩm. */
+  dayLabel: string
+  /** Bấm một dòng là mở drawer đối chiếu; đây là Lớp 2 của kiến trúc kho. */
+  onSelect: (productId: string) => void
 }) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState<StockDisplayCategory>('all')
@@ -782,23 +1006,37 @@ function StockOverview({
         )}
       </div>
 
+      {/* §35: summary một dòng thay cho hàng KPI card. */}
+      <p className="wh-summary">
+        <b>{lines.length}</b> mặt hàng
+        {' · '}<span className={lines.filter(isLowLine).length ? 'warn' : ''}>{lines.filter(isLowLine).length} sắp hết</span>
+        {' · '}<span className={lines.filter(isOutLine).length ? 'bad' : ''}>{lines.filter(isOutLine).length} hết hàng</span>
+        {' · '}<span className={lines.filter(isNegativeLine).length ? 'bad' : ''}>{lines.filter(isNegativeLine).length} âm kho</span>
+      </p>
+
       <div className="wh-table">
         <div className="wh-tr wh-th" aria-hidden="true">
           <span>Mặt hàng</span>
-          <span>Tồn</span>
+          <span>{columnLabel}</span>
           <span>Tình trạng</span>
         </div>
         {visible.map((line) => {
           const availability = stockAvailability(line)
           return (
-            <div className={`wh-tr status-${availability}`} key={line.product.id}>
+            <button
+              type="button"
+              className={`wh-tr wh-tr-tap status-${availability}`}
+              key={line.product.id}
+              aria-label={`Xem đối chiếu ${line.product.name}`}
+              onClick={() => onSelect(line.product.id)}
+            >
               <span className="wh-name">
                 <strong>{line.product.name}</strong>
                 <small>{line.product.sku} · {CATEGORY_LABELS[line.product.category as 'raw' | 'packaging'] || line.product.category}</small>
               </span>
               <span className="wh-num">{formatStockAmount(line.expected, line.product.unit)}</span>
-              <span className="wh-state">{STOCK_STATE_LABELS[availability]}</span>
-            </div>
+              <span className="wh-state">{STOCK_STATE_LABELS[availability]} <i aria-hidden="true">›</i></span>
+            </button>
           )
         })}
         {!visible.length && (
@@ -809,14 +1047,39 @@ function StockOverview({
       </div>
 
       {/* Thành phẩm không còn là hàng tồn: nhìn theo NGÀY ở đây, không cộng dồn. */}
-      <FinishedTodayTable rows={finishedToday} />
-
-      <div className="wh-linkrow">
-        <button type="button" onClick={onCopy}>▤ Sao chép bảng tồn</button>
-        <button type="button" onClick={onExport}>▧ Xuất ảnh</button>
-      </div>
+      <FinishedTodayTable rows={finishedToday} dayLabel={dayLabel} />
     </>
   )
+}
+
+function isOutLine(line: { expected: number }) {
+  return Math.abs(line.expected) <= STOCK_EPSILON
+}
+function isNegativeLine(line: { expected: number }) {
+  return line.expected < -STOCK_EPSILON
+}
+function isLowLine(line: { expected: number; product: { lowStock: number } }) {
+  return line.expected > STOCK_EPSILON && line.expected <= line.product.lowStock
+}
+
+/** DD/MM cho nhãn ngày ngắn trong tiêu đề và cột. */
+function formatDayLabel(dateKey: string) {
+  const [year, month, day] = dateKey.split('-')
+  return day && month && year ? `${day}/${month}/${year}` : dateKey
+}
+
+/** Ngày liền trước theo lịch thuần (không phụ thuộc múi giờ máy). */
+function addDayKey(dateKey: string, amount: number) {
+  const date = new Date(`${dateKey}T00:00:00Z`)
+  date.setUTCDate(date.getUTCDate() + amount)
+  return date.toISOString().slice(0, 10)
+}
+
+/** Giờ:phút theo giờ Việt Nam cho timeline biến động. */
+function formatClock(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
 /**
@@ -826,7 +1089,11 @@ function StockOverview({
  * nhiêu và còn bao nhiêu. Bảng này chỉ đọc phiếu CỦA NGÀY, nên số âm tích lũy
  * trong sổ không kéo theo vào đây.
  */
-function FinishedTodayTable({ rows }: { rows: ReturnType<typeof summarizeFinishedToday> }) {
+function FinishedTodayTable({ rows, dayLabel = 'hôm nay' }: {
+  rows: ReturnType<typeof summarizeFinishedToday>
+  dayLabel?: string
+}) {
+  const title = dayLabel === 'hôm nay' ? 'Thành phẩm hôm nay' : `Thành phẩm ${dayLabel}`
   const detailed = rows.flatMap((row) => {
     const product = productById(row.productId)
     if (!product || product.category !== 'finished') return []
@@ -835,14 +1102,14 @@ function FinishedTodayTable({ rows }: { rows: ReturnType<typeof summarizeFinishe
   if (!detailed.length) {
     return (
       <section className="wh-block">
-        <h2 className="wh-blocktitle">Thành phẩm hôm nay</h2>
-        <p className="wh-empty">Hôm nay chưa có mẻ chế biến nào. Thành phẩm tính theo ngày, không cộng dồn qua ngày.</p>
+        <h2 className="wh-blocktitle">{title}</h2>
+        <p className="wh-empty">Chưa có mẻ chế biến nào {dayLabel}. Thành phẩm tính theo ngày, không cộng dồn qua ngày.</p>
       </section>
     )
   }
   return (
     <section className="wh-block">
-      <h2 className="wh-blocktitle">Thành phẩm hôm nay</h2>
+      <h2 className="wh-blocktitle">{title}</h2>
       <div className="wh-table wh-table-4">
         <div className="wh-tr wh-th" aria-hidden="true">
           <span>Thành phẩm</span>
@@ -862,7 +1129,7 @@ function FinishedTodayTable({ rows }: { rows: ReturnType<typeof summarizeFinishe
         ))}
       </div>
       <p className="wh-hint">
-        Chỉ tính phiếu trong ngày hôm nay. Thành phẩm không hiển thị ở bảng tồn kho vì không để dồn qua nhiều ngày —
+        Chỉ tính phiếu trong ngày đang xem. Thành phẩm không hiển thị ở bảng tồn kho vì không để dồn qua nhiều ngày —
         POS vẫn trừ bình thường sau mỗi lần bán.
       </p>
     </section>
@@ -1617,7 +1884,7 @@ function InventoryReportForm({
     if (!posterRef.current || exportingImage) return
     setExportingImage(true)
     try {
-      const { default: html2canvas } = await import('html2canvas')
+      const { default: html2canvas } = await importChunk(() => import('html2canvas'))
       const captureHeight = Math.ceil(posterRef.current.scrollHeight)
       const canvas = await html2canvas(posterRef.current, {
         scale: 2,

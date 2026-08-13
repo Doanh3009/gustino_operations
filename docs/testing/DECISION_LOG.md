@@ -1,5 +1,55 @@
 # Decision Log
 
+## 2026-08-12 — Ca trưởng xếp riêng; “đạt KPI” trên tổng quan theo chính sách daily-only
+
+- Bảng xếp hạng nhân viên ngày/tháng không chứa Ca trưởng. Staff, cashier và Ca phó vẫn thuộc bảng nhân viên; Ca trưởng dùng bảng `Ca trưởng theo tháng` dựa trên doanh thu ca vận hành đã có.
+- Vì tiền KPI hiện chỉ cộng từng ngày đạt, thẻ tổng quan nhân viên phải đếm người có ít nhất một `achievedDay`, không dùng điều kiện tổng kỳ đạt 100%. Nhãn hiển thị là `Có ngày đạt KPI` và kèm tổng số lượt ngày đạt để người xem đối chiếu với thưởng ngày.
+- Phần trăm/xếp loại tổng kỳ trên từng dòng vẫn giữ nguyên để đối soát doanh thu tháng; thay đổi bộ đếm không sửa target, rank, daily bonus hoặc doanh thu.
+- Infographic trung bình bán hàng theo tháng dùng đúng tập nhân viên sau bộ lọc và không gồm Ca trưởng. Mỗi người hiển thị cả doanh thu/ngày công, sản phẩm/ngày công và doanh thu/tháng có làm; không thay thế bảng nguồn doanh thu hay file Excel kiểm toán.
+
+## 2026-08-12 — Quy tắc đi trễ đổi theo ngày làm việc 12/08 cho toàn hệ thống
+
+- Owner trực tiếp thay thế mốc hiệu lực của quy tắc vào sớm 15 phút: chỉ các ca có `workDate >= 2026-08-12` ở mọi chi nhánh mới lấy mốc đúng giờ bằng giờ bắt đầu ca trừ 15 phút.
+- Các ca có `workDate < 2026-08-12` giữ cách cũ theo giờ bắt đầu ca, không hồi tố mốc sớm 15 phút và không cộng cấu hình `grace_minutes` vào phép tính trễ.
+- Biên được tính theo phút hoàn chỉnh: đúng phút mốc chưa trễ; từ phút kế tiếp mới trễ. Ví dụ ca cũ 07:00 thì 07:00:59 chưa trễ và 07:01:00 trễ 1 phút; ca 09:00 theo luật mới có mốc 08:45 thì 08:45:59 chưa trễ và 08:46:00 trễ 1 phút.
+- Đây là thay đổi công thức hiển thị/tổng hợp động, áp thống nhất toàn hệ thống. Không tự backfill, sửa hoặc xóa bản ghi chấm công lịch sử; doanh thu, KPI, quyền và quy trình check-in/out không đổi.
+
+## 2026-08-10 — Doanh thu trước khi dùng web là nguồn KPI lịch sử, không phải hóa đơn POS
+
+- Owner xác nhận các số 03–10/07 là doanh thu thực tế theo nhân viên; vì một số ngày chưa dùng web, phần thiếu phải được cộng vào từng ngày và bảng KPI tổng tháng 07.
+- Dùng bảng riêng `employee_kpi_revenue_adjustments` với `source_key` unique để lưu đúng phần chênh thiếu. Không sửa/nhân đôi hóa đơn đã có: 14 dòng khớp giữ nguyên; Minh Lý 09/07 chỉ thêm 33.000đ từ 455.000đ lên 488.000đ.
+- Bộ tính KPI gộp POS thật với adjustment; màn hóa đơn, kho và phiếu xuất chỉ dùng POS thật. Điều này giữ dấu vết tính lương rõ ràng và tránh tạo sản phẩm/hóa đơn/tồn kho giả cho dữ liệu lịch sử.
+- Khoản điều chỉnh tham gia doanh thu KPI ngày, KPI tổng tháng, xếp hạng và file đối soát. Tiền thưởng vẫn chỉ tính theo ngày đạt KPI theo quyết định daily-only trước đó.
+
+## 2026-08-10 — Tiền KPI chỉ tính theo ngày
+
+- Owner yêu cầu bỏ cách tính KPI theo tháng và chỉ tính theo ngày. Quyết định được áp dụng cho mọi kỳ đang xem, kể cả tháng trước và hiện tại: tiền KPI bằng tổng thưởng ngày đạt chỉ tiêu.
+- Không cộng thưởng tuần, bậc thưởng tháng hoặc giải tháng vào tiền KPI. Các hàm tham chiếu cũ có thể còn trong thư viện để bảo toàn lịch sử mã nguồn, nhưng màn Quản trị, bảng lương và file Excel không gọi chúng khi tính tiền.
+- Tổng hợp tháng vẫn hiển thị doanh thu, mục tiêu, tỷ lệ KPI và số ngày đạt nhằm đối soát; đây không phải thưởng tháng. Quy tắc ngày/cuối tuần, cửa sổ KPI Vũng Tàu 01–15/07 và sửa lỗi ngày UTC vẫn giữ nguyên.
+- Không backfill hoặc sửa hóa đơn/chấm công. Khi mở lại kỳ cũ, hệ thống tính động tiền KPI theo quy tắc daily-only mới.
+
+## 2026-08-10 — Supersede whole-month Vũng Tàu policy; separate deputy permissions
+
+- The owner explicitly superseded the earlier whole-month interpretation: Vũng Tàu's new KPI applies only 01–15/07/2026. From 16/07 onward, including August and later months, the original Vũng Tàu rates apply. July targets are summed date-by-date; no receipt/attendance history is rewritten.
+- `Ca phó` is a distinct application role with staff-like permissions: sales, own attendance and schedule. It must not open, own or manage an operational shift and must not inherit Ca trưởng screens. Storage uses `staff` for least-privilege RLS/API compatibility; authoritative `position_title=Ca phó (8h)` normalizes to `shift_deputy` in the app.
+- The owner explicitly approved classifying Nguyễn Trần Nhật An and Nguyễn Minh Khoa as the 8-hour KPI group while retaining the visible `Part-time (8h)` position and staff role. This makes Gold Coast 09/08 targets 1.300.000đ (119,7% and 100,5% respectively); the manually reported 104,6% for Minh Khoa remains arithmetic error.
+- Monthly tier amounts remain those in the supplied policy image. The displayed KPI money is cumulative daily + weekly + monthly reward, not a standalone 2m payment.
+
+## 2026-08-10 — Vũng Tàu KPI mới và thưởng tháng áp dụng hồi tố khi xem lại kỳ
+
+- Owner phê duyệt trực tiếp: Vũng Tàu ngày thường Part-time 550.000đ, Full-time 1.050.000đ, Ca phó 500.000đ; cuối tuần Part-time/Full-time bằng Gold Coast (650.000đ/1.300.000đ), riêng Ca phó vẫn 500.000đ. Mốc tháng chuẩn 20 ngày thường + 6 cuối tuần lần lượt là 14.900.000đ, 28.800.000đ và 13.000.000đ.
+- Ca trưởng Vũng Tàu không có KPI cá nhân. KPI team theo cơ cấu chuẩn 4 Full-time + 1 Ca phó + 1 Ca trưởng là 4.700.000đ ngày thường, 5.700.000đ cuối tuần và 128.200.000đ/tháng. Thưởng team ngày 30.000đ nhân theo số ca Ca trưởng thực tế làm.
+- Kích hoạt bậc thưởng tháng đúng ảnh owner cung cấp: Full-time/Ca phó 0,5/1/1,5/2/2,5 triệu; Ca trưởng 1/2/3/4/5 triệu tại các mốc 80/90/100/110/120%. Most Improved (+400.000đ) và Perfect Month (+500.000đ) tự cộng khi đủ bằng chứng; PG of the Month chỉ hiện khoản chờ Admin xác nhận kỷ luật vì repository chưa có nguồn vi phạm kỷ luật có cấu trúc.
+- Khi mở lại tháng cũ hoặc tháng hiện tại, hệ thống tính động từ doanh thu/chấm công gốc theo khung mới; không backfill, ghi đè hay sửa bảng dữ liệu lịch sử. Override KPI cá nhân cũ không được ghi đè khung Vũng Tàu mới.
+- Owner xác nhận trực tiếp Đặng Thị Khánh Linh và Mã Thị Thanh Trúc là Ca phó; ảnh lịch ngày 10/08 cũng xác nhận. Hồ sơ production trước đó ghi `Full-time`, nên được phép sửa riêng `position_title` thành `Ca phó (8h)` để khung 500.000đ/13.000.000đ áp dụng nhất quán cho kỳ cũ và hiện tại. Không đổi role, employment type, hóa đơn hoặc chấm công.
+- Báo cáo 09/08 gọi hai nhân viên Gold Coast là `Part-time (8h)` và ảnh lịch xác nhận chức danh Part-time, nhưng chính sách chưa xác nhận cách tính khi Part-time làm quá 4 giờ. Giữ nguyên hồ sơ/công thức Gold Coast và ghi `Needs Business Confirmation`; không suy diễn thay đổi ngoài phạm vi Vũng Tàu.
+
+## 2026-08-10 — KPI calendar inputs are date-only, never local-midnight instants
+
+- Interpret every KPI `YYYY-MM-DD` input as a calendar date independent of browser/device timezone. Date iteration, full-month detection and weekday/weekend classification must use UTC date-only operations.
+- Preserve the owner-confirmed KPI table exactly: full calendar months use the configured monthly target; partial periods sum configured weekday/weekend targets for the exact included dates.
+- This is an implementation correction only. Do not change revenue attribution, role classification, rank thresholds, daily/weekly rewards or activate monthly rewards. Do not rewrite July history without a read-only per-employee audit and explicit owner approval.
+
 ## 2026-08-03 — correction actions preserve filter context
 
 - Opening an attendance correction from a row already visible in the correction list must not change its day/employee mode, date, branch, employee or search text. Viewing all shifts for that employee is a separate explicit action.

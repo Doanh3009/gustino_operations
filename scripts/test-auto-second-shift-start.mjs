@@ -67,14 +67,27 @@ assert.equal(canOpenNextScheduledOperationalShift(partTimer, [], [allDay, partTi
 // Part-time có mặt cũng KHÔNG làm ca trưởng duy nhất mất quyền trực cả hai ca.
 assert.deepEqual(operationalSequencesFor(allDay, [allDay, partTimer], workShifts), [1, 2])
 
-// Ca phó không đứng tên phiên ca, kể cả khi vào ca sớm nhất.
+// 13/08/2026 — Ca phó ĐỨNG TÊN phiên ca như ca trưởng (chủ hệ thống chốt).
+// Trước đây danh sách này rỗng, và đó chính là lỗi 12/08 của Nguyễn Thị Yến:
+// ca phó có lịch, đã chấm công, mà không được gán phiên ca nào.
 const deputy = {
   ...leader('r-deputy', 'u-deputy', '2026-07-20', 'ca-1', '06:00', '15:15'),
   positionTitle: 'Ca phó',
 }
-assert.deepEqual(operationalSequencesFor(deputy, [deputy, ca1, ca2], workShifts), [])
-// Ca phó lọt vào danh sách cũng không đẩy thứ tự của hai ca trưởng thật.
-assert.deepEqual(operationalSequencesFor(ca1, [deputy, ca1, ca2], workShifts), [1])
+// Khung 06:00–15:15 là khung SỚM NHẤT trong ngày ⇒ ca phó đứng Ca 1, và hai
+// khung còn lại đẩy xuống: ca1 (07:15) thành khung giữa (không đứng ca nào),
+// ca2 (14:15) vẫn là khung muộn nhất ⇒ Ca 2.
+assert.deepEqual(operationalSequencesFor(deputy, [deputy, ca1, ca2], workShifts), [1])
 assert.deepEqual(operationalSequencesFor(ca2, [deputy, ca1, ca2], workShifts), [2])
+
+// Ca phó CÙNG khung giờ với ca trưởng thì cả hai cùng thuộc phiên ca đó — ai
+// bấm nhận ca trước thì ca mang tên người ấy.
+const deputySameWindow = {
+  ...leader('r-deputy-2', 'u-deputy-2', '2026-07-20', 'ca-2', '14:15', '22:15'),
+  positionTitle: 'Ca phó (8h)',
+}
+assert.deepEqual(operationalSequencesFor(deputySameWindow, [ca1, ca2, deputySameWindow], workShifts), [2])
+assert.deepEqual(operationalSequencesFor(ca2, [ca1, ca2, deputySameWindow], workShifts), [2])
+assert.deepEqual(operationalSequencesFor(ca1, [ca1, ca2, deputySameWindow], workShifts), [1])
 
 console.log('AUTO_SECOND_SHIFT_START_OK')

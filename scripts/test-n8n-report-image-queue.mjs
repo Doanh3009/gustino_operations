@@ -44,13 +44,18 @@ if (!n8nApi.includes('webhookResponse.status === 403') || !n8nApi.includes('IP W
 if (!n8nApi.includes('await webhookResponse.text()') || !n8nApi.includes('N8N_ERROR_DETAIL_MAX_CHARS') || !n8nApi.includes('Executions')) {
   failures.push('API cloud chưa giữ chi tiết JSON có giới hạn khi workflow n8n trả 500.')
 }
-if (!n8nApi.includes("'shift-1': '15:15'") || !n8nApi.includes("'shift-2': '22:00'") || !n8nApi.includes("day: '22:15'")) {
-  failures.push('API n8n chưa khóa đúng lịch 15:15, 22:00 và 22:15.')
+// Lịch gửi phải khớp `REPORT_DUE_TIMES` (src/lib/reportSchedule.ts): Ca 1 lúc 15:15,
+// Ca 2 và Tổng ngày lúc 22:15 — đúng hai mốc mà app tự chốt & gửi báo cáo.
+if (!n8nApi.includes("'shift-1': '15:15'") || !n8nApi.includes("'shift-2': '22:15'") || !n8nApi.includes("day: '22:15'")) {
+  failures.push('API n8n chưa khóa đúng lịch 15:15 và 22:15.')
 }
 if (!n8nApi.includes('verifyClosedShiftAndSnapshot') || !n8nApi.includes('previousDelivery')) {
   failures.push('API n8n chưa tự kiểm tra ca đã đóng/snapshot và chống queue trùng.')
 }
-if (!n8nApi.includes('input.sendNow === true') || !n8nApi.includes('previousJob?.queued === true && !sendNow') || !n8nApi.includes('send_now: sendNow')) {
+// Chống gửi trùng ở API cloud bám `force`, KHÔNG bám `sendNow`: app luôn gửi
+// sendNow=true nên `!sendNow` từng làm chống-trùng vô hiệu. Chỉ nút "Gửi Zalo" thủ
+// công (người dùng đã xác nhận chấp nhận trùng) mới đặt force=true.
+if (!n8nApi.includes('input.sendNow === true') || !n8nApi.includes('previousJob?.queued === true && !force') || !n8nApi.includes('send_now: sendNow')) {
   failures.push('API cloud chưa cho gửi ngay bypass đúng queued short-circuit và báo cờ cho n8n.')
 }
 if (!n8nApi.includes('n8nImmediateOnlyAck') || !n8nApi.includes('When Last Node Finishes')) {

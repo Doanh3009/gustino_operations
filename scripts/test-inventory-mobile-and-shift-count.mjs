@@ -125,7 +125,18 @@ assert.match(
 assert.doesNotMatch(inventory, /inventory-subtabs/, 'Tầng tab con đã bị bỏ.')
 assert.doesNotMatch(inventory, /type InboundSub|type OutboundSub/, 'State tab con đã bị bỏ.')
 assert.doesNotMatch(inventory, /className="section-card|className="entry-card/, 'Màn kho không được quay lại dạng thẻ (card).')
-assert.match(inventory, /className="wh-tabs"/, 'Thiếu thanh chế độ kho.')
+// 13/08/2026 (§40): hàng tab ngang được thay bằng MỘT cửa "+ Phát sinh kho".
+// Không mất chế độ nào — cả 5 loại phiếu vẫn mở được từ action sheet.
+assert.doesNotMatch(inventory, /className="wh-tabs"/, 'Hàng tab ngang đã được thay bằng action sheet.')
+assert.match(inventory, /\+ Phát sinh kho/, 'Thiếu nút mở cửa phát sinh kho.')
+assert.match(inventory, /<ActionSheet/, 'Phát sinh kho phải mở bằng action sheet dùng chung.')
+for (const mode of ['inbound', 'processing', 'outbound', 'reset', 'count']) {
+  assert.ok(
+    new RegExp(`id: '${mode}'`).test(inventory),
+    `Loại phiếu ${mode} phải còn trong cửa Phát sinh kho`,
+  )
+}
+assert.match(inventory, /← Về tồn kho/, 'Đang ở biểu mẫu phải luôn có lối quay lại màn tồn.')
 assert.match(inventory, /function recentProductIds\(/, 'Thiếu nhóm mặt hàng hay dùng.')
 assert.match(inventory, /recentIds=\{recentIds\}/, 'Bảng nhập liệu chưa nhận nhóm hay dùng.')
 assert.match(inventory, /className="wh-more"/, 'Thiếu nút hiện thêm mặt hàng ít dùng.')
@@ -143,7 +154,6 @@ assert.match(inventory, /if \(loading\) return <SkeletonRows/, 'Đang tải ph�
 assert.match(app, /setMovementsStatus\('error'\)|setMovementsStatus\(hadData \? 'ready' : 'error'\)/, 'Lỗi tải sổ kho phải báo ra, không nuốt im.')
 
 for (const selector of [
-  '.wh-tabs {',
   '.wh-tr {',
   '.wh-etr {',
   '.wh-step {',

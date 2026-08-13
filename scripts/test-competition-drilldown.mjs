@@ -2,17 +2,19 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import ts from 'typescript'
 
-const [admin, styles, employeeSource, leaderSource] = await Promise.all([
+const [admin, styles, employeeSource, leaderSource, shiftScopeSource] = await Promise.all([
   readFile(new URL('../src/pages/AdminPage.tsx', import.meta.url), 'utf8'),
   readFile(new URL('../src/styles.css', import.meta.url), 'utf8'),
   readFile(new URL('../src/lib/competitionDrilldown.ts', import.meta.url), 'utf8'),
   readFile(new URL('../src/lib/shiftCompetition.ts', import.meta.url), 'utf8'),
+  readFile(new URL('../src/lib/shiftReportScope.ts', import.meta.url), 'utf8'),
 ])
 
 for (const token of [
-  'Xem ${sources.length} nguồn doanh thu',
+  'title={`${sources.length} nguồn · ${dayRows.length} ngày`}',
   'aria-expanded={expanded}',
-  'DRILL-DOWN NGUỒN DOANH THU',
+  'CHI TIẾT MỘT NGƯỜI',
+  'Nguồn doanh thu ({sources.length})',
   'buildEmployeeCompetitionRevenueSources',
   'buildShiftLeaderReceiptSources',
   'Tổng nguồn đang lệch',
@@ -78,7 +80,10 @@ assert.equal(employeeSources.length, 2, 'Drill-down nhân viên phải giữ đ�
 assert.equal(employeeSources.reduce((sum, source) => sum + source.revenue, 0), 1200, 'Doanh thu nguồn phải loại dòng POS đã gắn allocation để không cộng hai lần.')
 assert.equal(employeeSources.find((source) => source.kind === 'receipt')?.soldQuantity, 2, 'Số lượng hóa đơn drill-down chỉ lấy dòng bán trực tiếp.')
 
-const leaderModule = await importTs(leaderSource)
+const leaderModule = await importTs(`${shiftScopeSource
+  .replace("import type { BagShiftSession } from '../types'", '')
+  .replace(/\bexport\s+/g, '')}
+${leaderSource.replace("import { sessionScopeWindow, timestampInScopeWindow } from './shiftReportScope'", '')}`)
 const sessions = [{
   id: 'shift-a', branchId: 'lotte-vt', businessDate: '2026-07-20', sequence: 1,
   leaderId: 'leader-a', leaderName: 'Ca trưởng A', status: 'closed', openingBalances: {},
@@ -92,7 +97,11 @@ leaderReceipts[0].createdAt = '2026-07-20T03:00:00.000Z'
 const leaderSources = leaderModule.buildShiftLeaderReceiptSources(sessions, leaderReceipts, {
   branchIds: ['lotte-vt'], from: '2026-07-20', to: '2026-07-20',
 })
-assert.deepEqual(leaderSources.map((source) => source.receipt.id), ['inside-shift'], 'Drill-down ca trưởng chỉ được lấy hóa đơn trong cửa sổ ca.')
+assert.deepEqual(
+  leaderSources.map((source) => source.receipt.id),
+  ['inside-shift', 'outside-shift'],
+  'Ca 1 phải nhận mọi hóa đơn tới 15:15, kể cả hóa đơn bán sau khi ca trưởng đã chốt ca (vùng doanh thu chia theo đồng hồ, không theo giờ mở/đóng phiên ca).',
+)
 assert.equal(leaderSources[0].leaderKey, 'leader-a')
 
 console.log('COMPETITION_DRILLDOWN_OK')

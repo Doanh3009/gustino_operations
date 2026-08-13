@@ -240,7 +240,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   // Nút này là lối thoát: ai đang trong ca bấm thì ca gán cho người đó, và mọi lần nhận
   // ngoài lịch đều ghi dấu trong sổ ca (xem `claimOperationalShift`).
   const claimableSequence = bagSessions.length + 1
-  const canClaimShift = user.role === 'shift_leader'
+  const canClaimShift = ['shift_leader', 'shift_deputy'].includes(user.role)
     && !reportDone
     && !openBagSession
     && bagSessions.length < expectedDailyShifts

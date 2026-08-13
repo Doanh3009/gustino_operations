@@ -7,9 +7,11 @@ import { deleteConfiguredProduct, fetchConfiguredProducts, syncConfiguredProduct
 import { formatQuantity } from '../lib/inventoryEntry'
 import { ensureDefaultWorkShifts } from '../lib/attendance'
 import { shouldUseLanApi, supabase } from '../lib/supabase'
+import { BranchKpiSettings } from './admin/BranchKpiSettings'
+import { PromotionsPanel } from './admin/PromotionsPanel'
 import type { AppUser, Product, ProductRecipeLine, Role } from '../types'
 
-type ControlTab = 'masterdata' | 'permissions' | 'reconciliation' | 'audit' | 'cleanup'
+type ControlTab = 'masterdata' | 'promotions' | 'kpi' | 'permissions' | 'reconciliation' | 'audit' | 'cleanup'
 
 const CLEANUP_TARGETS = [
   { id: 'sales', label: 'Hóa đơn bán hàng (POS)', hint: 'sales_receipts + chi tiết' },
@@ -94,6 +96,7 @@ const ROLE_LABELS: Record<PermissionRole, string> = {
   manager: 'Quản lý',
   supmt: 'Giám sát (SUP MT)',
   shift_leader: 'Ca trưởng',
+  shift_deputy: 'Ca phó',
   staff: 'Nhân viên bán hàng',
   cashier: 'Thu ngân POS',
   kitchen: 'Bếp',
@@ -867,6 +870,8 @@ export function ControlCenterPage({ user }: { user: AppUser }) {
       <nav className="control-tabs" aria-label="Thiết lập">
         {[
           ['masterdata', 'Dữ liệu nền'],
+          ['promotions', 'Khuyến mãi'],
+          ['kpi', 'Mức KPI'],
           ['permissions', 'Phân quyền'],
           ['audit', 'Nhật ký thao tác'],
         ].map(([id, label]) => (
@@ -888,6 +893,22 @@ export function ControlCenterPage({ user }: { user: AppUser }) {
           <label>Từ ngày<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
           <label>Đến ngày<input type="date" value={to} min={from} onChange={(event) => setTo(event.target.value)} /></label>
         </div>
+      )}
+
+      {/* Khuyến mãi nằm cạnh Dữ liệu nền vì nó cũng là CẤU HÌNH GIÁ, không phải
+          thao tác vận hành: đặt xong là POS bán theo, không ai phải sửa hóa đơn. */}
+      {tab === 'promotions' && <PromotionsPanel user={user} branches={activeBranches} />}
+
+      {/* Mức KPI cũng là CẤU HÌNH, không phải vận hành: nó quyết định chỉ tiêu
+          mà bảng thi đua bên Quản lý chấm theo. Đặt ở đây để Admin đổi mà không
+          phải sửa mã nguồn — đúng tinh thần no-code. */}
+      {tab === 'kpi' && (
+        <BranchKpiSettings
+          user={user}
+          branches={activeBranches}
+          selectedBranchId={branchId}
+          readOnly={false}
+        />
       )}
 
       {tab === 'masterdata' && masterFeedback && (
@@ -1190,6 +1211,7 @@ function loadPermissions(): PermissionMatrix {
     manager: {},
     supmt: {},
     shift_leader: {},
+    shift_deputy: {},
     staff: {},
     cashier: {},
     kitchen: {},
@@ -1201,6 +1223,7 @@ function loadPermissions(): PermissionMatrix {
     // `supmt adds own shift anywhere`), không phải quyền sửa công người khác.
     matrix.supmt[module.id] = ['pos', 'kitchen'].includes(module.id) ? [] : exportable
     matrix.shift_leader[module.id] = ['inventory', 'handover', 'report', 'orders', 'pos', 'attendance'].includes(module.id) ? operate : viewOnly
+    matrix.shift_deputy[module.id] = ['pos', 'attendance', 'schedule'].includes(module.id) ? operate : []
     matrix.staff[module.id] = ['pos', 'attendance', 'schedule'].includes(module.id) ? operate : []
     matrix.cashier[module.id] = module.id === 'pos' ? operate : []
     matrix.kitchen[module.id] = module.id === 'kitchen' ? operate : module.id === 'orders' ? viewOnly : []

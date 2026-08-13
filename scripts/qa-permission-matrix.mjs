@@ -8,7 +8,7 @@ import { chromium } from 'playwright-core'
 const baseUrl = process.env.QA_BASE_URL || 'http://127.0.0.1:5173'
 
 const canUseAdmin = (r) => r === 'admin'
-const canUseSales = (r) => ['shift_leader', 'staff', 'cashier'].includes(r)
+const canUseSales = (r) => ['shift_leader', 'shift_deputy', 'staff', 'cashier'].includes(r)
 const canUseOperations = (r) => r === 'shift_leader'
 const canUseManagement = (r) => ['admin', 'manager'].includes(r)
 const canUseKitchen = (r) => ['admin', 'kitchen'].includes(r)
@@ -21,9 +21,9 @@ function canAccess(role, page) {
   if (page === 'attendance') return role !== 'kitchen' && role !== 'manager' && role !== 'cashier'
   if (page === 'dashboard') return role === 'manager'
   if (page === 'sales') return canUseSales(role)
-  if (page === 'my-records') return role === 'staff' || role === 'shift_leader'
+  if (page === 'my-records') return role === 'staff' || role === 'shift_leader' || role === 'shift_deputy'
   // Xem công (thay trang Bảng lương đã gỡ): nhân viên/ca trưởng + giám sát SUP MT.
-  if (page === 'my-timesheet') return ['staff', 'shift_leader', 'supmt'].includes(role)
+  if (page === 'my-timesheet') return ['staff', 'shift_leader', 'shift_deputy', 'supmt'].includes(role)
   if (page === 'report-archive') return canUseManagement(role)
   if (page === 'inventory') return canUseOperations(role)
   // Admin theo dõi đơn ở trang Quản trị, không lập phiếu đặt hàng của chi nhánh.
@@ -40,7 +40,7 @@ function canAccess(role, page) {
 
 function defaultPage(role) {
   if (role === 'kitchen') return 'kitchen'
-  if (role === 'staff' || role === 'cashier') return 'sales'
+  if (role === 'staff' || role === 'shift_deputy' || role === 'cashier') return 'sales'
   if (role === 'admin') return 'management'
   if (role === 'manager') return 'dashboard'
   if (role === 'supmt') return 'management'
@@ -71,6 +71,7 @@ const roles = [
   { role: 'admin', id: 'demo-admin', name: 'Admin hệ thống', branchId: 'gold-coast', branchIds: ['gold-coast', 'lotte-2310', 'lotte-vt'] },
   { role: 'manager', id: 'demo-manager', name: 'Quản lý Demo', branchId: 'gold-coast', branchIds: ['gold-coast', 'lotte-2310', 'lotte-vt'] },
   { role: 'shift_leader', id: 'demo-shift-leader', name: 'Ca trưởng Demo', branchId: 'gold-coast', branchIds: ['gold-coast'] },
+  { role: 'shift_deputy', id: 'demo-shift-deputy', name: 'Ca phó Demo', positionTitle: 'Ca phó', employmentType: 'leader', branchId: 'gold-coast', branchIds: ['gold-coast'] },
   { role: 'staff', id: 'demo-staff', name: 'Nhân viên Demo', branchId: 'gold-coast', branchIds: ['gold-coast'] },
   { role: 'kitchen', id: 'demo-kitchen', name: 'Bếp Demo', branchId: 'gold-coast', branchIds: ['gold-coast'] },
   // SUP MT không gắn chi nhánh cố định (giống manager/kitchen ở edge function manage-employee).

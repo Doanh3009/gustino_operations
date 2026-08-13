@@ -24,7 +24,10 @@ const expectedFormulaSnippets = [
   "'gold-coast', position: 'pg_part_time', weekdayTarget: 500000, weekendTarget: 650000, monthlyTarget: 13900000",
   "'gold-coast', position: 'pg_full_time', weekdayTarget: 1000000, weekendTarget: 1300000, monthlyTarget: 27800000",
   "'gold-coast', position: 'shift_leader', weekdayTarget: 300000, weekendTarget: 390000, monthlyTarget: 8340000",
-  "'lotte-vt', position: 'pg_part_time', weekdayTarget: 600000, weekendTarget: 780000, monthlyTarget: 16680000",
+  "'lotte-vt', position: 'pg_part_time', weekdayTarget: 550000, weekendTarget: 650000, monthlyTarget: 14900000",
+  "'lotte-vt', position: 'pg_full_time', weekdayTarget: 1050000, weekendTarget: 1300000, monthlyTarget: 28800000",
+  "'lotte-vt', position: 'shift_deputy', weekdayTarget: 500000, weekendTarget: 500000, monthlyTarget: 13000000",
+  "'lotte-vt', position: 'shift_leader', weekdayTarget: 0, weekendTarget: 0, monthlyTarget: 0",
   "'lotte-2310', position: 'pg_part_time', weekdayTarget: 400000, weekendTarget: 550000, monthlyTarget: 11300000",
 ]
 for (const snippet of expectedFormulaSnippets) {

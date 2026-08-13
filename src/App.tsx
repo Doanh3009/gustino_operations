@@ -2,6 +2,10 @@ import { Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { AppShell, type InventoryTab, type Page } from './components/AppShell'
 import { fetchMovements, fetchMovementsDelta, loadLocalUser, saveLocalUser } from './lib/store'
 import { reconcileOperationalShift } from './lib/shiftAutoOpen'
+import { reconcileShiftAutoClose } from './lib/shiftAutoClose'
+import { canRunScheduledReport, msUntilNextReportDue, reconcileScheduledReport } from './lib/reportSchedule'
+import { serverNow } from './lib/serverClock'
+import { localDateKey } from './lib/dates'
 import { flushAttendanceOutbox } from './lib/attendance'
 import { attendanceOutboxSendableFastCount } from './lib/attendanceOutbox'
 import { shouldUseLanApi, supabase, uniqueChannelName } from './lib/supabase'
@@ -10,9 +14,12 @@ import { LauncherPage } from './pages/LauncherPage'
 import { LoginPage } from './pages/LoginPage'
 import type { AdminSection } from './pages/AdminPage'
 import { adminRouteForSection, adminSectionForRoute } from './pages/admin/routeMap'
-import { canOpenAdminConsole, canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseSales, hasSystemWideScope, normalizeRole } from './lib/access'
+import { canOpenAdminConsole, canOperateConsole, canUseAdmin, canUseKitchen, canUseManagement, canUseOperations, canUseSales, hasSystemWideScope, normalizeRole } from './lib/access'
 import { clearSessionStart, markSessionStart, sessionOverdueMs, setSessionExpiredNotice } from './lib/sessionExpiry'
 import { fetchConfiguredProducts, subscribeConfiguredProducts } from './lib/products'
+import { loadBranchKpiOverrides } from './lib/branchKpiFormulas'
+import { loadProductPromotions, subscribeProductPromotions } from './lib/promotions'
+import { canSubmitResignation, canViewResignationInbox } from './lib/resignationRequests'
 import type { AppUser, StockMovement } from './types'
 import { applyLanguageToDocument, useLang } from './lib/i18n'
 import { CapyLoadingWindow } from './components/GlobalLoadingOverlay'
@@ -33,14 +40,15 @@ const KitchenPage = lazyWithReload(() => import('./pages/KitchenPage').then((mod
 const OrdersPage = lazyWithReload(() => import('./pages/OrdersPage').then((module) => ({ default: module.OrdersPage })))
 const ManagerDashboardPage = lazyWithReload(() => import('./pages/ManagerDashboardPage').then((module) => ({ default: module.ManagerDashboardPage })))
 const ControlCenterPage = lazyWithReload(() => import('./pages/ControlCenterPage').then((module) => ({ default: module.ControlCenterPage })))
-const MyTimesheetPage = lazyWithReload(() => import('./pages/MyTimesheetPage').then((module) => ({ default: module.MyTimesheetPage })))
+const CompetitionBoardPage = lazyWithReload(() => import('./pages/CompetitionBoardPage').then((module) => ({ default: module.CompetitionBoardPage })))
+const ResignationPage = lazyWithReload(() => import('./pages/ResignationPage').then((module) => ({ default: module.ResignationPage })))
 
 function App() {
   const lang = useLang()
   const [user, setUser] = useState<AppUser | null>(() => {
     const saved = loadLocalUser()
     if (saved?.authToken && supabase && !shouldUseLanApi(saved)) return null
-    return saved ? { ...saved, role: normalizeRole(saved.role) } : null
+    return saved ? { ...saved, role: normalizeRole(saved.role, saved.positionTitle) } : null
   })
   const [page, setPage] = useState<Page>(() => pageFromHash())
   const [authReady, setAuthReady] = useState(!supabase)
@@ -177,8 +185,7 @@ function App() {
       // Máy đang trong túi/khoá màn hình thì không kéo dữ liệu về làm gì.
       if (document.hidden) return
       ticks += 1
-      // Khoảng 2,5 phút tải đầy đủ một lần để bắt cả sửa/xoá ở quá khứ.
-      void (ticks % 10 === 0 ? refreshMovements() : syncMovements()).catch(() => undefined)
+      void (ticks % FULL_MOVEMENT_REFRESH_TICKS === 0 ? refreshMovements() : syncMovements()).catch(() => undefined)
     }, 15000)
     const resume = () => {
       if (!document.hidden) void syncMovements().catch(() => undefined)
@@ -195,7 +202,10 @@ function App() {
   // và Bàn giao. Ca trưởng check-in lỗi mạng vẫn được mở ca ngay khi còn dùng app.
   // Idempotent + tự bỏ qua rất sớm nếu ca đã mở, nên chạy lặp không tốn gì.
   useEffect(() => {
-    if (!user || user.role !== 'shift_leader') return
+    // Ca phó vận hành ngang ca trưởng (13/08/2026) nên cũng phải được bộ dò ca
+    // phục vụ — trước đây chỉ `shift_leader` lọt qua đây, và đó là một trong
+    // các tầng khiến ca phó không nhận nổi ca.
+    if (!user || (user.role !== 'shift_leader' && user.role !== 'shift_deputy')) return
     let active = true
     const state = { busy: false }
     const attempt = async () => {
@@ -203,6 +213,9 @@ function App() {
       state.busy = true
       try {
         await reconcileOperationalShift(user)
+        // Lưới an toàn thứ hai: ca quên chốt thì máy tự đóng (15:30 / 22:30)
+        // nhưng KHÔNG ghi tồn — xem `lib/shiftAutoClose.ts`.
+        await reconcileShiftAutoClose(user)
       } catch {
         // Im lặng: đây là lưới an toàn chạy nền, lần sau thử lại.
       } finally {
@@ -211,9 +224,66 @@ function App() {
     }
     void attempt()
     const timer = window.setInterval(() => void attempt(), 60000)
+    const resume = () => { if (!document.hidden) void attempt() }
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('focus', resume)
     return () => {
       active = false
       window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('focus', resume)
+    }
+  }, [user?.id, user?.branchId, user?.role])
+  // Hẹn giờ gửi báo cáo: 15:15 gửi Ca 1, 22:15 gửi Ca 2 + Tổng ngày. Không còn chờ
+  // ca trưởng bấm "Chốt báo cáo", và cũng không còn phụ thuộc việc ca đã bàn giao
+  // hay chưa. Ảnh báo cáo chỉ dựng được trong màn Báo cáo (poster ẩn + html2canvas)
+  // nên tới giờ thì đưa thẳng người dùng sang đó; màn Báo cáo tự chốt và gửi.
+  //
+  // Nhịp 60s là lưới thưa; mốc chính xác dùng một hẹn giờ riêng đặt đúng vào
+  // 15:15:00 / 22:15:00 theo ĐỒNG HỒ MÁY CHỦ — điện thoại ngoài quầy lệch giờ là
+  // chuyện thường, mà lệch giờ ở đây là gửi nhầm mốc doanh thu.
+  useEffect(() => {
+    if (!user || !canRunScheduledReport(user.role) || !user.branchId) return
+    let active = true
+    let dueTimer = 0
+    // Lượt chạy ĐẦU TIÊN của phiên app mới đi theo cờ còn treo. Các lượt sau chỉ đi
+    // theo cờ vừa đặt, để người đang bán không bị kéo sang màn Báo cáo mỗi phút khi
+    // một lần gửi nào đó còn dở (thanh nhắc ở AppShell vẫn nhắc tiếp).
+    const state = { busy: false, firstRun: true }
+    const scheduleNextDue = () => {
+      window.clearTimeout(dueTimer)
+      const now = serverNow()
+      const wait = msUntilNextReportDue(localDateKey(now), now)
+      // Không còn mốc nào hôm nay thì cứ để nhịp 60s lo; hẹn lại sau 30 phút để
+      // máy để app qua nửa đêm vẫn bắt được mốc của ngày mới.
+      dueTimer = window.setTimeout(() => void attempt(), Math.min(30 * 60_000, wait ?? 30 * 60_000) + 1_000)
+    }
+    const attempt = async () => {
+      if (!active || state.busy) return
+      state.busy = true
+      try {
+        const result = await reconcileScheduledReport(user)
+        if (!active) return
+        if (result.due || (state.firstRun && result.pending)) setPage('report')
+      } catch {
+        // Im lặng: lưới an toàn chạy nền, lần sau thử lại.
+      } finally {
+        state.busy = false
+        state.firstRun = false
+        if (active) scheduleNextDue()
+      }
+    }
+    void attempt()
+    const timer = window.setInterval(() => void attempt(), 60000)
+    const resume = () => { if (!document.hidden) void attempt() }
+    document.addEventListener('visibilitychange', resume)
+    window.addEventListener('focus', resume)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      window.clearTimeout(dueTimer)
+      document.removeEventListener('visibilitychange', resume)
+      window.removeEventListener('focus', resume)
     }
   }, [user?.id, user?.branchId, user?.role])
   // Hộp thư đi chấm công (BUG-118): lượt check-in/check-out chưa lên được máy chủ
@@ -315,6 +385,22 @@ function App() {
       void client.removeChannel(channel)
     }
   }, [refreshMovements, syncMovements, needsMovements, user])
+  // Mức KPI Admin chỉnh trong giao diện là cấu hình dùng chung: nạp một lần khi
+  // vào app để Báo cáo, Dashboard, Bảng thi đua và Quản trị cùng tính một khung.
+  useEffect(() => {
+    if (!user) return
+    void loadBranchKpiOverrides(user).catch(() => null)
+  }, [user?.id, user?.authToken])
+  useEffect(() => {
+    // Giá khuyến mãi là cấu hình dùng chung như mức KPI: nạp một lần khi vào
+    // app rồi nghe realtime, để Admin đổi giá ở Cài đặt là POS ngoài quầy đổi
+    // theo ngay — không ai bán một giá còn hệ thống ghi một giá khác.
+    if (!user) return
+    void loadProductPromotions(user).catch(() => null)
+    return subscribeProductPromotions(user, () => {
+      void loadProductPromotions(user).catch(() => null)
+    })
+  }, [user?.id, user?.authToken])
   useEffect(() => {
     // Menu/SKU dùng chung toàn hệ thống: kéo từ Supabase về và nghe realtime
     // để mọi thiết bị (ca trưởng, POS, kho, admin) nhìn cùng một danh mục.
@@ -330,15 +416,15 @@ function App() {
     void (async () => {
       const { data: profile, error } = await supabase
         .from('profiles')
-        .select('role, branch_id, active')
+        .select('role, branch_id, active, position_title')
         .eq('id', user.id)
         .maybeSingle()
       if (!active || error) return
-      const role = normalizeRole((profile?.role || user.role) as AppUser['role'])
+      const role = normalizeRole((profile?.role || user.role) as AppUser['role'], profile?.position_title || user.positionTitle)
       const branchId = profile?.branch_id || user.branchId
       let blocked = !profile || profile.active === false
-      if ((role === 'staff' || role === 'shift_leader' || role === 'cashier') && !branchId) blocked = true
-      if (!blocked && (role === 'staff' || role === 'shift_leader' || role === 'cashier')) {
+      if ((role === 'staff' || role === 'shift_leader' || role === 'shift_deputy' || role === 'cashier') && !branchId) blocked = true
+      if (!blocked && (role === 'staff' || role === 'shift_leader' || role === 'shift_deputy' || role === 'cashier')) {
         const { data: branch } = await supabase
           .from('branches')
           .select('id, active')
@@ -408,7 +494,7 @@ function App() {
       if (!patch?.id) return
       setUser((current) => {
         if (!current || current.id !== patch.id) return current
-        const next = { ...current, ...patch, role: normalizeRole(patch.role || current.role) }
+        const next = { ...current, ...patch, role: normalizeRole(patch.role || current.role, patch.positionTitle || current.positionTitle) }
         saveLocalUser(next)
         return next
       })
@@ -437,7 +523,7 @@ function App() {
   }
 
   function handleLogin(nextUser: AppUser) {
-    const normalizedUser = { ...nextUser, role: normalizeRole(nextUser.role) }
+    const normalizedUser = { ...nextUser, role: normalizeRole(nextUser.role, nextUser.positionTitle) }
     applyMovements([])
     setMovementsStatus('loading')
     movementSyncRef.current = null
@@ -483,10 +569,11 @@ function App() {
         <LazyRouteErrorBoundary key={page}>
           <Suspense fallback={<PageLoadFallback />}>
         {page === 'today' && <TodayPage user={user} movements={movements} onNavigate={navigate} onOpenInventory={openInventory} />}
-        {page === 'dashboard' && user.role === 'manager' && <ManagerDashboardPage user={user} onNavigate={navigate} />}
+        {page === 'dashboard' && canOperateConsole(user.role) && <ManagerDashboardPage user={user} onNavigate={navigate} />}
         {page === 'sales' && <SalesPage user={user} onNavigate={navigate} />}
         {page === 'my-records' && <MyRecordsPage user={user} onNavigate={navigate} />}
-        {page === 'my-timesheet' && <MyTimesheetPage user={user} />}
+        {page === 'competition' && <CompetitionBoardPage user={user} />}
+        {page === 'resignation' && <ResignationPage user={user} />}
         {page === 'report-archive' && <ReportArchivePage user={user} />}
         {page === 'restaurant' && <RestaurantPage user={user} movements={movements} />}
         {page === 'report' && <ReportPage user={user} movements={movements} onNavigate={navigate} onOpenInventory={openInventory} onRefresh={refreshMovements} />}
@@ -509,7 +596,15 @@ function App() {
           />
         )}
         {page === 'orders' && <OrdersPage user={user} movements={movements} />}
-        {page === 'attendance' && <AttendancePage user={user} movements={movements} onNavigate={navigate} />}
+        {/* #my-timesheet giu lai cho link cu: mo thang tab Xem cong trong trang Cham cong. */}
+        {(page === 'attendance' || page === 'my-timesheet') && (
+          <AttendancePage
+            user={user}
+            movements={movements}
+            onNavigate={navigate}
+            initialTab={page === 'my-timesheet' ? 'timesheet' : undefined}
+          />
+        )}
         {page === 'management' && canOpenAdminConsole(user.role) && <ManagementPage user={user} initialSection={mgmtSection} />}
         {page === 'manager-revenue' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="revenue" focused />}
         {page === 'manager-business' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="commission" focused />}
@@ -548,6 +643,22 @@ const ROUTE_LOAD_WATCHDOG_KEY = 'gustino:route-load-watchdog'
 /** Trần thời gian hoãn đăng xuất 24h khi hộp thư chấm công còn hàng chờ. */
 const SESSION_OUTBOX_GRACE_MS = 2 * 60 * 60 * 1000
 
+/**
+ * Bao nhiêu nhịp 15 giây thì tải lại TOÀN BỘ sổ kho một lần (120 nhịp = 30 phút).
+ *
+ * Trước đây là 10 nhịp (2,5 phút). Đo `pg_stat_statements` trên production ngày
+ * 10/08/2026: lệnh đọc sổ kho theo chi nhánh chạy **114.680 lần, trung bình
+ * 685 ms, tổng 78.538 giây ≈ 21,8 giờ CPU database** — đứng đầu toàn hệ thống và
+ * là lý do chính app mở lâu. Mỗi lượt kéo toàn bộ lịch sử chi nhánh (~3.200 dòng,
+ * ~550 KB JSON) rồi máy khách parse lại từ đầu.
+ *
+ * Hạ nhịp xuống 30 phút KHÔNG làm mất dữ liệu vì lượt tải đầy đủ chỉ là lưới an
+ * toàn: (1) phiếu MỚI đã về qua nhịp gia số 15 giây; (2) phiếu bị XOÁ được nhịp
+ * gia số bắt bằng bộ đếm 3 ngày gần nhất; (3) sự kiện realtime DELETE vẫn ép tải
+ * đầy đủ ngay lập tức; (4) mở lại trang/đổi chi nhánh vẫn tải đầy đủ.
+ */
+const FULL_MOVEMENT_REFRESH_TICKS = 120
+
 function RouteLoadSettled() {
   useEffect(() => {
     try {
@@ -572,6 +683,8 @@ function pageFromHash(): Page {
     'sales',
     'my-records',
     'my-timesheet',
+    'competition',
+    'resignation',
     'report-archive',
     'restaurant',
     'report',
@@ -626,11 +739,16 @@ function latestMovementStamp(items: StockMovement[], fallback: string) {
 function canAccessPage(user: AppUser, page: Page) {
   if (page === 'launcher') return true
   if (page === 'attendance') return user.role !== 'kitchen' && user.role !== 'manager' && user.role !== 'cashier'
-  if (page === 'dashboard') return user.role === 'manager'
+  // Dashboard doanh thu (thiết kế của Quản lý — chủ hệ thống muốn giữ vì đẹp).
+  if (page === 'dashboard') return canOperateConsole(user.role)
   if (page === 'sales') return canUseSales(user.role)
-  if (page === 'my-records') return user.role === 'staff' || user.role === 'shift_leader'
+  if (page === 'my-records') return user.role === 'staff' || user.role === 'shift_leader' || user.role === 'shift_deputy'
   // Xem công: nhân viên/ca trưởng xem lịch công của chính mình (SUP MT xem được nếu tồn tại).
-  if (page === 'my-timesheet') return user.role === 'staff' || user.role === 'shift_leader' || user.role === 'supmt'
+  if (page === 'my-timesheet') return user.role === 'staff' || user.role === 'shift_leader' || user.role === 'shift_deputy' || user.role === 'supmt'
+  // Bảng thi đua: mọi người bán hàng đều xem được thứ hạng, quản lý/giám sát xem để đối chiếu.
+  if (page === 'competition') return canUseSales(user.role) || canUseManagement(user.role) || user.role === 'supmt'
+  // Đơn nghỉ việc: người nộp (NV/ca trưởng/ca phó) và người theo dõi (quản lý/ca trưởng/SUP MT).
+  if (page === 'resignation') return canSubmitResignation(user.role) || canViewResignationInbox(user.role)
   if (page === 'report-archive') return canUseManagement(user.role)
   if (page === 'report') return canUseOperations(user.role)
   if (page === 'inventory') return canUseOperations(user.role)
@@ -638,11 +756,15 @@ function canAccessPage(user: AppUser, page: Page) {
   // Quản trị (#/management/requests), nên không vào trang lập phiếu đặt hàng của chi nhánh.
   if (page === 'orders') return user.role !== 'admin' && (canUseManagement(user.role) || canUseOperations(user.role))
   // SUP MT vào cùng trang Quản trị với admin, nhưng ManagementPage khóa mọi thao tác ghi.
+  // 13/08/2026 — Quản lý là người VẬN HÀNH: mở đủ console vận hành cho họ, đúng
+  // những việc Admin đang làm. Admin vẫn vào được để đối chiếu khi có sự cố.
   if (page === 'management') return canOpenAdminConsole(user.role)
-  if (page === 'manager-attendance') return canUseAdmin(user.role)
-  if (page === 'manager-requests') return canUseAdmin(user.role)
-  if (['manager-revenue', 'manager-business', 'manager-inventory'].includes(page)) return user.role === 'manager'
-  if (page === 'admin-accounts') return canUseAdmin(user.role)
+  if (['manager-attendance', 'manager-requests', 'manager-revenue', 'manager-business', 'manager-inventory'].includes(page)) {
+    return canOperateConsole(user.role)
+  }
+  if (page === 'admin-accounts') return canOperateConsole(user.role)
+  // Console CẤU HÌNH no-code (sản phẩm, giá, khuyến mãi, chi nhánh, phân quyền)
+  // vẫn chỉ của Admin — Quản lý vận hành chứ không đổi luật hệ thống.
   if (page === 'control') return canUseAdmin(user.role)
   if (page === 'kitchen') return canUseKitchen(user.role)
   return canUseOperations(user.role)
@@ -651,7 +773,9 @@ function canAccessPage(user: AppUser, page: Page) {
 function defaultPageForRole(user: AppUser): Page {
   if (user.role === 'kitchen') return 'kitchen'
   if (user.role === 'staff' || user.role === 'cashier') return 'sales'
-  if (user.role === 'admin') return 'management'
+  // Admin mở thẳng console CẤU HÌNH: việc của Admin nay là chỉnh hệ thống
+  // (sản phẩm, giá, khuyến mãi, mức KPI, phân quyền) chứ không phải vận hành.
+  if (user.role === 'admin') return 'control'
   if (user.role === 'manager') return 'dashboard'
   // SUP MT mở thẳng trang Quản trị (chỉ xem); màn chấm công cá nhân nằm ở mục riêng.
   if (user.role === 'supmt') return 'management'

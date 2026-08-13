@@ -41,7 +41,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   const pendingReceiptIdRef = useRef('')
   const [feedback, setFeedback] = useState('')
   const [feedbackType, setFeedbackType] = useState<'ok' | 'err'>('ok')
-  const canManageSales = user.role === 'shift_leader' || user.role === 'manager' || user.role === 'admin'
+  const canManageSales = user.role === 'shift_leader' || user.role === 'shift_deputy' || user.role === 'manager' || user.role === 'admin'
   // `today` bám đồng hồ để POS mở qua nửa đêm không ghi hóa đơn vào ngày cũ.
   const [clockTick, setClockTick] = useState(() => Date.now())
   useEffect(() => {
@@ -164,7 +164,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
         .filter((registration) => registration.branchId === user.branchId && registration.workDate === selectedDate && registration.status !== 'rejected')
         .forEach((registration) => add({ key: registration.userId, employeeId: registration.userId, employeeName: registration.userName }))
       branchStaff
-        .filter((person) => person.branchId === user.branchId && person.active !== false && (person.role === 'staff' || person.role === 'shift_leader'))
+        .filter((person) => person.branchId === user.branchId && person.active !== false && (person.role === 'staff' || person.role === 'shift_leader' || person.role === 'shift_deputy'))
         .forEach((person) => add({ key: person.id, employeeId: person.id, employeeName: person.name }))
       receipts.forEach((receipt) => add({
         key: receipt.sellerId || receipt.sellerKey || normalizeName(receipt.sellerName),
@@ -203,7 +203,10 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
     revenue: sum.revenue + receipt.totalAmount,
     receipts: sum.receipts + 1,
   }), { sold: 0, revenue: 0, receipts: 0 })
-  const cartLines = useMemo(() => buildCartLines(cart), [cart])
+  const cartLines = useMemo(
+    () => buildCartLines(cart, { branchId: user.branchId, date: selectedDate }),
+    [cart, user.branchId, selectedDate],
+  )
   const bill = cartLines.reduce((sum, line) => ({
     quantity: sum.quantity + line.quantity,
     amount: sum.amount + line.total,
@@ -388,17 +391,21 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
               .slice()
               .sort((a, b) => a.product.name.localeCompare(b.product.name, 'vi'))
               .map(({ product, inCart }) => {
-                const values = productSaleValues(product.id, 1)
+                const values = productSaleValues(product.id, 1, { branchId: user.branchId, date: selectedDate })
                 return (
                   <article key={product.id}>
                     <button
-                      className="pos-product-main"
+                      className={`pos-product-main${values.discounted ? ' is-promo' : ''}`}
                       disabled={checkoutBusy}
                       onClick={() => addProductToCart(product.id, 1)}
                     >
                       <span>{shortProductName(product.name)}</span>
                       <strong>{formatMoney(values.price)}</strong>
-                      <small>Bán không giới hạn</small>
+                      {/* Giá gốc gạch ngang: nhân viên phải thấy ngay là món
+                          đang khuyến mãi, nếu không sẽ đọc giá cũ cho khách. */}
+                      {values.discounted
+                        ? <small className="pos-product-was">{formatMoney(values.basePrice)}</small>
+                        : <small>Bán không giới hạn</small>}
                       {inCart > 0 && <b>{inCart}</b>}
                     </button>
                     <div className="pos-product-quick">
@@ -519,16 +526,24 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   )
 }
 
-function buildCartLines(cart: Record<string, number>): SalesReceiptLine[] {
+/**
+ * Giá ghi vào hóa đơn là giá TẠI THỜI ĐIỂM BÁN, nên phải truyền đúng chi nhánh
+ * và ngày nghiệp vụ để lớp khuyến mãi áp được. Hóa đơn đã ghi giữ nguyên mức
+ * này về sau, kể cả khi chương trình kết thúc.
+ */
+function buildCartLines(
+  cart: Record<string, number>,
+  pricing: { branchId: string; date: string },
+): SalesReceiptLine[] {
   return Object.entries(cart).flatMap(([productId, quantity]) => {
     if (quantity <= 0) return []
     const product = productById(productId)
-    const values = productSaleValues(productId, quantity)
+    const values = productSaleValues(productId, quantity, pricing)
     return [{
       productId,
       productName: product?.name || productId,
       quantity,
-      unitPrice: productSaleValues(productId, 1).price,
+      unitPrice: values.price,
       total: values.revenue,
     }]
   })

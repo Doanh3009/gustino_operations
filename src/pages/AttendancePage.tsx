@@ -1,4 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from 'react'
+import { MyTimesheetContent } from './MyTimesheetPage'
 import {
   buildAttendanceReport,
   buildAttendanceDetailRows,
@@ -37,10 +38,12 @@ import {
   markShiftLeftWithoutHandover,
   openShiftAfterLeaderCheckIn,
 } from '../lib/shiftAutoOpen'
+import { EARLY_CHECK_IN_MINUTES, isLateCheckIn, onTimeCheckInDeadline, usesEarlyCheckInRule } from '../lib/attendanceLateness'
 import { shouldUseLanApi, supabase, uniqueChannelName } from '../lib/supabase'
 import { addLocalDateKeyDays, localDateKey, localDateKeyWeekday, VN_UTC_OFFSET } from '../lib/dates'
 import { employeePositionLabel, hasSystemWideScope, roleLabel as accessRoleLabel } from '../lib/access'
 import { useLang } from '../lib/i18n'
+import { importChunk } from '../lib/lazyRoute'
 import { createAttendanceAdjustment } from '../lib/attendanceAdjustments'
 import { ATTENDANCE_OUTBOX_EVENT, inspectAttendanceOutbox, type AttendanceOutboxOp } from '../lib/attendanceOutbox'
 import { AttendanceAdjustmentArchive } from '../components/AttendanceAdjustmentArchive'
@@ -59,7 +62,7 @@ import type {
 } from '../types'
 import type { Page } from '../components/AppShell'
 
-type AttendanceTab = 'schedule' | 'board' | 'report' | 'documents'
+type AttendanceTab = 'schedule' | 'board' | 'timesheet' | 'report' | 'documents'
 type AttendanceDataKey = 'shifts' | 'registrations' | 'records' | 'employees' | 'schedulePeople'
 const CUSTOM_SHIFT_VALUE = '__custom'
 const FALLBACK_SHIFT_PREFIX = 'fallback-shift:'
@@ -73,17 +76,20 @@ function attendanceDataNeeds(tab: AttendanceTab, canAdjustSchedule: boolean) {
       'schedulePeople',
       ...(canAdjustSchedule ? ['employees' as const] : []),
     ],
+    // Tab Xem cong tu tai lich/cham cong thang cua rieng nguoi dung ben trong
+    // MyTimesheetContent nen khong can trang cha keo them du lieu.
+    timesheet: [],
     report: ['shifts', 'registrations', 'records', 'employees'],
     documents: [],
   }
   return new Set<AttendanceDataKey>(byTab[tab])
 }
 
-export function AttendancePage({ user, movements, onNavigate }: { user: AppUser; movements: StockMovement[]; onNavigate: (page: Page) => void }) {
+export function AttendancePage({ user, movements, onNavigate, initialTab }: { user: AppUser; movements: StockMovement[]; onNavigate: (page: Page) => void; initialTab?: AttendanceTab }) {
   const isManager = user.role === 'manager' || user.role === 'admin'
-  const canViewAttendanceDocuments = user.role === 'admin' || user.role === 'shift_leader'
+  const canViewAttendanceDocuments = user.role === 'admin' || user.role === 'shift_leader' || user.role === 'shift_deputy'
   const canAdjustSchedule = canManageShiftSetup(user)
-  const [tab, setTab] = useState<AttendanceTab>(isManager ? 'report' : 'schedule')
+  const [tab, setTab] = useState<AttendanceTab>(initialTab || (isManager ? 'report' : 'schedule'))
   const [shifts, setShifts] = useState<WorkShift[]>([])
   const [registrations, setRegistrations] = useState<ShiftRegistration[]>([])
   const [records, setRecords] = useState<AttendanceRecord[]>([])
@@ -233,6 +239,9 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
     // Tab bảng lịch phải hiện CẢ cho manager/admin: SharedScheduleBoard là nơi duy nhất
     // lập/sửa lịch tuần (heading manager cũng hứa "Lập lịch theo tuần").
     { id: 'board', label: canAdjustSchedule ? 'Bảng lịch' : 'Đăng ký tuần', show: true },
+    // Gop man Xem cong vao day (10/08/2026): cham cong va xem lai cong la mot
+    // viec, tach hai muc o sidebar khien nhan vien phai nho vao dau de lam gi.
+    { id: 'timesheet', label: 'Xem công', show: !isManager },
     { id: 'documents', label: 'Chứng từ', show: canViewAttendanceDocuments },
     { id: 'report', label: 'Bảng công', show: isManager },
   ]
@@ -299,6 +308,11 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
           onOpenRegistration={() => setTab('board')}
           onNavigate={onNavigate}
         />
+      )}
+      {ready && tab === 'timesheet' && (
+        <section className="section-card tsheet-embedded">
+          <MyTimesheetContent user={user} />
+        </section>
       )}
       {ready && tab === 'board' && (
         <SharedScheduleBoard
@@ -512,7 +526,9 @@ function SchedulePanel({
       setOptimisticRecords((current) => ({ ...current, [record.id]: record }))
       pickSelfie(registration, undefined)
       let autoShiftMessage = ''
-      if (user.role === 'shift_leader') {
+      // Ca phó cũng đi đường này; `openShiftAfterLeaderCheckIn` tự chặn họ đứng tên
+      // phiên ca khi chi nhánh đã xếp ca trưởng (`blockedAsDeputy`).
+      if (user.role === 'shift_leader' || user.role === 'shift_deputy') {
         try {
           autoShiftMessage = await openShiftAfterLeaderCheckIn(user, registration)
         } catch (error) {
@@ -548,7 +564,7 @@ function SchedulePanel({
     // Chặn MỀM: check-out là việc cá nhân, chốt ca là việc vận hành có kiểm đếm
     // tồn thật. Không bao giờ để check-out tự ghi số tồn. Chỉ nhắc ca trưởng
     // sang Bàn giao trước; vẫn có lối vượt cho sự cố thật (ốm, hết pin, mất máy).
-    if (user.role === 'shift_leader' && !options.force) {
+    if ((user.role === 'shift_leader' || user.role === 'shift_deputy') && !options.force) {
       const openShift = await findOwnOpenShift(user).catch(() => undefined)
       if (openShift) {
         setPendingCheckOut({ registrationId: registration.id, sequence: openShift.sequence })
@@ -599,6 +615,10 @@ function SchedulePanel({
     const isOverdueCheckOut = isOpenRecord && isCheckOutOverdue(registration, now)
     const canCheckOut = isOpenRecord && !isOverdueCheckOut && pendingOp?.kind !== 'check-out'
     const checkOutTooEarly = false
+    // Từ 12/08/2026, mốc đúng giờ là giờ vào ca − 15 phút cho mọi chi nhánh.
+    // Neo +07:00 để giờ ca không phụ thuộc múi giờ thiết bị.
+    const scheduledStart = new Date(`${registration.workDate}T${String(registration.startTime).slice(0, 5)}:00+07:00`)
+    const onTimeDeadline = onTimeCheckInDeadline(registration.workDate, scheduledStart, 0)
     return {
       registration,
       record,
@@ -610,6 +630,8 @@ function SchedulePanel({
       checkOutTooEarly,
       blockedByOpenSession,
       pendingOp,
+      onTimeDeadline,
+      isLateNow: isLateCheckIn(registration.workDate, scheduledStart, now, 0),
     }
   })
   function sortKey(d: typeof decorated[number]) {
@@ -649,6 +671,15 @@ function SchedulePanel({
           </span>
           <h3>{registration.startTime} – {registration.endTime}</h3>
           <p>{branchName(registration.branchId)}{registration.note ? ` · ${registration.note}` : ''}</p>
+          {/* Mốc đúng giờ nằm TRƯỚC giờ vào ca 15 phút — phải nói thẳng ra ở đây,
+              không thì nhân viên canh đúng giờ vào ca mới bấm rồi mới biết là trễ. */}
+          {!record && usesEarlyCheckInRule(registration.workDate) && (
+            <p className={`attendance-early-hint${d.isLateNow ? ' late' : ''}`}>
+              {d.isLateNow
+                ? `Đã qua phút ${formatTime(d.onTimeDeadline.toISOString())} — check-in bây giờ sẽ bị tính đi trễ.`
+                : `Check-in chậm nhất trong phút ${formatTime(d.onTimeDeadline.toISOString())} (sớm ${EARLY_CHECK_IN_MINUTES} phút) để không bị tính đi trễ.`}
+            </p>
+          )}
           {pendingOp && (
             <p className="attendance-outbox-note">
               {pendingOp.deliveryState === 'needs-review'
@@ -987,7 +1018,7 @@ function RegistrationPanel({
   const [endTime, setEndTime] = useState('16:00')
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
-  const employmentType = user.employmentType || (user.role === 'shift_leader' ? 'leader' : 'part_time')
+  const employmentType = user.employmentType || (user.role === 'shift_leader' || user.role === 'shift_deputy' ? 'leader' : 'part_time')
   const availableShifts = shifts.filter((item) =>
     item.branchId === branchId
     && (!item.employmentTypes?.length || item.employmentTypes.includes(employmentType)),
@@ -1844,7 +1875,7 @@ function AttendanceReportPanel({
   }
 
   async function exportXlsxInner() {
-    const ExcelJS = await import('exceljs')
+    const ExcelJS = await importChunk(() => import('exceljs'))
     const workbook = new ExcelJS.Workbook()
     const positionByUser = new Map<string, string>()
     const positionByName = new Map<string, string>()

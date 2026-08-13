@@ -1,4 +1,5 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import {
   buildAttendanceReport,
   buildAttendanceDetailRows,
@@ -20,8 +21,9 @@ import {
   updateEmployeeRole,
 } from '../lib/attendance'
 import { formatDecimalHoursAsDuration, formatWorkDurationBetween } from '../lib/workDuration'
-import { canOpenAdminConsole, employeePositionLabel, isBranchlessRole, isReadOnlyConsoleRole, roleLabel } from '../lib/access'
+import { canOpenAdminConsole, canOperateConsole, employeePositionLabel, isBranchlessRole, isReadOnlyConsoleRole, roleLabel } from '../lib/access'
 import { useLang } from '../lib/i18n'
+import { importChunk } from '../lib/lazyRoute'
 import { PRODUCTS, getPackingOptionsByOutput, getProducts, productById } from '../lib/constants'
 import { branchName as configuredBranchName, syncConfiguredBranchRows, useConfiguredBranches, writeConfiguredBranchRows, type ConfigBranch } from '../lib/branches'
 import { downloadBlob, shareOrDownloadBlob } from '../lib/browser'
@@ -29,7 +31,7 @@ import { calculateStock, fetchInventoryReports, fetchMovements, fetchReportSnaps
 import { QUANTITY_DECIMALS, formatStockAmount } from '../lib/inventoryEntry'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { fetchBagAllocations, fetchBagShiftSessions } from '../lib/shiftLedger'
-import { buildShiftLeaderReceiptSources, buildShiftLeaderRevenueRows } from '../lib/shiftCompetition'
+import { buildShiftLeaderReceiptSources, buildShiftLeaderRecordedRevenue, buildShiftLeaderRevenueRows } from '../lib/shiftCompetition'
 import { buildEmployeeCompetitionRevenueSources } from '../lib/competitionDrilldown'
 import {
   buildCompetitionAttendanceMetrics,
@@ -48,20 +50,54 @@ import {
 } from '../lib/employeeSalesCapacity'
 import { buildKpiEvidenceWorkbook, type KpiEvidenceSourceRow } from '../lib/kpiEvidenceWorkbook'
 import { buildDailyKpiWorkbook } from '../lib/kpiDailyWorkbook'
-import { DEFAULT_COMMISSION_RATE, DEFAULT_REVENUE_TARGET, dailyKpiBonus, employeeKpiKey, employeePeriodRevenueTarget, kpiRank, loadEmployeeRevenueTargets, fetchCommissionRules, fetchEmployeeKpiTargets, productSaleValues, saveCommissionRule, saveEmployeeRevenueTarget, soldBagQuantity, summarizeEmployeeBagSales, weeklyKpiBonus } from '../lib/commission'
+import { fetchKpiRevenueAdjustments, kpiRevenueAdjustmentReceipt, type KpiRevenueAdjustment } from '../lib/kpiRevenueAdjustments'
+import { DEFAULT_COMMISSION_RATE, DEFAULT_REVENUE_TARGET, branchTeamPeriodRevenueTarget, dailyKpiBonus, employeeCompetitionPeriodRevenueTarget, employeeKpiKey, employeePeriodRevenueTarget, isFullCalendarMonth, kpiRank, loadEmployeeRevenueTargets, fetchCommissionRules, fetchEmployeeKpiTargets, positionKpiKey, productSaleValues, saveCommissionRule, saveEmployeeRevenueTarget, soldBagQuantity, summarizeEmployeeBagSales, hasLeaderKpiTarget, usesLeaderShiftRevenue, usesVungTauNewKpi } from '../lib/commission'
 import { buildDailyRevenueRows } from '../lib/revenue'
 import { fetchSalesReceiptsRange, type SalesReceipt } from '../lib/salesReceipts'
 import { emailToUsername, validateUsername } from '../lib/authIdentity'
 import { fetchSupplyRequests, formatSupplyRequestDelivery, type SupplyRequest, type SupplyRequestStatus } from '../lib/supplyRequests'
 import { fetchActiveUsers } from '../lib/activeUsers'
 import { AttendanceAdjustmentArchive } from '../components/AttendanceAdjustmentArchive'
+import {
+  AttentionList,
+  BranchSelector,
+  DataHead,
+  DataList,
+  DataRow,
+  DateField,
+  DateRangeField,
+  Drawer,
+  EmptyState,
+  FilterBar,
+  FilterChips,
+  Metric,
+  MetricRow,
+  OverflowMenu,
+  PageHeader,
+  QuickDatePresets,
+  RankBar,
+  ReconRow,
+  SearchInput,
+  SectionHeader,
+  SkeletonRows,
+  StatusBadge,
+  SummaryLine,
+  Surface,
+  Toolbar,
+  ViewSwitch,
+  type AttentionItem,
+} from '../components/ui'
 import { Pagination } from '../components/admin/Pagination'
 import { DateTime24Field } from '../components/Time24Field'
 import { fetchAttendanceAdjustments } from '../lib/attendanceAdjustments'
 import { isStockManagedProduct } from '../lib/warehouseScope'
+import { adminRouteForSection } from './admin/routeMap'
 import { BranchesPage } from './admin/BranchesPage'
+import { BranchKpiSettings } from './admin/BranchKpiSettings'
 import { DashboardPage } from './admin/DashboardPage'
 import { EmployeesPage } from './admin/EmployeesPage'
+import { loadBranchKpiOverrides } from '../lib/branchKpiFormulas'
+import { wasEmployedDuring } from '../lib/employmentStatus'
 import type {
   ActiveUserSession,
   AppUser,
@@ -135,6 +171,29 @@ function applyInventoryQuantityFormat(sheet: import('exceljs').Worksheet, keys: 
       }
     })
   }
+}
+
+type InventoryWasteDetailRow = {
+  id: string
+  branchId: string
+  shiftDate: string
+  createdAt: string
+  documentId: string
+  productId: string
+  productName: string
+  sku: string
+  unit: string
+  quantity: number
+  kind: 'processing' | 'direct'
+  sourceProductId: string
+  sourceProductName: string
+  sourceSku: string
+  sourceUnit: string
+  sourceQuantity?: number
+  measuredWeightKg?: number
+  lossRate?: number
+  createdBy: string
+  note: string
 }
 
 // Tab lọc trạng thái của màn Đặt hàng (admin chỉ xem, không đổi trạng thái đơn).
@@ -276,15 +335,16 @@ const ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
   { value: 'cashier', label: 'Thu ngân POS' },
   { value: 'staff', label: 'Nhân viên' },
   { value: 'shift_leader', label: 'Ca trưởng' },
+  { value: 'shift_deputy', label: 'Ca phó' },
   { value: 'supmt', label: 'Giám sát (SUP MT)' },
   { value: 'manager', label: 'Quản lý' },
 ]
 
 // Chỉ nhân sự vận hành bán hàng được tính KPI/lương doanh số.
 // Manager/admin/kitchen là vai trò giám sát hoặc hỗ trợ, không tham gia KPI bán hàng.
-const PAYROLL_ROLES: Role[] = ['shift_leader', 'staff']
+const PAYROLL_ROLES: Role[] = ['shift_leader', 'shift_deputy', 'staff']
 const ATTENDANCE_EDIT_PAGE_SIZE = 20
-type CompetitionRoleFilter = 'all' | 'staff' | 'shift_leader'
+type CompetitionRoleFilter = 'all' | 'staff' | 'shift_deputy'
 
 /**
  * Màn Thi đua trước đây bày 5 danh sách của CÙNG một nhóm người (poster, bảng
@@ -300,7 +360,7 @@ const COMPETITION_SORT_OPTIONS: Array<{ id: CompetitionSortKey; label: string; h
   { id: 'revenue', label: 'Doanh thu', hint: 'Tổng tiền bán ra trong kỳ đang xem.' },
   { id: 'capacity', label: 'Năng suất', hint: 'Trung bình một ca (hoặc một giờ công) bán được bao nhiêu.' },
   { id: 'progress', label: '% KPI', hint: 'Tỷ lệ đạt so với chỉ tiêu doanh thu của kỳ.' },
-  { id: 'reward', label: 'Thưởng KPI', hint: 'Tiền thưởng ngày/tuần đã đạt ngưỡng.' },
+  { id: 'reward', label: 'Thưởng KPI', hint: 'Tổng thưởng KPI theo từng ngày đạt chỉ tiêu.' },
 ]
 
 const COMPETITION_TOP_ROWS = 10
@@ -308,6 +368,13 @@ const COMPETITION_TOP_ROWS = 10
 function lastDayOfMonth(period: string) {
   const [year, month] = period.split('-').map(Number)
   return `${period}-${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`
+}
+
+function previousMonthPeriod(period: string) {
+  const [year, month] = period.split('-').map(Number)
+  const previousYear = month === 1 ? year - 1 : year
+  const previousMonth = month === 1 ? 12 : month - 1
+  return `${previousYear}-${String(previousMonth).padStart(2, '0')}`
 }
 
 function competitionDayTypeLabel(filter: CompetitionDayType) {
@@ -327,11 +394,11 @@ function nonNegativeFilterNumber(value: string, fallback: number) {
 }
 
 type ManagementDataKey = 'employees' | 'shifts' | 'registrations' | 'records' | 'adjustments' | 'movements'
-  | 'inventoryReports' | 'allocations' | 'sessions' | 'requests' | 'snapshots' | 'receipts'
+  | 'inventoryReports' | 'allocations' | 'sessions' | 'requests' | 'snapshots' | 'receipts' | 'kpiRevenueAdjustments'
 
 const ALL_MANAGEMENT_DATA: ManagementDataKey[] = [
   'employees', 'shifts', 'registrations', 'records', 'adjustments', 'movements',
-  'inventoryReports', 'allocations', 'sessions', 'requests', 'snapshots', 'receipts',
+  'inventoryReports', 'allocations', 'sessions', 'requests', 'snapshots', 'receipts', 'kpiRevenueAdjustments',
 ]
 
 function managementDataNeeds(section: AdminSection, focused: boolean) {
@@ -340,7 +407,7 @@ function managementDataNeeds(section: AdminSection, focused: boolean) {
     overview: ALL_MANAGEMENT_DATA,
     revenue: ['employees', 'movements', 'allocations', 'snapshots', 'receipts'],
     attendance: ['employees', 'shifts', 'registrations', 'records', 'adjustments'],
-    commission: ['employees', 'shifts', 'registrations', 'records', 'allocations', 'sessions', 'receipts'],
+    commission: ['employees', 'shifts', 'registrations', 'records', 'allocations', 'sessions', 'receipts', 'kpiRevenueAdjustments'],
     inventory: ['employees', 'movements', 'inventoryReports', 'sessions', 'receipts'],
     requests: ['employees', 'requests'],
     accounts: ['employees', 'records', 'adjustments', 'movements', 'requests', 'receipts'],
@@ -353,12 +420,13 @@ function managementRealtimeTables(section: AdminSection, focused: boolean) {
     'sales_receipts', 'sales_receipt_items', 'shift_registrations', 'attendance_records',
     'bag_allocations', 'bag_shift_sessions', 'stock_movements', 'operation_days',
     'inventory_reports', 'supply_requests', 'report_snapshots', 'attendance_adjustment_requests',
+    'employee_kpi_revenue_adjustments',
   ]
   const bySection: Record<AdminSection, string[]> = {
     overview: [],
     revenue: ['sales_receipts', 'sales_receipt_items', 'bag_allocations', 'bag_shift_sessions', 'stock_movements', 'operation_days', 'report_snapshots'],
     attendance: ['shift_registrations', 'attendance_records', 'attendance_adjustment_requests'],
-    commission: ['sales_receipts', 'sales_receipt_items', 'shift_registrations', 'attendance_records', 'bag_allocations', 'bag_shift_sessions'],
+    commission: ['sales_receipts', 'sales_receipt_items', 'shift_registrations', 'attendance_records', 'bag_allocations', 'bag_shift_sessions', 'employee_kpi_revenue_adjustments'],
     inventory: ['stock_movements', 'operation_days', 'inventory_reports', 'bag_shift_sessions', 'sales_receipts', 'sales_receipt_items'],
     requests: ['supply_requests'],
     accounts: ['sales_receipts', 'sales_receipt_items', 'attendance_records', 'attendance_adjustment_requests', 'stock_movements', 'supply_requests'],
@@ -373,7 +441,20 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   // giao diện; RLS mới là lớp chặn thật (xem `20260808_supmt_readonly_access.sql`).
   const readOnly = isReadOnlyConsoleRole(user.role)
   const branches = useConfiguredBranches({ user })
-  const initialRange = monthRange()
+  /**
+   * §12: Tổng quan mặc định là HÔM NAY — nó là control center của ngày đang
+   * chạy, không phải báo cáo tháng. Các section khác (doanh thu, chấm công,
+   * thi đua…) vẫn mở bằng cả tháng như trước; chuyển qua lại thì preset ở thanh
+   * lọc đổi kỳ trong một cú bấm.
+   */
+  const initialRange = (initialSection || 'overview') === 'overview'
+    ? { from: localDateKey(), to: localDateKey() }
+    : monthRange()
+  // Mức KPI Admin tự chỉnh nằm ngoài React (registry trong `commission.ts`), nên
+  // cần một con đếm để ép mọi bảng KPI/xếp hạng tính lại sau khi lưu.
+  const [kpiFormulaVersion, setKpiFormulaVersion] = useState(0)
+  const [kpiOverridesReady, setKpiOverridesReady] = useState(false)
+  const kpiOverridesLoadedRef = useRef(false)
   const [activeSection, setActiveSection] = useState<AdminSection>(initialSection || 'overview')
   useEffect(() => {
     if (!initialSection) return
@@ -391,6 +472,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [supplyRequests, setSupplyRequests] = useState<SupplyRequest[]>([])
   const [reportSnapshots, setReportSnapshots] = useState<ReportSnapshot[]>([])
   const [salesReceipts, setSalesReceipts] = useState<SalesReceipt[]>([])
+  const [kpiRevenueAdjustments, setKpiRevenueAdjustments] = useState<KpiRevenueAdjustment[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [feedback, setFeedback] = useState('')
@@ -402,11 +484,30 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const rankingPeriod = from.slice(0, 7)
   const rankingMonthFrom = `${rankingPeriod}-01`
   const rankingMonthTo = lastDayOfMonth(rankingPeriod)
+  const previousRankingPeriod = previousMonthPeriod(rankingPeriod)
+  const previousRankingMonthFrom = `${previousRankingPeriod}-01`
+  const previousRankingMonthTo = lastDayOfMonth(previousRankingPeriod)
   const todayKey = localDateKey()
   const attendanceDateMax = activeSection === 'attendance' ? todayKey : undefined
   const currentMonthKey = todayKey.slice(0, 7)
+  /** Preset nào đang khớp khoảng ngày hiện tại — để chip sáng đúng, không đoán. */
+  const activeRangePreset = useMemo(() => {
+    const week = rollingRange(7)
+    const month = monthRange()
+    const prevMonth = monthRange(-1)
+    if (from === todayKey && to === todayKey) return 'today'
+    if (from === week.from && to === week.to) return 'week'
+    if (from === month.from && to === month.to) return 'month'
+    if (from === prevMonth.from && to === prevMonth.to) return 'previousMonth'
+    return undefined
+  }, [from, to, todayKey])
   const attendanceCorrectionMonth = from.slice(0, 7)
   const [attendanceListMode, setAttendanceListMode] = useState<'date' | 'employee'>('date')
+  /**
+   * Ngày đang được nhắm tới trong bảng công. Không còn là bộ lọc hiển thị (danh
+   * sách nay chạy theo khoảng ngày chung + ô tìm), nhưng vẫn là mốc để nút
+   * "Tháng trước / Tháng sau" chọn lại đúng ngày tương ứng trong tháng mới.
+   */
   const [attendanceListDate, setAttendanceListDate] = useState(todayKey)
   const [attendanceListBranchId, setAttendanceListBranchId] = useState('')
   const [attendanceListEmployeeId, setAttendanceListEmployeeId] = useState('')
@@ -437,6 +538,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   )
   const commissionRuleTimers = useRef<Record<string, number>>({})
   const competitionPosterRef = useRef<HTMLDivElement>(null)
+  const salesCapacityPosterRef = useRef<HTMLDivElement>(null)
   const [savingEmployeeDetailsId, setSavingEmployeeDetailsId] = useState('')
   const [accountName, setAccountName] = useState('')
   const [accountUsername, setAccountUsername] = useState('')
@@ -464,12 +566,29 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [employeeCrmSaving, setEmployeeCrmSaving] = useState(false)
   const [temporaryCredential, setTemporaryCredential] = useState<{ username: string; password: string } | null>(null)
   const [supplyStatusFilter, setSupplyStatusFilter] = useState<'all' | SupplyRequestStatus>('all')
-  const [inventoryDetailBranchId, setInventoryDetailBranchId] = useState('')
+  /**
+   * §34: màn tồn kho làm việc trên MỘT ngày, không phải "từ ngày → đến ngày".
+   * Khoảng `from/to` vẫn được giữ nguyên cho các báo cáo theo kỳ (đối soát ca,
+   * sổ phát sinh, hao hụt, Excel) — chúng nằm trong drawer mở từ menu `•••`.
+   */
+  const [inventoryDate, setInventoryDate] = useState(localDateKey())
+  /** SKU đang mở drawer đối chiếu (§39). Khoá dạng `branchId|productId`. */
+  const [inventorySkuDetail, setInventorySkuDetail] = useState<{ branchId: string; productId: string } | null>(null)
+  const [inventoryReportDrawer, setInventoryReportDrawer] = useState<'' | 'ledger' | 'shifts' | 'waste'>('')
+  /** Danh sách hóa đơn KHÔNG nằm ở màn chính Doanh thu — mở từ menu `•••` (§19, §21). */
+  const [revenueTransactionsOpen, setRevenueTransactionsOpen] = useState(false)
+  const [revenueTransactionsPage, setRevenueTransactionsPage] = useState(1)
+  const [revenueProductsOpen, setRevenueProductsOpen] = useState(false)
+  const [revenueSellersOpen, setRevenueSellersOpen] = useState(false)
+  const [revenueDailyOpen, setRevenueDailyOpen] = useState(false)
   // Màn Quản trị › Kho: trước đây đổ THẲNG mọi SKU, mọi ca và mọi phiếu trong kỳ
   // ra màn hình. Với 3 chi nhánh × 30 ngày là hàng nghìn dòng DOM — mở màn là
   // giật, mà thứ quản lý cần tìm (hàng sắp hết, ca lệch số) lại nằm lẫn ở giữa.
   const [inventorySkuSearch, setInventorySkuSearch] = useState('')
-  const [inventoryStockFilter, setInventoryStockFilter] = useState<'all' | 'attention' | 'out'>('all')
+  /** Hao hụt xem theo ngày / tháng / năm (yêu cầu chủ hệ thống 13/08/2026). */
+  const [wasteGrouping, setWasteGrouping] = useState<'day' | 'month' | 'year'>('day')
+  /** §36: Tất cả · Nguyên liệu · Bao bì · Cần chú ý — một hàng chip duy nhất. */
+  const [inventoryCategoryFilter, setInventoryCategoryFilter] = useState<'all' | 'raw' | 'packaging' | 'attention'>('all')
   const [inventoryShiftOnlyIssues, setInventoryShiftOnlyIssues] = useState(true)
   const [inventoryLedgerType, setInventoryLedgerType] = useState<'all' | StockMovement['type']>('all')
   const [inventoryLedgerSearch, setInventoryLedgerSearch] = useState('')
@@ -495,8 +614,8 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const [attendanceDeleteSaving, setAttendanceDeleteSaving] = useState(false)
   const managementRefreshInFlightRef = useRef<Promise<void> | null>(null)
   const managementRefreshQueuedRef = useRef(false)
-  const managementRefreshContextRef = useRef({ activeSection, focused, from, to, rankingMonthFrom, rankingMonthTo })
-  managementRefreshContextRef.current = { activeSection, focused, from, to, rankingMonthFrom, rankingMonthTo }
+  const managementRefreshContextRef = useRef({ activeSection, focused, from, to, rankingMonthFrom, rankingMonthTo, previousRankingMonthFrom })
+  managementRefreshContextRef.current = { activeSection, focused, from, to, rankingMonthFrom, rankingMonthTo, previousRankingMonthFrom }
 
   useEffect(() => {
     const syncAdminRoute = () => {
@@ -530,7 +649,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       const managedBranchIds = permittedBranchIds(user)
       const refreshContext = managementRefreshContextRef.current
       const dataNeeds = managementDataNeeds(refreshContext.activeSection, refreshContext.focused)
-      const receiptFrom = refreshContext.from < refreshContext.rankingMonthFrom ? refreshContext.from : refreshContext.rankingMonthFrom
+      const rankingDataFrom = refreshContext.activeSection === 'commission'
+        ? refreshContext.previousRankingMonthFrom
+        : refreshContext.rankingMonthFrom
+      const receiptFrom = refreshContext.from < rankingDataFrom ? refreshContext.from : rankingDataFrom
       const receiptTo = refreshContext.to > refreshContext.rankingMonthTo ? refreshContext.to : refreshContext.rankingMonthTo
       const [
         nextEmployees,
@@ -545,6 +667,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         nextSupplyRequests,
         nextReportSnapshots,
         nextSalesReceipts,
+        nextKpiRevenueAdjustments,
       ] = await Promise.all([
         dataNeeds.has('employees') ? fetchEmployees(user, { includeInactive: true }) : Promise.resolve(employees),
         dataNeeds.has('shifts') ? fetchWorkShifts(user) : Promise.resolve(shifts),
@@ -558,6 +681,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         dataNeeds.has('requests') ? fetchSupplyRequests(user, managedBranchIds) : Promise.resolve(supplyRequests),
         dataNeeds.has('snapshots') ? Promise.all(managedBranchIds.map((id) => fetchReportSnapshots(id, user))).then((items) => items.flat()) : Promise.resolve(reportSnapshots),
         dataNeeds.has('receipts') ? fetchSalesReceiptsRange(user, { branchIds: managedBranchIds, from: receiptFrom, to: receiptTo }) : Promise.resolve(salesReceipts),
+        dataNeeds.has('kpiRevenueAdjustments')
+          ? fetchKpiRevenueAdjustments(user, { branchIds: managedBranchIds, from: receiptFrom, to: receiptTo })
+          : Promise.resolve(kpiRevenueAdjustments),
       ])
       setEmployees(nextEmployees)
       setShifts(nextShifts)
@@ -571,6 +697,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       setSupplyRequests(nextSupplyRequests)
       setReportSnapshots(nextReportSnapshots)
       setSalesReceipts(nextSalesReceipts)
+      setKpiRevenueAdjustments(nextKpiRevenueAdjustments)
       setError('')
       } catch (reason) {
         if (showLoading) setError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu quản lý.')
@@ -678,18 +805,41 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     return () => { active = false }
   }, [user.id, user.branchId])
 
+  // Mức KPI Admin đã chỉnh phải nạp TRƯỚC khi các bảng KPI tính lần đầu, nếu
+  // không lần render đầu vẫn ra số theo khung cứng rồi mới nhảy sang số đúng.
+  useEffect(() => {
+    let active = true
+    if (!kpiOverridesLoadedRef.current) setKpiOverridesReady(false)
+    void loadBranchKpiOverrides(user).then(() => {
+      if (!active) return
+      kpiOverridesLoadedRef.current = true
+      setKpiOverridesReady(true)
+      setKpiFormulaVersion((value) => value + 1)
+    }).catch(() => {
+      if (active) {
+        kpiOverridesLoadedRef.current = true
+        setKpiOverridesReady(true)
+      }
+    })
+    return () => { active = false }
+  }, [user.id, user.authToken])
+
   const branchIds = permittedBranchIds(user)
   const visibleBranches = branches.filter((branch) => branchIds.includes(branch.id))
   const selectedBranches = visibleBranches.filter((branch) => !branchId || branch.id === branchId)
   const validBranchIds = new Set(visibleBranches.map((branch) => branch.id))
+  // Nhân sự đã nghỉ việc chỉ còn xuất hiện ở KỲ mà họ thực sự còn đi làm
+  // (`wasEmployedDuring`), nên báo cáo tháng cũ giữ nguyên số liệu còn báo cáo
+  // các kỳ sau không còn dòng của họ. Xem `lib/employmentStatus.ts`.
   const filteredEmployees = employees.filter((employee) =>
-    employee.active !== false
+    wasEmployedDuring(employee, from, to)
     && (!employee.branchId || validBranchIds.has(employee.branchId) || employee.role === 'admin' || employee.role === 'manager' || employee.role === 'kitchen')
     && (!branchId || employee.branchId === branchId || employee.role === 'admin' || employee.role === 'manager' || employee.role === 'kitchen')
     && (!employeeId || employee.id === employeeId),
   )
   const payrollProfileCandidates = employees.filter((employee) =>
     PAYROLL_ROLES.includes(employee.role)
+    && wasEmployedDuring(employee, from, to)
     && Boolean(employee.branchId)
     && validBranchIds.has(employee.branchId || '')
     && (!branchId || employee.branchId === branchId)
@@ -746,6 +896,19 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     () => buildPayrollEmployeeList(payrollProfileCandidates, allAttendanceRows),
     [payrollProfileCandidates, allAttendanceRows],
   )
+  const kpiAdjustmentReceipts = useMemo(
+    () => kpiRevenueAdjustments.flatMap((adjustment) => {
+      const employee = payrollEmployees.find((item) => item.id === adjustment.employeeId)
+      return employee ? [kpiRevenueAdjustmentReceipt(adjustment, employee.name)] : []
+    }),
+    [kpiRevenueAdjustments, payrollEmployees],
+  )
+  // Nguồn tổng KPI = doanh thu web + doanh thu lịch sử đã được owner xác nhận.
+  // Adapter chỉ tồn tại trong bộ tính KPI; `salesReceipts` gốc vẫn là POS thật.
+  const kpiReceipts = useMemo(
+    () => [...salesReceipts, ...kpiAdjustmentReceipts],
+    [salesReceipts, kpiAdjustmentReceipts],
+  )
   const payrollEmployeeIds = useMemo(
     () => new Set(payrollEmployees.map((employee) => employee.id)),
     [payrollEmployees],
@@ -772,6 +935,34 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       || payrollEmployeeNames.has(`${row.branchId}|${normalizeName(row.employeeName)}`),
     ),
     [allAttendanceDetailRows, payrollEmployeeIds, payrollEmployeeNames],
+  )
+  const rankingMonthRegistrations = useMemo(() => registrations.filter((item) =>
+    item.status !== 'rejected'
+    && item.workDate >= rankingMonthFrom
+    && item.workDate <= rankingMonthTo
+    && (!branchId || item.branchId === branchId)
+    && (!employeeId || item.userId === employeeId),
+  ), [registrations, rankingMonthFrom, rankingMonthTo, branchId, employeeId])
+  const rankingMonthRecords = useMemo(() => records.filter((item) => {
+    const date = localDateKey(new Date(item.checkInTime))
+    return date >= rankingMonthFrom
+      && date <= rankingMonthTo
+      && (!branchId || item.branchId === branchId)
+      && (!employeeId || item.userId === employeeId)
+  }), [records, rankingMonthFrom, rankingMonthTo, branchId, employeeId])
+  const rankingMonthAdjustments = useMemo(() => attendanceAdjustments.filter((item) =>
+    item.workDate >= rankingMonthFrom
+    && item.workDate <= rankingMonthTo
+    && (!branchId || item.branchId === branchId)
+    && (!employeeId || item.userId === employeeId),
+  ), [attendanceAdjustments, rankingMonthFrom, rankingMonthTo, branchId, employeeId])
+  const rankingMonthAttendanceRows = useMemo(
+    () => buildAttendanceReport(rankingMonthRegistrations, rankingMonthRecords, graceByShift),
+    [rankingMonthRegistrations, rankingMonthRecords, graceByShift],
+  )
+  const rankingMonthAttendanceDetails = useMemo(
+    () => buildAttendanceDetailRows(rankingMonthRegistrations, rankingMonthRecords, graceByShift, rankingMonthAdjustments),
+    [rankingMonthRegistrations, rankingMonthRecords, graceByShift, rankingMonthAdjustments],
   )
   const attendanceListRows = useMemo(
     () => buildAttendanceDetailRows(rangeRegistrations, rangeRecords, graceByShift, rangeAttendanceAdjustments),
@@ -886,7 +1077,6 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     ),
     [movements, branchId],
   )
-  const lowStockRows = currentStockRows.filter((line) => line.expected <= line.product.lowStock)
   const periodInventoryReports = inventoryReports.filter((report) =>
     (!branchId || report.branchId === branchId) && report.reportDate >= from && report.reportDate <= to,
   )
@@ -894,6 +1084,11 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const totalShifts = attendanceRows.reduce((sum, row) => sum + row.totalShifts, 0)
   const activeNow = records.filter((record) => !record.checkOutTime && (!branchId || record.branchId === branchId)).length
   const wasteRows = buildWasteRows(rangeMovements)
+  const inventoryWasteDetailRows = buildWasteDetailRows(rangeMovements)
+  const inventoryWasteSummary = summarizeInventoryQuantities(
+    inventoryWasteDetailRows.map((row) => ({ quantity: row.quantity, unit: row.unit })),
+    'Không ghi nhận',
+  )
   const overviewBillRows = useMemo(
     () => salesReceipts
       .filter((receipt) =>
@@ -943,87 +1138,36 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     inventoryShiftReconciliationRows.some((row) => row.status === 'open') ? 'Chờ bàn giao' : 'Không phát sinh',
   )
   const inventoryClosedShiftCount = inventoryShiftReconciliationRows.filter((row) => row.status === 'closed').length
-  const branchInventorySummaries = selectedBranches.map((branch) => {
-    const stockLines = currentStockRows.filter((line) => line.branchId === branch.id)
-    const lowCount = stockLines.filter((line) => line.expected <= line.product.lowStock && Math.abs(line.expected) > 0.0001).length
-    const branchStockRows = stockRows.filter((row) => row.branchId === branch.id)
-    const wasteMovements = rangeMovements.filter((item) => item.branchId === branch.id && item.type === 'waste')
-    const lossQty = wasteMovements.reduce((sum, item) => sum + item.quantity, 0)
-    const lossSource = wasteMovements.reduce((sum, item) => sum + (item.sourceQuantity || 0), 0)
-    const lossRate = lossSource > 0 ? (lossQty / lossSource) * 100 : 0
-    const topLoss = branchStockRows.filter((row) => row.waste > 0).sort((a, b) => b.waste - a.waste).slice(0, 3)
-    const stockSummary = summarizeInventoryQuantities(
-      stockLines.filter((line) => line.expected > 0.0001).map((line) => ({ quantity: line.expected, unit: line.product.unit })),
-      'Không có tồn',
-    )
-    const inboundSummary = summarizeInventoryQuantities(
-      branchStockRows.filter((row) => row.inbound > 0).map((row) => ({ quantity: row.inbound, unit: row.product.unit })),
-    )
-    const outboundSummary = summarizeInventoryQuantities(
-      branchStockRows.filter((row) => row.outbound > 0).map((row) => ({ quantity: row.outbound, unit: row.product.unit })),
-    )
-    const lossSummary = summarizeInventoryQuantities(
-      branchStockRows.filter((row) => row.waste > 0).map((row) => ({ quantity: row.waste, unit: row.product.unit })),
-    )
-    // Phần sổ được sửa tay trong kỳ — chính là chênh lệch mà cột Nhập/Xuất không
-    // giải thích được. Không hiện ra thì bảng kho trông như tự nhảy số.
-    const adjustSummary = summarizeInventoryQuantities(
-      branchStockRows.filter((row) => Math.abs(row.adjust) > 0.0005).map((row) => ({ quantity: row.adjust, unit: row.product.unit })),
-      'Không sửa tồn',
-    )
-    const branchShiftRows = inventoryShiftReconciliationRows.filter((row) => row.branchId === branch.id)
-    const dailyPosSummary = summarizeInventoryQuantities(
-      branchShiftRows
-        .flatMap((row) => row.posNativeQuantities)
-        .map((row) => ({ quantity: row.quantity, unit: row.unit })),
-      'Chưa có POS',
-    )
-    return {
-      branch,
-      lowCount,
-      lossQty,
-      lossRate,
-      topLoss,
-      stockLines,
-      stockSummary,
-      inboundSummary,
-      outboundSummary,
-      lossSummary,
-      adjustSummary,
-      dailyPosSummary,
-    }
-  })
-  const inventoryDetailSummary = branchInventorySummaries.find(({ branch }) => branch.id === inventoryDetailBranchId) || null
-  const inventoryOverview = {
-    branches: selectedBranches.length,
-    stockedSkus: currentStockRows.filter((line) => line.expected > 0.0001).length,
-    lowSkus: lowStockRows.filter((line) => Math.abs(line.expected) > 0.0001).length,
-    movements: rangeMovements.length,
-  }
-  /**
-   * Bảng tồn của một chi nhánh: xếp theo MỨC ĐỘ CẦN XỬ LÝ (hết → sắp hết → còn
-   * hàng) thay vì theo tên. Quản lý mở màn này để biết phải đặt hàng gì, không
-   * phải để tra từ điển — bản cũ sắp theo alphabet nên mặt hàng đã hết nằm lẫn
-   * đâu đó giữa 30 dòng. Kèm ô tìm không dấu và 3 chip lọc.
+  /* ── Nguồn cho khối "Cần xử lý" của Tổng quan (§17) ───────────────────────
+   * Tất cả đều lấy từ dữ liệu đã tính sẵn ở trên — không thêm lượt đọc nào.
    */
-  const inventoryStockLines = useMemo(() => {
-    if (!inventoryDetailSummary) return []
-    const needle = normalizeName(inventorySkuSearch)
-    const severity = (line: { expected: number; product: Product }) =>
-      line.expected <= 0.0001 ? 0 : line.expected <= line.product.lowStock ? 1 : 2
-    return inventoryDetailSummary.stockLines
-      .filter((line) => {
-        if (needle && !normalizeName(`${line.product.name} ${line.product.sku}`).includes(needle)) return false
-        if (inventoryStockFilter === 'out') return line.expected <= 0.0001
-        if (inventoryStockFilter === 'attention') return line.expected <= line.product.lowStock
-        return true
-      })
-      .slice()
-      .sort((a, b) => severity(a) - severity(b) || a.product.name.localeCompare(b.product.name, 'vi'))
-  }, [inventoryDetailSummary, inventorySkuSearch, inventoryStockFilter])
-  const inventoryStockOutCount = inventoryDetailSummary
-    ? inventoryDetailSummary.stockLines.filter((line) => line.expected <= 0.0001).length
-    : 0
+  /**
+   * Chỉ những SKU chi nhánh THỰC SỰ dùng. `calculateStock` trả cả mặt hàng chưa
+   * bao giờ phát sinh (tồn 0) — đưa hết vào "Cần xử lý" thì mỗi chi nhánh có
+   * chục dòng "Hết hàng" giả và khối cảnh báo mất hết giá trị.
+   */
+  const overviewStockLines = useMemo(() => {
+    const touched = new Set(movements.map((item) => `${item.branchId}|${item.productId}`))
+    return currentStockRows.filter((line) => touched.has(`${line.branchId}|${line.product.id}`))
+  }, [currentStockRows, movements])
+  const overviewOpenShifts = useMemo(
+    () => inventoryShiftReconciliationRows
+      .filter((row) => row.status === 'open')
+      .map((row) => ({ sessionId: row.sessionId, branchId: row.branchId, businessDate: row.businessDate, sequence: row.sequence })),
+    [inventoryShiftReconciliationRows],
+  )
+  const overviewAttendanceIssues = useMemo(
+    () => attendanceAutoCloseErrors.map((row) => ({
+      key: row.attendanceRecordId || row.registrationId,
+      employeeName: row.employeeName,
+      branchId: row.branchId,
+      workDate: row.workDate,
+    })),
+    [attendanceAutoCloseErrors],
+  )
+  const overviewPendingRequestCount = supplyRequests.filter((request) =>
+    request.status === 'pending' && (!branchId || request.branchId === branchId),
+  ).length
   // Ca "cần xem": chưa bàn giao, hoặc đã bàn giao mà số kho lệch so với POS.
   const inventoryShiftIssueRows = inventoryShiftReconciliationRows.filter((row) =>
     row.status === 'open' || row.lines.some((line) => line.difference !== null && Math.abs(line.difference) > 0.0005),
@@ -1040,13 +1184,13 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         const date = allocationReportDate(item)
         return soldBagQuantity(item) > 0 && date >= from && date <= to && (!branchId || item.branchId === branchId)
       }),
-      salesReceipts.filter((receipt) => receipt.businessDate >= from && receipt.businessDate <= to && (!branchId || receipt.branchId === branchId)),
+      kpiReceipts.filter((receipt) => receipt.businessDate >= from && receipt.businessDate <= to && (!branchId || receipt.branchId === branchId)),
       payrollEmployees,
       attendanceDetailRows,
       from,
       to,
     ),
-    [bagAllocations, salesReceipts, payrollEmployees, attendanceDetailRows, branchId, from, to],
+    [bagAllocations, kpiReceipts, payrollEmployees, attendanceDetailRows, branchId, from, to],
   )
   const monthlyDailyKpiRows = useMemo(
     () => buildDailyEmployeeKpiRows(
@@ -1057,23 +1201,77 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           && competitionDayMatches(date, competitionDayType)
           && (!branchId || item.branchId === branchId)
       }),
-      salesReceipts.filter((receipt) =>
+      kpiReceipts.filter((receipt) =>
         receipt.businessDate >= rankingMonthFrom
         && receipt.businessDate <= rankingMonthTo
         && competitionDayMatches(receipt.businessDate, competitionDayType)
         && (!branchId || receipt.branchId === branchId),
       ),
       payrollEmployees,
-      attendanceDetailRows,
+      rankingMonthAttendanceDetails,
       rankingMonthFrom,
       rankingMonthTo,
     ),
-    [bagAllocations, salesReceipts, payrollEmployees, attendanceDetailRows, branchId, rankingMonthFrom, rankingMonthTo, competitionDayType],
+    [bagAllocations, kpiReceipts, payrollEmployees, rankingMonthAttendanceDetails, branchId, rankingMonthFrom, rankingMonthTo, competitionDayType],
   )
+  /**
+   * Doanh thu ca trưởng ghi nhận theo CA LÀM (từ 01/08/2026). Trả `undefined` cho
+   * kỳ trước mốc để số liệu đã chốt của tháng 7 không bị tính lại.
+   * Hóa đơn "Bổ sung KPI lịch sử" không đứng trong ca nào nên loại khỏi tổng ca —
+   * chúng vốn là doanh thu của nhân viên trước khi chi nhánh dùng web.
+   */
+  const monthlyLeaderShiftRevenue = useMemo(() => {
+    if (!usesLeaderShiftRevenue(rankingMonthFrom)) return undefined
+    return buildShiftLeaderRecordedRevenue(
+      bagSessions.filter((session) => competitionDayMatches(session.businessDate, competitionDayType)),
+      salesReceipts.filter((receipt) => !isKpiAdjustmentReceipt(receipt)),
+      {
+        branchIds: selectedBranches.map((branch) => branch.id),
+        from: rankingMonthFrom,
+        to: rankingMonthTo,
+      },
+    )
+  }, [bagSessions, salesReceipts, selectedBranches, rankingMonthFrom, rankingMonthTo, competitionDayType])
+  const dailyLeaderShiftRevenue = useMemo(() => {
+    if (!usesLeaderShiftRevenue(competitionDate)) return undefined
+    return buildShiftLeaderRecordedRevenue(
+      bagSessions.filter((session) => competitionDayMatches(session.businessDate, competitionDayType)),
+      salesReceipts.filter((receipt) => !isKpiAdjustmentReceipt(receipt)),
+      {
+        branchIds: selectedBranches.map((branch) => branch.id),
+        from: competitionDate,
+        to: competitionDate,
+      },
+    )
+  }, [bagSessions, salesReceipts, selectedBranches, competitionDate, competitionDayType])
   const monthlyCompetitionRows = useMemo(() => {
     const includedDates = competitionDayType === 'all'
       ? undefined
       : competitionDateKeys(rankingMonthFrom, rankingMonthTo, competitionDayType)
+    const previousRows = buildCommissionRows(
+      bagAllocations.filter((item) => {
+        const date = allocationReportDate(item)
+        return soldBagQuantity(item) > 0
+          && date >= previousRankingMonthFrom && date <= previousRankingMonthTo
+          && (!branchId || item.branchId === branchId)
+      }),
+      payrollEmployees,
+      [],
+      kpiReceipts.filter((receipt) =>
+        receipt.businessDate >= previousRankingMonthFrom
+        && receipt.businessDate <= previousRankingMonthTo
+        && (!branchId || receipt.branchId === branchId),
+      ),
+      commissionRuleDrafts,
+      employeeKpiDrafts,
+      previousRankingMonthFrom,
+      previousRankingMonthTo,
+      { enableMonthlyRewards: false },
+    )
+    const previousRevenueByEmployee = new Map(previousRows.map((row) => [
+      `${row.branchId}|${row.employeeKey}`,
+      row.revenue,
+    ]))
     const rows = buildCommissionRows(
       bagAllocations.filter((item) => {
         const date = allocationReportDate(item)
@@ -1083,8 +1281,8 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           && (!branchId || item.branchId === branchId)
       }),
       payrollEmployees,
-      [],
-      salesReceipts.filter((receipt) =>
+      rankingMonthAttendanceRows,
+      kpiReceipts.filter((receipt) =>
         receipt.businessDate >= rankingMonthFrom
         && receipt.businessDate <= rankingMonthTo
         && competitionDayMatches(receipt.businessDate, competitionDayType)
@@ -1094,7 +1292,12 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       employeeKpiDrafts,
       rankingMonthFrom,
       rankingMonthTo,
-      includedDates,
+      {
+        includedDates,
+        attendanceDetails: rankingMonthAttendanceDetails,
+        previousRevenueByEmployee,
+        shiftLeaderRevenue: monthlyLeaderShiftRevenue,
+      },
     )
     const checkedInRecords = filterCompetitionAttendanceRecords(records, registrations, {
       from: rankingMonthFrom,
@@ -1103,7 +1306,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       branchId,
     })
     return buildCompetitionRows(rows, checkedInRecords, payrollEmployees, registrations)
-  }, [bagAllocations, payrollEmployees, salesReceipts, registrations, records, commissionRuleDrafts, employeeKpiDrafts, branchId, rankingMonthFrom, rankingMonthTo, competitionDayType])
+  }, [bagAllocations, payrollEmployees, kpiReceipts, registrations, records, commissionRuleDrafts, employeeKpiDrafts, branchId, rankingMonthFrom, rankingMonthTo, previousRankingMonthFrom, previousRankingMonthTo, rankingMonthAttendanceRows, rankingMonthAttendanceDetails, competitionDayType, kpiFormulaVersion, monthlyLeaderShiftRevenue])
   const dailyCompetitionRows = useMemo(() => {
     const dateIncluded = competitionDayMatches(competitionDate, competitionDayType)
     const includedDates = competitionDayType === 'all' ? undefined : dateIncluded ? [competitionDate] : []
@@ -1111,12 +1314,16 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       bagAllocations.filter((item) => dateIncluded && allocationReportDate(item) === competitionDate && (!branchId || item.branchId === branchId)),
       payrollEmployees,
       [],
-      salesReceipts.filter((receipt) => dateIncluded && receipt.businessDate === competitionDate && (!branchId || receipt.branchId === branchId)),
+      kpiReceipts.filter((receipt) => dateIncluded && receipt.businessDate === competitionDate && (!branchId || receipt.branchId === branchId)),
       commissionRuleDrafts,
       employeeKpiDrafts,
       competitionDate,
       competitionDate,
-      includedDates,
+      {
+        includedDates,
+        attendanceDetails: rankingMonthAttendanceDetails,
+        shiftLeaderRevenue: dailyLeaderShiftRevenue,
+      },
     )
     const checkedInRecords = dateIncluded
       ? filterCompetitionAttendanceRecords(records, registrations, {
@@ -1127,7 +1334,11 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         })
       : []
     return buildCompetitionRows(rows, checkedInRecords, payrollEmployees, registrations)
-  }, [bagAllocations, payrollEmployees, salesReceipts, registrations, records, commissionRuleDrafts, employeeKpiDrafts, branchId, competitionDate, competitionDayType])
+  }, [bagAllocations, payrollEmployees, kpiReceipts, registrations, records, commissionRuleDrafts, employeeKpiDrafts, branchId, competitionDate, competitionDayType, rankingMonthAttendanceDetails, kpiFormulaVersion, dailyLeaderShiftRevenue])
+  // Ca trưởng có bảng riêng theo doanh thu ca vận hành. Hai bảng nhân viên chỉ
+  // giữ staff/cashier/Ca phó để không trùng người và không trộn hai nguồn số.
+  const monthlyEmployeeCompetitionRows = monthlyCompetitionRows.filter((row) => row.role !== 'shift_leader')
+  const dailyEmployeeCompetitionRows = dailyCompetitionRows.filter((row) => row.role !== 'shift_leader')
   const leaderCompetitionRows = useMemo(() => {
     return buildShiftLeaderRevenueRows(
       bagSessions.filter((session) => competitionDayMatches(session.businessDate, competitionDayType)),
@@ -1141,6 +1352,16 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           employee.branchId === session.branchId
           && (employee.id === session.leaderId || normalizeName(employee.name) === normalizeName(session.leaderName)),
         )
+        if (
+          session.branchId === 'lotte-vt'
+          && usesVungTauNewKpi(session.businessDate)
+          && positionKpiKey(profile?.role || 'shift_leader', profile?.employmentType || 'leader', profile?.positionTitle || 'Ca trưởng') === 'shift_leader'
+        ) {
+          const sessionCount = Math.max(1, bagSessions.filter((item) =>
+            item.branchId === session.branchId && item.businessDate === session.businessDate,
+          ).length)
+          return branchTeamPeriodRevenueTarget(session.branchId, session.businessDate, session.businessDate) / sessionCount
+        }
         return employeePeriodRevenueTarget(
           session.branchId,
           profile?.role || 'shift_leader',
@@ -1185,20 +1406,27 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           progress: row.progress,
           rank: kpiRank(row.progress),
           score: Math.round(row.revenue / 10000 + row.progress),
+          achievedDays: 0,
+          achievedShiftCount: row.achievedShiftCount,
           detail: `${row.shiftCount} ca · ${row.achievedShiftCount} ca đạt KPI`,
         }
       })
-  }, [bagSessions, salesReceipts, employees, branchId, rankingMonthFrom, rankingMonthTo, selectedBranches.length, competitionDayType])
+  }, [bagSessions, salesReceipts, employees, branchId, rankingMonthFrom, rankingMonthTo, selectedBranches.length, competitionDayType, kpiFormulaVersion])
   const competitionBaseRows = competitionRankingMode === 'daily'
-    ? dailyCompetitionRows
+    ? dailyEmployeeCompetitionRows
     : competitionRankingMode === 'monthly'
-      ? monthlyCompetitionRows
+      ? monthlyEmployeeCompetitionRows
       : leaderCompetitionRows
   const effectiveCompetitionRole = competitionRankingMode === 'leaders' ? 'shift_leader' : competitionRoleFilter
   const minimumCompetitionShifts = nonNegativeFilterNumber(competitionMinShifts, 0)
   const maximumCompetitionShifts = nonNegativeFilterNumber(competitionMaxShifts, Number.POSITIVE_INFINITY)
   const competitionFilteredRows = competitionBaseRows.filter((row) =>
     (effectiveCompetitionRole === 'all' || row.role === effectiveCompetitionRole)
+    && row.shiftCount >= minimumCompetitionShifts
+    && row.shiftCount <= maximumCompetitionShifts,
+  )
+  const monthlyEmployeeFilteredRows = monthlyEmployeeCompetitionRows.filter((row) =>
+    (competitionRoleFilter === 'all' || row.role === competitionRoleFilter)
     && row.shiftCount >= minimumCompetitionShifts
     && row.shiftCount <= maximumCompetitionShifts,
   )
@@ -1236,10 +1464,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   const competitionRankingRows = competitionShowAll
     ? competitionSortedRows
     : competitionSortedRows.slice(0, COMPETITION_TOP_ROWS)
-  const competitionAchievedCount = competitionFilteredRows.filter((row) => row.progress >= 100).length
-  const competitionTotalRevenue = competitionFilteredRows.reduce((sum, row) => sum + row.revenue, 0)
-  const competitionTotalReward = competitionFilteredRows.reduce((sum, row) => sum + row.commission, 0)
-  const competitionExportRows = (competitionRankingMode === 'leaders' ? leaderCompetitionRows : monthlyCompetitionRows)
+  const competitionAchievedCount = competitionRankingMode === 'leaders'
+    ? competitionFilteredRows.filter((row) => row.progress >= 100).length
+    : competitionFilteredRows.filter((row) => row.achievedDays > 0).length
+  const competitionExportRows = (competitionRankingMode === 'leaders' ? leaderCompetitionRows : monthlyEmployeeCompetitionRows)
     .filter((row) =>
       (effectiveCompetitionRole === 'all' || row.role === effectiveCompetitionRole)
       && row.shiftCount >= minimumCompetitionShifts
@@ -1248,6 +1476,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   // Ảnh thi đua ăn ĐÚNG bộ lọc đang hiển thị. Bản cũ chụp `monthlyCompetitionRows`
   // thô nên ảnh gửi Zalo có cả người mà bảng trên màn hình đã lọc bỏ.
   const competitionPosterRows = competitionExportRows
+  const monthlySalesCapacity = buildEmployeeSalesCapacity(monthlyEmployeeFilteredRows, 'revenuePerDay')
   const competitionRangeFrom = competitionRankingMode === 'daily' ? competitionDate : rankingMonthFrom
   const competitionRangeTo = competitionRankingMode === 'daily' ? competitionDate : rankingMonthTo
   /**
@@ -1271,8 +1500,8 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     [bagAllocations, competitionDayType],
   )
   const competitionEvidenceReceipts = useMemo(
-    () => salesReceipts.filter((receipt) => competitionDayMatches(receipt.businessDate, competitionDayType)),
-    [salesReceipts, competitionDayType],
+    () => kpiReceipts.filter((receipt) => competitionDayMatches(receipt.businessDate, competitionDayType)),
+    [kpiReceipts, competitionDayType],
   )
   const competitionEvidenceSessions = useMemo(
     () => bagSessions.filter((session) => competitionDayMatches(session.businessDate, competitionDayType)),
@@ -1313,11 +1542,308 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   })()
   const periodRevenueRows = buildDailyRevenueRows(reportSnapshots, bagAllocations, movements, { branchId, from, to, receipts: salesReceipts })
   const adminRevenueTrendRows = buildAdminDailyTrendRows(periodRevenueRows, { from, to })
-  const adminRevenueArea = buildAdminAreaChart(adminRevenueTrendRows, Math.max(...adminRevenueTrendRows.map((row) => row.revenue), 1))
-  function setQuickRange(kind: 'today' | 'month' | 'previousMonth') {
+
+  /* ── Doanh thu: chỉ số so kỳ trước + xếp hạng (§23, §25, §26, §27) ───────
+   * Hóa đơn chỉ được nạp từ đầu tháng của `from` trở đi (xem `refresh`), nên kỳ
+   * trước có thể nằm ngoài vùng đã tải. Khi đó KHÔNG hiện phần trăm nào — thà
+   * thiếu một con số còn hơn hiện một con số sai (§90).
+   */
+  const revenuePeriodTotals = useMemo(() => {
+    const revenue = periodRevenueRows.reduce((sum, row) => sum + row.revenue, 0)
+    const orders = overviewBillRows.length
+    const items = overviewBillRows.reduce((sum, receipt) => sum + receipt.totalQuantity, 0)
+    return { revenue, orders, items, average: orders ? revenue / orders : 0 }
+  }, [periodRevenueRows, overviewBillRows])
+
+  const revenuePreviousTotals = useMemo(() => {
+    const spanDays = Math.max(1, Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000) + 1)
+    const prevTo = addDateKeyDays(from, -1)
+    const prevFrom = addDateKeyDays(prevTo, -(spanDays - 1))
+    const loadedFrom = salesReceipts.reduce<string>((min, receipt) => receipt.businessDate < min ? receipt.businessDate : min, from)
+    if (!salesReceipts.length || prevFrom < loadedFrom) return null
+    const rows = salesReceipts.filter((receipt) =>
+      receipt.businessDate >= prevFrom
+      && receipt.businessDate <= prevTo
+      && (!branchId || receipt.branchId === branchId),
+    )
+    const revenue = rows.reduce((sum, receipt) => sum + receipt.totalAmount, 0)
+    const orders = rows.length
+    return {
+      label: from === to ? 'so với hôm qua' : 'so kỳ trước',
+      revenue,
+      orders,
+      items: rows.reduce((sum, receipt) => sum + receipt.totalQuantity, 0),
+      average: orders ? revenue / orders : 0,
+    }
+  }, [salesReceipts, branchId, from, to])
+
+  const revenueDelta = (current: number, previous?: number) => {
+    if (!revenuePreviousTotals || previous === undefined) return null
+    const base = previous
+    const rate = base > 0 ? (current - base) / base * 100 : current > 0 ? 100 : 0
+    return { rate, label: revenuePreviousTotals.label }
+  }
+
+  const revenueBranchRows = useMemo(() => {
+    const total = Math.max(1, periodRevenueRows.reduce((sum, row) => sum + row.revenue, 0))
+    return selectedBranches.map((branch) => {
+      const rows = periodRevenueRows.filter((row) => row.branchId === branch.id)
+      const revenue = rows.reduce((sum, row) => sum + row.revenue, 0)
+      return {
+        id: branch.id,
+        name: branch.name,
+        revenue,
+        share: revenue / total,
+        sold: rows.reduce((sum, row) => sum + (row.totalSold || 0), 0),
+      }
+    }).sort((a, b) => b.revenue - a.revenue)
+  }, [periodRevenueRows, selectedBranches])
+
+  const revenueSellerRows = useMemo(() => {
+    const rows = new Map<string, { key: string; name: string; branchId: string; revenue: number; orders: number }>()
+    overviewBillRows.forEach((receipt) => {
+      if (!receipt.sellerName) return
+      const key = `${receipt.branchId}|${receipt.sellerId || normalizeName(receipt.sellerName)}`
+      const current = rows.get(key) || { key, name: receipt.sellerName, branchId: receipt.branchId, revenue: 0, orders: 0 }
+      current.revenue += receipt.totalAmount
+      current.orders += 1
+      rows.set(key, current)
+    })
+    return Array.from(rows.values()).sort((a, b) => b.revenue - a.revenue)
+  }, [overviewBillRows])
+
+  /* ── KHO: ảnh chụp tồn tại MỘT ngày (§34) ────────────────────────────────
+   * `calculateStock` vốn tính tồn HIỆN TẠI từ toàn bộ sổ. Muốn biết tồn cuối
+   * một ngày trong quá khứ thì cắt sổ tới hết ngày đó rồi đưa vào đúng hàm cũ —
+   * giữ nguyên luật mốc kiểm kê, luật `<=` và luật hao hụt chế biến, nên số ở
+   * đây không bao giờ lệch với màn Kho của ca trưởng.
+   */
+  const inventoryPreviousDate = addDateKeyDays(inventoryDate, -1)
+  const inventoryDayLines = useMemo(() => {
+    return selectedBranches.flatMap((branch) => {
+      const branchMovements = movements.filter((item) => item.branchId === branch.id)
+      const touched = new Set(branchMovements.map((item) => item.productId))
+      const closing = calculateStock(branchMovements.filter((item) => item.shiftDate <= inventoryDate))
+      const openingByProduct = new Map(
+        calculateStock(branchMovements.filter((item) => item.shiftDate <= inventoryPreviousDate))
+          .map((line) => [line.product.id, line.expected]),
+      )
+      return closing
+        // Chỉ SKU thực sự thuộc kho VÀ chi nhánh đã từng đụng tới. Hiện cả mặt
+        // hàng chưa bao giờ phát sinh thì bảng đầy dòng 0 vô nghĩa.
+        .filter((line) => isStockManagedProduct(line.product) && touched.has(line.product.id))
+        .map((line) => ({
+          branchId: branch.id,
+          product: line.product,
+          closing: line.expected,
+          opening: openingByProduct.get(line.product.id) || 0,
+        }))
+    })
+  }, [movements, selectedBranches, inventoryDate, inventoryPreviousDate])
+
+  const inventoryDaySummary = useMemo(() => ({
+    total: inventoryDayLines.length,
+    low: inventoryDayLines.filter((line) => line.closing > 0.0001 && line.closing <= line.product.lowStock).length,
+    out: inventoryDayLines.filter((line) => Math.abs(line.closing) <= 0.0001).length,
+    negative: inventoryDayLines.filter((line) => line.closing < -0.0001).length,
+  }), [inventoryDayLines])
+
+  /** Danh sách tồn sau tìm kiếm + chip lọc, xếp theo MỨC ĐỘ CẦN XỬ LÝ (§36). */
+  const inventoryVisibleLines = useMemo(() => {
+    const needle = normalizeName(inventorySkuSearch)
+    const severity = (line: { closing: number; product: Product }) =>
+      line.closing < -0.0001 ? 0 : Math.abs(line.closing) <= 0.0001 ? 1 : line.closing <= line.product.lowStock ? 2 : 3
+    return inventoryDayLines
+      .filter((line) => {
+        if (needle && !normalizeName(`${line.product.name} ${line.product.sku}`).includes(needle)) return false
+        if (inventoryCategoryFilter === 'raw') return line.product.category === 'raw'
+        if (inventoryCategoryFilter === 'packaging') return line.product.category === 'packaging'
+        if (inventoryCategoryFilter === 'attention') return severity(line) < 3
+        return true
+      })
+      .sort((a, b) => severity(a) - severity(b)
+        || a.product.name.localeCompare(b.product.name, 'vi')
+        || branchName(a.branchId).localeCompare(branchName(b.branchId), 'vi'))
+  }, [inventoryDayLines, inventorySkuSearch, inventoryCategoryFilter])
+
+  /**
+   * Đối chiếu MỘT SKU trong đúng ngày đang xem (§39, §45).
+   *
+   *   Tồn đầu + Nhập + Thành phẩm tạo ra − Chế biến − Bán − Hao hụt ± Điều chỉnh
+   *   = Tồn cuối
+   *
+   * "Điều chỉnh" lấy từ `stockAdjustmentDeltas` chứ không phải số khai của phiếu
+   * kiểm kê: phiếu `count` là mốc reset, phần thực sự cộng vào sổ là CHÊNH LỆCH
+   * giữa số đếm và tồn cộng dồn ngay trước nó (xem CODEMAP §5).
+   */
+  const inventorySkuDetailData = useMemo(() => {
+    if (!inventorySkuDetail) return null
+    const line = inventoryDayLines.find((item) =>
+      item.branchId === inventorySkuDetail.branchId && item.product.id === inventorySkuDetail.productId,
+    )
+    if (!line) return null
+    const dayMovements = movements
+      .filter((item) =>
+        item.branchId === inventorySkuDetail.branchId
+        && item.productId === inventorySkuDetail.productId
+        && item.shiftDate === inventoryDate,
+      )
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    const sumOf = (types: StockMovement['type'][]) => dayMovements
+      .filter((item) => types.includes(item.type))
+      // Hao hụt chế biến chỉ mang tính thông tin — đã nằm trong chênh lệch
+      // processing_out/processing_in, cộng lần nữa là trừ tồn hai lần.
+      .filter((item) => !(item.type === 'waste' && item.sourceProductId))
+      .reduce((sum, item) => sum + item.quantity, 0)
+    const adjust = sumStockAdjustments(
+      stockAdjustmentDeltas(movements.filter((item) =>
+        item.branchId === inventorySkuDetail.branchId && item.productId === inventorySkuDetail.productId,
+      )),
+      { from: inventoryDate, to: inventoryDate },
+    )
+    return {
+      line,
+      dayMovements,
+      opening: line.opening,
+      inbound: sumOf(['inbound', 'opening']),
+      produced: sumOf(['processing_in', 'packing_in']),
+      consumed: sumOf(['processing_out', 'packing_out']),
+      sold: sumOf(['sale_out']),
+      waste: sumOf(['waste']),
+      adjust,
+      closing: line.closing,
+    }
+  }, [inventorySkuDetail, inventoryDayLines, movements, inventoryDate])
+
+  /**
+   * §50: một lần kiểm kê đã xác nhận là RECONCILIATION CHECKPOINT. Nếu ngày đang
+   * xem nằm TRƯỚC lần kiểm kê gần nhất của SKU đó, mọi phiếu bổ sung lùi ngày
+   * chỉ tính lại phần trước mốc — tồn hiện tại vẫn phải tôn trọng số đã đếm
+   * thật. Cảnh báo ở đây để người bổ sung dữ liệu biết trước, không phải sau.
+   */
+  const inventorySkuCheckpoint = useMemo(() => {
+    if (!inventorySkuDetail) return null
+    const counts = movements.filter((item) =>
+      item.type === 'count'
+      && item.branchId === inventorySkuDetail.branchId
+      && item.productId === inventorySkuDetail.productId
+      && item.shiftDate > inventoryDate,
+    )
+    if (!counts.length) return null
+    return counts.reduce((latest, item) => item.shiftDate < latest.shiftDate ? item : latest).shiftDate
+  }, [inventorySkuDetail, movements, inventoryDate])
+
+  /** Lưới cột của bảng tồn — dùng CHUNG cho hàng tiêu đề và từng dòng, nếu
+   *  không hai bên lệch nhau khi ẩn cột Chi nhánh.
+   *
+   *  13/08/2026 — chủ hệ thống: "các cột để gần gần xíu cho dễ nhìn". Trước đây
+   *  mọi cột đều là `fr` nên trên màn rộng chúng bị kéo giãn hết chiều ngang:
+   *  tên hàng ở mép trái, trạng thái ở mép phải, mắt phải quét cả 1.300px mới
+   *  đọc xong MỘT dòng. Nay chặn TRẦN px cho các cột có nghĩa và để cột cuối
+   *  nuốt phần thừa ⇒ bốn cột đứng sát nhau ở bên trái, khoảng trống dồn về
+   *  cuối dòng.
+   *
+   *  Trả về CHUỖI cho custom property `--gt-cols`, KHÔNG set thẳng
+   *  `gridTemplateColumns` inline: style inline thắng cả media query, nên bản
+   *  cũ vô hiệu hóa luôn bố cục dọc ở ≤900px của `.gt-list__row`. */
+  const inventoryStockCols = branchId
+    ? 'minmax(0, 400px) 132px minmax(120px, 1fr)'
+    : 'minmax(0, 340px) minmax(0, 220px) 132px minmax(120px, 1fr)'
+
+  /* ── HAO HỤT theo ngày / tháng / năm ──────────────────────────────────────
+   * Đọc TOÀN BỘ sổ kho của chi nhánh đang chọn, không giới hạn theo kỳ ở đầu
+   * trang: xem theo tháng hay theo năm thì phải có cả lịch sử mới ra biểu đồ.
+   */
+  const inventoryWasteAll = useMemo(
+    () => buildWasteDetailRows(movements.filter((item) => !branchId || item.branchId === branchId)),
+    [movements, branchId],
+  )
+  const inventoryWasteTotals = useMemo(() => ({
+    kg: inventoryWasteAll.filter((row) => row.unit === 'kg').reduce((sum, row) => sum + row.quantity, 0),
+    otherCount: inventoryWasteAll.filter((row) => row.unit !== 'kg').length,
+    processing: inventoryWasteAll.filter((row) => row.kind === 'processing').length,
+  }), [inventoryWasteAll])
+
+  /**
+   * Gom hao hụt thành từng cột biểu đồ.
+   *
+   * Cột chỉ cộng phần tính bằng KG. §54: không bao giờ cộng lẫn đơn vị — "48,7 kg
+   * + 12 cái + 4 túi" là con số vô nghĩa. Các đơn vị khác vẫn hiện đủ ở cột
+   * "Hao hụt" của bảng bên dưới qua `summarizeInventoryQuantities`.
+   */
+  const inventoryWasteSeries = useMemo(() => {
+    const keyOf = (date: string) => wasteGrouping === 'year'
+      ? date.slice(0, 4)
+      : wasteGrouping === 'month' ? date.slice(0, 7) : date
+    const labelOf = (key: string) => wasteGrouping === 'year'
+      ? `Năm ${key}`
+      : wasteGrouping === 'month' ? `${key.slice(5, 7)}/${key.slice(0, 4)}` : `${key.slice(8, 10)}/${key.slice(5, 7)}`
+    const buckets = new Map<string, {
+      key: string
+      kg: number
+      count: number
+      byUnit: Map<string, number>
+      byBranch: Map<string, number>
+      byProduct: Map<string, number>
+    }>()
+    inventoryWasteAll.forEach((row) => {
+      const key = keyOf(row.shiftDate)
+      const bucket = buckets.get(key)
+        || { key, kg: 0, count: 0, byUnit: new Map(), byBranch: new Map(), byProduct: new Map() }
+      if (row.unit === 'kg') bucket.kg += row.quantity
+      bucket.count += 1
+      bucket.byUnit.set(row.unit, (bucket.byUnit.get(row.unit) || 0) + row.quantity)
+      bucket.byBranch.set(row.branchId, (bucket.byBranch.get(row.branchId) || 0) + 1)
+      bucket.byProduct.set(row.productName, (bucket.byProduct.get(row.productName) || 0) + row.quantity)
+      buckets.set(key, bucket)
+    })
+    const topOf = (map: Map<string, number>) =>
+      Array.from(map.entries()).sort((left, right) => right[1] - left[1])[0]?.[0] || ''
+    return Array.from(buckets.values())
+      .sort((left, right) => left.key.localeCompare(right.key))
+      // Trần 24 cột: xem theo ngày cả năm thì trục X thành một vệt đen.
+      .slice(-24)
+      .map((bucket) => ({
+        key: bucket.key,
+        label: labelOf(bucket.key),
+        kg: Number(bucket.kg.toFixed(3)),
+        count: bucket.count,
+        summary: summarizeInventoryQuantities(
+          Array.from(bucket.byUnit.entries()).map(([unit, quantity]) => ({ quantity, unit })),
+          'Không hao hụt',
+        ),
+        topBranch: branchName(topOf(bucket.byBranch)),
+        topProduct: topOf(bucket.byProduct),
+      }))
+  }, [inventoryWasteAll, wasteGrouping])
+
+  /** Xu hướng doanh thu: mỗi ngày kèm số đơn để tooltip trả lời đủ (§24). */
+  const revenueChartRows = useMemo(() => {
+    const ordersByDate = new Map<string, number>()
+    overviewBillRows.forEach((receipt) => {
+      ordersByDate.set(receipt.businessDate, (ordersByDate.get(receipt.businessDate) || 0) + 1)
+    })
+    return adminRevenueTrendRows.map((row) => ({
+      ...row,
+      label: `${row.date.slice(8, 10)}/${row.date.slice(5, 7)}`,
+      orders: ordersByDate.get(row.date) || 0,
+    }))
+  }, [adminRevenueTrendRows, overviewBillRows])
+
+  const revenueTransactionsPageSize = 50
+  const revenueTransactionsTotalPages = Math.max(1, Math.ceil(overviewBillRows.length / revenueTransactionsPageSize))
+  const revenueTransactionsSafePage = Math.min(Math.max(revenueTransactionsPage, 1), revenueTransactionsTotalPages)
+  const revenueTransactionsRows = overviewBillRows.slice(
+    (revenueTransactionsSafePage - 1) * revenueTransactionsPageSize,
+    revenueTransactionsSafePage * revenueTransactionsPageSize,
+  )
+  function setQuickRange(kind: 'today' | 'week' | 'month' | 'previousMonth' | string) {
     const range = kind === 'today' ? { from: localDateKey(), to: localDateKey() }
-      : kind === 'month' ? monthRange()
-        : monthRange(-1)
+      : kind === 'week' ? rollingRange(7)
+        : kind === 'month' ? monthRange()
+          : kind === 'previousMonth' ? monthRange(-1)
+            : null
+    if (!range) return
     setFrom(range.from)
     setTo(range.to)
   }
@@ -1344,8 +1870,18 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   async function changeRole(employee: EmployeeProfile, role: Role) {
     setSavingRoleId(employee.id)
     try {
-      await updateEmployeeRole(user, employee.id, role)
-      setEmployees((items) => items.map((item) => item.id === employee.id ? { ...item, role } : item))
+      const nextPositionTitle = role === 'shift_deputy' ? 'Ca phó' : role === 'shift_leader' ? 'Ca trưởng' : employee.positionTitle
+      if (role === 'shift_deputy' || role === 'shift_leader') {
+        await updateEmployeeDetails(user, employee.id, { role, employmentType: 'leader', positionTitle: nextPositionTitle })
+      } else {
+        await updateEmployeeRole(user, employee.id, role)
+      }
+      setEmployees((items) => items.map((item) => item.id === employee.id ? {
+        ...item,
+        role,
+        employmentType: role === 'shift_deputy' || role === 'shift_leader' ? 'leader' : item.employmentType,
+        positionTitle: nextPositionTitle,
+      } : item))
       setFeedback(`Đã cập nhật ${employee.name} thành ${roleLabel(role)}.`)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Không thể cập nhật phân quyền.')
@@ -1436,7 +1972,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   function employeeDraft(employee: EmployeeProfile) {
     return employeeDrafts[employee.id] || {
       branchId: employee.branchId || user.branchId,
-      employmentType: employee.employmentType || (employee.role === 'shift_leader' ? 'leader' : 'part_time'),
+      employmentType: employee.employmentType || (employee.role === 'shift_leader' || employee.role === 'shift_deputy' ? 'leader' : 'part_time'),
       positionTitle: employee.positionTitle || roleLabel(employee.role),
       avatarUrl: employee.avatarUrl || '',
     }
@@ -1657,7 +2193,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     setExportBusy('competition-image')
     setError('')
     try {
-      const { default: html2canvas } = await import('html2canvas')
+      const { default: html2canvas } = await importChunk(() => import('html2canvas'))
       const canvas = await html2canvas(target, {
         scale: 2,
         backgroundColor: '#f8faf4',
@@ -1676,6 +2212,35 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     }
   }
 
+  async function exportSalesCapacityImage() {
+    const target = salesCapacityPosterRef.current
+    if (!target) return
+    if (!monthlySalesCapacity.measuredRows.length) {
+      setFeedback('Chưa có nhân viên vừa có doanh thu vừa có ngày công để xuất infographic trung bình.')
+      return
+    }
+    setExportBusy('capacity-image')
+    setError('')
+    try {
+      const { default: html2canvas } = await importChunk(() => import('html2canvas'))
+      const canvas = await html2canvas(target, {
+        scale: 2,
+        backgroundColor: '#f4f8ec',
+        useCORS: true,
+        logging: false,
+      })
+      const link = document.createElement('a')
+      link.download = `trung-binh-ban-hang-${rankingPeriod}.jpg`
+      link.href = canvas.toDataURL('image/jpeg', 0.95)
+      link.click()
+      setFeedback('Đã xuất ảnh infographic trung bình bán hàng theo ngày và tháng.')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Không thể xuất infographic trung bình bán hàng.')
+    } finally {
+      setExportBusy('')
+    }
+  }
+
   async function exportKpiEvidenceExcel() {
     const exportMode = competitionRankingMode === 'leaders' ? 'leaders' : 'monthly'
     const sourcesByRow = buildCompetitionSourcesByRow(
@@ -1686,6 +2251,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       competitionEvidenceAllocations,
       competitionEvidenceSessions,
       competitionEvidenceReceipts,
+      monthlyLeaderShiftRevenue,
     )
     const sourceRows: KpiEvidenceSourceRow[] = competitionExportRows.flatMap((row) =>
       (sourcesByRow.get(competitionRowKey(row)) || []).map((source) => ({
@@ -1695,7 +2261,9 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         branchId: row.branchId,
         branchName: branchName(row.branchId),
         roleLabel: roleLabel(row.role),
-        sourceType: source.kind === 'receipt' ? 'Hóa đơn POS' : 'Phiếu giao túi',
+        sourceType: source.kind === 'adjustment'
+          ? 'Bổ sung KPI lịch sử'
+          : source.kind === 'receipt' ? 'Hóa đơn POS' : 'Phiếu giao túi',
         sourceId: source.id,
         sourceCode: source.sourceCode,
         shiftLabel: source.shiftLabel,
@@ -1756,7 +2324,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   }
 
   async function exportAttendance() {
-    const ExcelJS = await import('exceljs')
+    const ExcelJS = await importChunk(() => import('exceljs'))
     const workbook = new ExcelJS.Workbook()
     // File công xuất theo đúng bộ lọc chi nhánh/nhân viên/khoảng ngày đang chọn
     // trên màn hình (chọn một chi nhánh thì file chỉ có chi nhánh đó — chủ đích).
@@ -1767,17 +2335,52 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     // các sheet KPI/doanh thu xuất ra trắng trơn. Lấy dữ liệu THẬT ngay lúc bấm
     // xuất, đúng khoảng ngày + chi nhánh đang lọc.
     const exportBranchScope = branchId ? [branchId] : permittedBranchIds(user)
-    const [freshReceipts, freshAllocationLists] = await Promise.all([
-      fetchSalesReceiptsRange(user, { branchIds: exportBranchScope, from, to }),
+    const exportIsFullMonth = isFullCalendarMonth(from, to)
+    const exportPreviousPeriod = previousMonthPeriod(from.slice(0, 7))
+    const exportPreviousFrom = `${exportPreviousPeriod}-01`
+    const exportPreviousTo = lastDayOfMonth(exportPreviousPeriod)
+    const exportReceiptFrom = exportIsFullMonth ? exportPreviousFrom : from
+    const [freshReceipts, freshAllocationLists, freshKpiAdjustments] = await Promise.all([
+      fetchSalesReceiptsRange(user, { branchIds: exportBranchScope, from: exportReceiptFrom, to }),
       Promise.all(exportBranchScope.map((id) => fetchBagAllocations(user, { branchId: id }).catch(() => [] as BagAllocation[]))),
+      fetchKpiRevenueAdjustments(user, { branchIds: exportBranchScope, from: exportReceiptFrom, to }),
     ])
-    const exportReceipts = freshReceipts.filter((receipt) =>
+    const freshKpiAdjustmentReceipts = freshKpiAdjustments.flatMap((adjustment) => {
+      const employee = payrollEmployees.find((item) => item.id === adjustment.employeeId)
+      return employee ? [kpiRevenueAdjustmentReceipt(adjustment, employee.name)] : []
+    })
+    const freshKpiReceipts = [...freshReceipts, ...freshKpiAdjustmentReceipts]
+    const exportReceipts = freshKpiReceipts.filter((receipt) =>
       receipt.businessDate >= from && receipt.businessDate <= to && (!branchId || receipt.branchId === branchId),
     )
     const exportAllocations = freshAllocationLists.flat().filter((item) => {
       const date = allocationReportDate(item)
       return date >= from && date <= to && (!branchId || item.branchId === branchId)
     })
+    const exportPreviousRows = exportIsFullMonth ? buildCommissionRows(
+      freshAllocationLists.flat().filter((item) => {
+        const date = allocationReportDate(item)
+        return soldBagQuantity(item) > 0
+          && date >= exportPreviousFrom && date <= exportPreviousTo
+          && (!branchId || item.branchId === branchId)
+      }),
+      payrollEmployees,
+      [],
+      freshKpiReceipts.filter((receipt) =>
+        receipt.businessDate >= exportPreviousFrom
+        && receipt.businessDate <= exportPreviousTo
+        && (!branchId || receipt.branchId === branchId),
+      ),
+      commissionRuleDrafts,
+      employeeKpiDrafts,
+      exportPreviousFrom,
+      exportPreviousTo,
+      { enableMonthlyRewards: false },
+    ) : []
+    const exportPreviousRevenue = new Map(exportPreviousRows.map((row) => [
+      `${row.branchId}|${row.employeeKey}`,
+      row.revenue,
+    ]))
     const exportCommissionRows = buildCommissionRows(
       exportAllocations.filter((item) => soldBagQuantity(item) > 0),
       payrollEmployees,
@@ -1787,6 +2390,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       employeeKpiDrafts,
       from,
       to,
+      { attendanceDetails: exportDetailRows, previousRevenueByEmployee: exportPreviousRevenue },
     )
     const exportDailyKpiRows = buildDailyEmployeeKpiRows(
       exportAllocations.filter((item) => soldBagQuantity(item) > 0),
@@ -1838,14 +2442,14 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       { header: 'Xếp hạng', key: 'rank', width: 12 },
       { header: 'Đạt KPI', key: 'achieved', width: 12 },
       { header: 'Thưởng ngày', key: 'dailyBonus', width: 16 },
-      { header: 'Thưởng tuần', key: 'weeklyBonus', width: 16 },
-      { header: 'Thưởng tháng', key: 'monthlyBonus', width: 16 },
+      { header: 'Chi tiết thưởng', key: 'rewardDetail', width: 42 },
       { header: 'Tổng thưởng KPI', key: 'commission', width: 18 },
     ]
     exportCommissionRows.forEach((row) => commissionSheet.addRow({
       ...row,
       branch: branchName(row.branchId),
       achieved: row.achieved ? 'Đạt' : 'Chưa đạt',
+      rewardDetail: row.rewardLabels.join(' · '),
     }))
     styleSheet(commissionSheet, `KPI DOANH THU ${formatDate(from)} - ${formatDate(to)}`)
 
@@ -1962,8 +2566,65 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     await saveWorkbook(workbook, `bang-cham-cong-${from}-${to}.xlsx`)
   }
 
+  function addInventoryWasteSheet(workbook: import('exceljs').Workbook) {
+    const sheet = workbook.addWorksheet('Danh sách hao hụt')
+    sheet.columns = [
+      { header: 'Ngày', key: 'date', width: 13 },
+      { header: 'Giờ ghi', key: 'createdAt', width: 20 },
+      { header: 'Chi nhánh', key: 'branch', width: 25 },
+      { header: 'Loại hao hụt', key: 'kind', width: 18 },
+      { header: 'Số phiếu', key: 'document', width: 23 },
+      { header: 'Sản phẩm hao hụt', key: 'product', width: 30 },
+      { header: 'SKU', key: 'sku', width: 17 },
+      { header: 'Số lượng hao hụt', key: 'quantity', width: 18 },
+      { header: 'ĐVT', key: 'unit', width: 10 },
+      { header: 'Sản phẩm nguồn', key: 'sourceProduct', width: 30 },
+      { header: 'SKU nguồn', key: 'sourceSku', width: 17 },
+      { header: 'SL nguồn', key: 'sourceQuantity', width: 14 },
+      { header: 'ĐVT nguồn', key: 'sourceUnit', width: 10 },
+      { header: 'Tỷ lệ hao (%)', key: 'lossRate', width: 14 },
+      { header: 'Khối lượng đo (kg)', key: 'measuredWeightKg', width: 19 },
+      { header: 'Người ghi', key: 'creator', width: 24 },
+      { header: 'Ghi chú', key: 'note', width: 42 },
+    ]
+    inventoryWasteDetailRows.forEach((row) => {
+      const creator = employees.find((employee) => employee.id === row.createdBy)
+      sheet.addRow({
+        date: formatDate(row.shiftDate),
+        createdAt: formatDateTime(row.createdAt),
+        branch: branchName(row.branchId),
+        kind: row.kind === 'processing' ? 'Hao hụt chế biến' : 'Hao hụt kho',
+        document: row.documentId || row.id,
+        product: row.productName,
+        sku: row.sku || '-',
+        quantity: row.quantity,
+        unit: row.unit,
+        sourceProduct: row.sourceProductName || '-',
+        sourceSku: row.sourceSku || '-',
+        sourceQuantity: row.sourceQuantity ?? null,
+        sourceUnit: row.sourceUnit || '',
+        lossRate: row.lossRate ?? null,
+        measuredWeightKg: row.measuredWeightKg ?? null,
+        creator: creator?.name || row.createdBy || '-',
+        note: row.note || '-',
+      })
+    })
+    applyInventoryQuantityFormat(sheet, ['quantity', 'sourceQuantity', 'lossRate', 'measuredWeightKg'])
+    sheet.getColumn('lossRate').numFmt = '0.0'
+    styleSheet(sheet, `DANH SÁCH HAO HỤT ${formatDate(from)} - ${formatDate(to)}`)
+  }
+
+  async function exportInventoryLoss() {
+    const ExcelJS = await importChunk(() => import('exceljs'))
+    const workbook = new ExcelJS.Workbook()
+    workbook.creator = 'Gustino Operations'
+    workbook.created = new Date()
+    addInventoryWasteSheet(workbook)
+    await saveWorkbook(workbook, `danh-sach-hao-hut-${from}-${to}.xlsx`)
+  }
+
   async function exportInventory() {
-    const ExcelJS = await import('exceljs')
+    const ExcelJS = await importChunk(() => import('exceljs'))
     const workbook = new ExcelJS.Workbook()
     workbook.creator = 'Gustino Operations'
     workbook.created = new Date()
@@ -1995,6 +2656,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     }))
     applyInventoryQuantityFormat(summarySheet, ['opening', 'inbound', 'outbound', 'waste', 'adjust', 'closing'])
     styleSheet(summarySheet, `TỔNG HỢP KHO ${formatDate(from)} - ${formatDate(to)}`)
+    addInventoryWasteSheet(workbook)
 
     const shiftReconciliationSheet = workbook.addWorksheet('Đối chiếu ca')
     shiftReconciliationSheet.columns = [
@@ -2194,7 +2856,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   }
 
   async function exportSupplyReportExcel() {
-    const ExcelJS = await import('exceljs')
+    const ExcelJS = await importChunk(() => import('exceljs'))
     const workbook = new ExcelJS.Workbook()
     const sheet = workbook.addWorksheet('Danh sách đặt hàng')
     sheet.columns = [
@@ -2344,21 +3006,64 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
 
   return (
     <div className="page admin-page">
-      <div className="admin-filter-bar admin-date-filters">
-          <label>{text.branch}
-            <select value={branchId} onChange={(event) => { setBranchId(event.target.value); setEmployeeId('') }}>
-              <option value="">{text.allBranches}</option>
-              {visibleBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
-            </select>
-          </label>
-          <label>{text.from}<input type="date" value={from} max={attendanceDateMax} onChange={(event) => setFrom(attendanceDateMax && event.target.value > attendanceDateMax ? attendanceDateMax : event.target.value)} /></label>
-          <label>{text.to}<input type="date" value={to} min={from} max={attendanceDateMax} onChange={(event) => setTo(attendanceDateMax && event.target.value > attendanceDateMax ? attendanceDateMax : event.target.value)} /></label>
-          <div className="admin-quick-ranges">
-            <button onClick={() => setQuickRange('today')}>{text.today}</button>
-            <button onClick={() => setQuickRange('month')}>{text.thisMonth}</button>
-            <button onClick={() => setQuickRange('previousMonth')}>{text.previousMonth}</button>
-          </div>
-      </div>
+      {/*
+        MỘT thanh lọc duy nhất cho cả trang (§6) và nó ĐỔI THEO nghiệp vụ của
+        section đang mở (§13/§22/§34/§61):
+          · Tổng quan  → chi nhánh + preset, không cần date range thô
+          · Kho        → chi nhánh + MỘT ngày (tồn là ảnh chụp tại một thời điểm)
+          · còn lại    → chi nhánh + khoảng ngày + preset
+        Không section nào được dựng thêm bộ lọc chi nhánh/ngày thứ hai bên trong.
+      */}
+      <FilterBar>
+        <BranchSelector
+          value={branchId}
+          onChange={(next) => { setBranchId(next); setEmployeeId('') }}
+          branches={visibleBranches}
+          allLabel={text.allBranches}
+        />
+        {activeSection === 'inventory' ? (
+          <>
+            <span className="gt-filterbar__sep" aria-hidden="true" />
+            <DateField
+              label="Ngày"
+              value={inventoryDate}
+              max={todayKey}
+              onChange={setInventoryDate}
+            />
+            <QuickDatePresets
+              presets={[{ id: 'today', label: 'Hôm nay' }, { id: 'yesterday', label: 'Hôm qua' }]}
+              active={inventoryDate === todayKey ? 'today' : inventoryDate === addDateKeyDays(todayKey, -1) ? 'yesterday' : undefined}
+              onPick={(id) => setInventoryDate(id === 'today' ? todayKey : addDateKeyDays(todayKey, -1))}
+            />
+            <span className="gt-filterbar__spacer" />
+            <span className="gt-section-count">
+              {inventoryDate === todayKey ? 'Đang xem kho hôm nay' : `Đang xem dữ liệu ngày ${formatDate(inventoryDate)}`}
+            </span>
+          </>
+        ) : (
+          <>
+            {activeSection !== 'overview' && (
+              <>
+                <span className="gt-filterbar__sep" aria-hidden="true" />
+                <DateRangeField
+                  from={from}
+                  to={to}
+                  max={attendanceDateMax}
+                  onFrom={(value) => setFrom(attendanceDateMax && value > attendanceDateMax ? attendanceDateMax : value)}
+                  onTo={(value) => setTo(attendanceDateMax && value > attendanceDateMax ? attendanceDateMax : value)}
+                />
+              </>
+            )}
+            <QuickDatePresets
+              presets={activeSection === 'overview'
+                ? [{ id: 'today', label: text.today }, { id: 'week', label: '7 ngày' }, { id: 'month', label: text.thisMonth }]
+                : [{ id: 'today', label: text.today }, { id: 'week', label: '7 ngày' }, { id: 'month', label: text.thisMonth }, { id: 'previousMonth', label: text.previousMonth }]}
+              active={activeRangePreset}
+              onPick={setQuickRange}
+            />
+          </>
+        )}
+      </FilterBar>
 
       {readOnly && <div className="feedback-bar">Chế độ giám sát (SUP MT): chỉ xem và xuất báo cáo, mọi thao tác chỉnh sửa dữ liệu đều do Admin thực hiện.</div>}
       {error && <div className="feedback-bar">{error}<button onClick={() => setError('')}>×</button></div>}
@@ -2368,88 +3073,157 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
       <div className={`admin-layout${focused ? ' focused-management-layout' : ''}`}>
         {/* Nội dung theo section */}
         <div className="admin-section-content">
-          {/* ===== DOANH THU ===== */}
+          {/* ===== DOANH THU =====
+              Trang analytics: doanh thu bao nhiêu, tăng/giảm, đến từ chi nhánh
+              nào, món nào, ai bán tốt (§21). Danh sách hóa đơn, danh sách món
+              đầy đủ và bảng theo ngày KHÔNG bị xoá — chúng nằm trong drawer mở
+              từ menu `•••` và các nút "Xem tất cả" (§28, §86). */}
           {activeSection === 'revenue' && (
-            <>
-              {/* Overview card: CukCuk Tổng quan style */}
-              {(() => {
-                const grandTotal = periodRevenueRows.reduce((sum, s) => sum + s.revenue, 0)
-                const fmtMoney = (n: number) => n >= 1000000 ? `${(n / 1000000).toFixed(1)} tr` : n.toLocaleString('vi-VN') + 'đ'
-                return (
-                  <div className="rev-overview-card">
-                    <div className="rev-overview-head">
-                      <span className="rev-overview-label">Doanh thu toàn chuỗi</span>
-                      <span className="rev-overview-amount">{fmtMoney(grandTotal)}</span>
-                      <span className="rev-overview-sub">{periodRevenueRows.length} ngày có doanh thu · {selectedBranches.length} chi nhánh</span>
-                    </div>
-                    <div className="rev-branch-list">{selectedBranches.map((branch) => {
-                      const snaps = periodRevenueRows.filter((s) => s.branchId === branch.id)
-                      const rev = snaps.reduce((sum, s) => sum + s.revenue, 0)
-                      const sold = snaps.reduce((sum, s) => sum + s.totalSold, 0)
-                      return (
-                        <div key={branch.id} className="rev-branch-row">
-                          <span className="rbn-name">{/^\d+$/.test(branch.name.trim()) ? `Chi nhánh ${branch.name}` : branch.name}</span>
-                          <div className="rbn-right">
-                            <span className="rbn-amount">{fmtMoney(rev)}</span>
-                            <span className="rbn-meta">{snaps.length} ngày · {sold} sản phẩm</span>
-                          </div>
-                        </div>
-                      )
-                    })}</div>
-                  </div>
-                )
-              })()}
-              <BusinessProductCharts rows={businessProductRows} />
-              <section className="erp-workspace-panel admin-revenue-chart-card">
-                <div className="section-title">
-                  <div><span className="eyebrow dark">BIỂU ĐỒ DOANH THU</span><h2>Xu hướng theo bộ lọc</h2></div>
-                  <span className="date-chip">{formatMoney(adminRevenueTrendRows.reduce((sum, row) => sum + row.revenue, 0))}</span>
+            <div className="gt-page">
+              <PageHeader
+                title="DOANH THU"
+                subtitle={`${branchId ? branchName(branchId) : 'Tất cả chi nhánh'} · ${formatDate(from)}${from === to ? '' : ` → ${formatDate(to)}`}`}
+                actions={
+                  <OverflowMenu items={[
+                    { label: `Xem giao dịch (${overviewBillRows.length})`, onSelect: () => { setRevenueTransactionsPage(1); setRevenueTransactionsOpen(true) } },
+                    { label: `Doanh thu theo ngày (${periodRevenueRows.length})`, onSelect: () => setRevenueDailyOpen(true) },
+                    { label: 'Xem tất cả món', onSelect: () => setRevenueProductsOpen(true) },
+                    { label: 'Hiệu suất nhân viên', onSelect: () => setRevenueSellersOpen(true) },
+                    { label: 'Báo cáo ngày (bản lưu)', onSelect: () => { window.location.hash = '#report-archive' }, separatorBefore: true },
+                  ]} />
+                }
+              />
+
+              <MetricRow>
+                <Metric
+                  label="Doanh thu"
+                  value={formatCompactMoney(revenuePeriodTotals.revenue)}
+                  delta={revenueDelta(revenuePeriodTotals.revenue, revenuePreviousTotals?.revenue)}
+                  hint={revenuePreviousTotals ? undefined : 'Chưa đủ dữ liệu kỳ trước để so sánh'}
+                />
+                <Metric
+                  label="Đơn hàng"
+                  value={revenuePeriodTotals.orders.toLocaleString('vi-VN')}
+                  delta={revenueDelta(revenuePeriodTotals.orders, revenuePreviousTotals?.orders)}
+                />
+                <Metric
+                  label="Giá trị TB/đơn"
+                  value={formatMoney(revenuePeriodTotals.average)}
+                  delta={revenueDelta(revenuePeriodTotals.average, revenuePreviousTotals?.average)}
+                />
+                <Metric
+                  label="Sản phẩm bán"
+                  value={formatNumber(revenuePeriodTotals.items)}
+                  delta={revenueDelta(revenuePeriodTotals.items, revenuePreviousTotals?.items)}
+                />
+              </MetricRow>
+
+              <Surface>
+                <SectionHeader
+                  title="Xu hướng doanh thu"
+                  description={from === to ? 'Một ngày trong bộ lọc — chọn khoảng dài hơn để thấy diễn biến.' : 'Theo ngày trong khoảng đang chọn.'}
+                  count={formatCompactMoney(revenueChartRows.reduce((sum, row) => sum + row.revenue, 0))}
+                />
+                <div className="gt-pad" style={{ height: 240 }}>
+                  {revenueChartRows.some((row) => row.revenue > 0) ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={revenueChartRows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                        <defs>
+                          <linearGradient id="gtRevenueFill" x1="0" x2="0" y1="0" y2="1">
+                            <stop offset="0%" stopColor="#a8d12d" stopOpacity=".38" />
+                            <stop offset="100%" stopColor="#a8d12d" stopOpacity=".02" />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="4 4" stroke="#eef2f7" vertical={false} />
+                        <XAxis dataKey="label" tick={{ fontSize: 11, fontWeight: 600, fill: '#93a1b3' }} axisLine={false} tickLine={false} minTickGap={16} />
+                        <YAxis
+                          tick={{ fontSize: 11, fontWeight: 600, fill: '#93a1b3' }}
+                          axisLine={false}
+                          tickLine={false}
+                          width={46}
+                          tickFormatter={(value: number) => value >= 1_000_000 ? `${Math.round(value / 1_000_000)}tr` : `${Math.round(value / 1000)}k`}
+                        />
+                        <Tooltip
+                          cursor={{ stroke: '#cdd6e2' }}
+                          contentStyle={{ borderRadius: 12, border: '1px solid #e4e9f0', boxShadow: '0 12px 32px rgba(15,31,51,.14)', fontSize: 12, fontWeight: 700 }}
+                          labelFormatter={(label) => `Ngày ${String(label ?? '')}`}
+                          formatter={(value, name) => String(name) === 'revenue'
+                            ? [formatMoney(Number(value) || 0), 'Doanh thu']
+                            : [`${Number(value) || 0} đơn`, 'Đơn hàng']}
+                        />
+                        <Area type="monotone" dataKey="revenue" stroke="#7ea81f" strokeWidth={2.5} fill="url(#gtRevenueFill)" />
+                        <Area type="monotone" dataKey="orders" stroke="transparent" fill="transparent" />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  ) : <EmptyState title="Chưa có doanh thu" description="Chưa phát sinh doanh thu trong khoảng thời gian này." />}
                 </div>
-                <div className="admin-revenue-area-chart">
-                  <svg viewBox="0 0 360 160" role="img" aria-label="Bieu do doanh thu theo ngay">
-                    <defs>
-                      <linearGradient id="adminRevenueFill" x1="0" x2="0" y1="0" y2="1">
-                        <stop offset="0%" stopColor="#a8d12d" stopOpacity=".44" />
-                        <stop offset="100%" stopColor="#1688d8" stopOpacity=".08" />
-                      </linearGradient>
-                    </defs>
-                    <polygon points={adminRevenueArea.fillPoints} fill="url(#adminRevenueFill)" />
-                    <polyline points={adminRevenueArea.linePoints} fill="none" stroke="#1688d8" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                  <div className="admin-revenue-axis">
-                    {adminRevenueTrendRows.filter((_, index) => index === 0 || index === Math.floor(adminRevenueTrendRows.length / 2) || index === adminRevenueTrendRows.length - 1).map((row) => (
-                      <span key={row.date}>{formatDate(row.date)}</span>
+              </Surface>
+
+              <div className="gt-overview-split">
+                <Surface>
+                  <SectionHeader title="Hiệu quả chi nhánh" count={`${revenueBranchRows.length} điểm bán`} />
+                  <div className="gt-pad" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gt-4)' }}>
+                    {revenueBranchRows.map((row) => (
+                      <RankBar
+                        key={row.id}
+                        name={row.name}
+                        value={formatCompactMoney(row.revenue)}
+                        meta={`${(row.share * 100).toFixed(1)}% toàn chuỗi · ${formatNumber(row.sold)} sản phẩm`}
+                        share={row.share / Math.max(0.01, revenueBranchRows[0]?.share || 1)}
+                      />
                     ))}
+                    {!revenueBranchRows.length && <EmptyState title="Chưa có dữ liệu" description="Không có chi nhánh nào phát sinh doanh thu." />}
                   </div>
-                </div>
-              </section>
-              <section className="erp-workspace-panel erp-revenue-ledger">
-                <div className="section-title">
-                  <div><span className="eyebrow dark">DOANH THU THEO NGÀY</span><h2>Tất cả chi nhánh</h2></div>
-                  <span className="date-chip">{periodRevenueRows.length} ngày có doanh thu</span>
-                </div>
-                <div className="admin-data-table-scroll">
-                  <table className="admin-data-table erp-revenue-table">
-                    <thead><tr><th>Ngày</th><th>Chi nhánh</th><th className="num">Sản phẩm</th><th className="num">Doanh thu</th><th className="num">Năng suất</th><th className="num">KPI</th><th>Xếp loại</th><th>Trạng thái</th></tr></thead>
-                    <tbody>{periodRevenueRows.map((snap) => (
-                      <tr key={snap.id}>
-                        <td>{formatDate(snap.reportDate)}</td>
-                        <td>{branchName(snap.branchId)}</td>
-                        <td className="num">{snap.totalSold || 0}</td>
-                        <td className="num"><strong>{snap.revenue.toLocaleString('vi-VN')}đ</strong></td>
-                        <td className="num">{snap.salesRate !== undefined ? `${snap.salesRate}%` : '—'}</td>
-                        <td className="num">{snap.kpi !== undefined ? `${snap.kpi}%` : '—'}</td>
-                        <td>{snap.grade || '—'}</td>
-                        <td><span className={`admin-status-badge ${snap.source === 'report' ? 'working' : 'probation'}`}>{snap.source === 'report' ? 'Đã chốt' : 'Tạm tính'}</span></td>
-                      </tr>
-                    ))}</tbody>
-                  </table>
-                  {!periodRevenueRows.length && (
-                    <p className="empty-copy">Chưa có báo cáo doanh thu trong khoảng thời gian này. Báo cáo sẽ xuất hiện sau khi ca trưởng bấm “Chốt báo cáo” cuối ngày.</p>
-                  )}
-                </div>
-              </section>
-            </>
+                </Surface>
+
+                <Surface>
+                  <SectionHeader
+                    title="Món đóng góp doanh thu"
+                    aside={businessProductRows.length > 5
+                      ? <button type="button" className="gt-btn gt-btn--ghost gt-btn--sm" onClick={() => setRevenueProductsOpen(true)}>Xem tất cả món →</button>
+                      : undefined}
+                  />
+                  <div className="gt-pad" style={{ display: 'flex', flexDirection: 'column', gap: 'var(--gt-4)' }}>
+                    {businessProductRows.slice(0, 5).map((row) => (
+                      <RankBar
+                        key={row.productId}
+                        name={row.productName}
+                        value={formatCompactMoney(row.revenue)}
+                        meta={`${formatNumber(row.quantity)} sản phẩm · ${(row.revenue / Math.max(1, revenuePeriodTotals.revenue) * 100).toFixed(1)}%`}
+                        share={row.revenue / Math.max(1, businessProductRows[0]?.revenue || 1)}
+                        tone="info"
+                      />
+                    ))}
+                    {!businessProductRows.length && <EmptyState title="Chưa có món nào" description="Chưa ghi nhận sản phẩm bán ra trong khoảng này." />}
+                  </div>
+                </Surface>
+              </div>
+
+              <Surface>
+                <SectionHeader
+                  title="Nhân viên nổi bật"
+                  count={`${revenueSellerRows.length} người có doanh số`}
+                  aside={revenueSellerRows.length > 5
+                    ? <button type="button" className="gt-btn gt-btn--ghost gt-btn--sm" onClick={() => setRevenueSellersOpen(true)}>Xem hiệu suất nhân viên →</button>
+                    : undefined}
+                />
+                <DataList columns="minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr)">
+                  <DataHead>
+                    <span>Nhân viên</span>
+                    <span className="gt-cell--num">Đơn hàng</span>
+                    <span className="gt-cell--num">Doanh thu</span>
+                  </DataHead>
+                  {revenueSellerRows.slice(0, 5).map((row) => (
+                    <DataRow key={row.key}>
+                      <span data-gt-primary><strong>{row.name}</strong><small>{branchName(row.branchId)}</small></span>
+                      <span className="gt-cell--num" data-gt-label="Đơn hàng">{row.orders}</span>
+                      <span className="gt-cell--num" data-gt-trailing><b>{formatMoney(row.revenue)}</b></span>
+                    </DataRow>
+                  ))}
+                  {!revenueSellerRows.length && <EmptyState title="Chưa có nhân viên nào bán hàng" description="Chưa có hóa đơn POS trong bộ lọc này." />}
+                </DataList>
+              </Surface>
+            </div>
           )}
 
           {/* ===== TỔNG QUAN ===== */}
@@ -2457,14 +3231,25 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
             <DashboardPage
               from={from}
               to={to}
-              branchCount={visibleBranches.length}
-              revenue={periodRevenueRows.reduce((sum, row) => sum + row.revenue, 0)}
-              employeeCount={employees.filter((employee) => employee.active !== false).length}
+              todayKey={todayKey}
+              branches={selectedBranches.map((branch) => ({ id: branch.id, name: branch.name }))}
+              revenueRows={periodRevenueRows}
+              receipts={salesReceipts.filter((receipt) => !branchId || receipt.branchId === branchId)}
+              employees={employees}
+              stockLines={overviewStockLines}
+              openShifts={overviewOpenShifts}
+              attendanceIssues={overviewAttendanceIssues}
+              pendingRequestCount={overviewPendingRequestCount}
+              wasteRows={wasteRows}
               activeUsers={activeUsers}
               showActiveUsers={user.role === 'admin'}
-              recentBills={overviewBillRows}
-              wasteRows={wasteRows}
               branchName={branchName}
+              /* §89: đổi section phải đổi cả URL — refresh không mất chỗ đang
+                 xem và nút Back của trình duyệt vẫn chạy đúng. */
+              onOpenSection={(section) => {
+                setActiveSection(section)
+                navigateAdminHash(adminRouteForSection(section))
+              }}
             />
           )}
 
@@ -2852,10 +3637,16 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
           {/* ===== KPI DOANH THU ===== */}
           {activeSection === 'commission' && (
             <section className="erp-workspace-panel commission-section">
+              {!kpiOverridesReady ? (
+                <p className="empty-copy">Đang đồng bộ mức KPI đang áp dụng…</p>
+              ) : (
+              <>
               <div className="section-title">
                 <div><span className="eyebrow dark">KPI & XẾP HẠNG</span><h2>Thi đua nhân viên</h2></div>
                 <div className="section-actions">
-                  <span className="date-chip">{competitionAchievedCount}/{competitionFilteredRows.length} đạt KPI</span>
+                  <span className="date-chip">
+                    {competitionAchievedCount}/{competitionFilteredRows.length} {competitionRankingMode === 'leaders' ? 'đạt KPI kỳ' : 'có ngày đạt KPI'}
+                  </span>
                   <button
                     type="button"
                     className="secondary-button"
@@ -2884,8 +3675,24 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   <button type="button" className="secondary-button" disabled={exportBusy === 'competition-image'} onClick={() => void exportCompetitionImage()}>
                     {exportBusy === 'competition-image' ? 'Đang xuất…' : 'Xuất ảnh thi đua'}
                   </button>
+                  <button type="button" className="secondary-button" disabled={exportBusy === 'capacity-image'} onClick={() => void exportSalesCapacityImage()}>
+                    {exportBusy === 'capacity-image' ? 'Đang xuất…' : 'Xuất ảnh trung bình bán'}
+                  </button>
                 </div>
               </div>
+              {/* Quy tắc nghiệp vụ đang chi phối cột tiền bên dưới nên phải nói ra một
+                  dòng. Khối liệt kê mức KPI Vũng Tàu theo giai đoạn đã bỏ: số cứng
+                  trong đó nay nằm ngay trong bảng chỉnh KPI, sửa được trực tiếp. */}
+              <p className="competition-reward-rule" role="note">
+                <b>Chỉ tính thưởng KPI theo từng ngày.</b> Thưởng tuần, thưởng tháng và giải tháng không cộng vào tiền KPI.
+              </p>
+              <BranchKpiSettings
+                user={user}
+                branches={visibleBranches}
+                selectedBranchId={branchId}
+                readOnly={readOnly}
+                onChanged={() => setKpiFormulaVersion((value) => value + 1)}
+              />
               <div className="competition-ranking-toolbar">
                 <div>
                   <span className="eyebrow dark">BẢNG XẾP HẠNG</span>
@@ -2921,7 +3728,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     >
                       <option value="all">Tất cả</option>
                       <option value="staff">Nhân viên bán hàng</option>
-                      <option value="shift_leader">Ca trưởng</option>
+                      <option value="shift_deputy">Ca phó</option>
                     </select>
                   </label>
                   <label>Loại ngày
@@ -2971,35 +3778,11 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   >Xóa lọc so sánh</button>
                 </div>
               </div>
-
-              {/* Một dải số duy nhất cho cả màn — trước đây có 3 dải tổng khác kỳ nhau. */}
-              <div className="competition-overview" aria-label={`Tổng hợp thi đua ${competitionRankingTitle}`}>
-                <article>
-                  <span>Doanh thu kỳ</span>
-                  <strong>{formatMoney(competitionTotalRevenue)}</strong>
-                  <small>{formatNumber(salesCapacity.totalSoldQuantity)} sản phẩm · {competitionFilteredRows.length} nhân sự có doanh thu</small>
-                </article>
-                <article className={competitionAchievedCount ? 'good' : ''}>
-                  <span>Đạt KPI</span>
-                  <strong>{competitionAchievedCount}/{competitionFilteredRows.length}</strong>
-                  <small>Từ 100% chỉ tiêu doanh thu của kỳ</small>
-                </article>
-                <article>
-                  <span>{salesCapacityMetricLabel(effectiveCapacityMetric)} — trung bình đội</span>
-                  <strong>{formatCapacityValue(effectiveCapacityMetric, salesCapacity.teamAverage)}</strong>
-                  <small>{effectiveCapacityMetric === 'revenuePerMonth'
-                    ? `${formatNumber(salesCapacity.totalMonths)} lượt tháng có đi làm`
-                    : `${formatNumber(salesCapacity.totalDays)} ngày công`}</small>
-                </article>
-                <article className="total">
-                  <span>Thưởng KPI</span>
-                  <strong>{competitionRankingMode === 'leaders' ? '—' : formatMoney(competitionTotalReward)}</strong>
-                  <small>{competitionRankingMode === 'leaders'
-                    ? 'Bảng ca trưởng xếp doanh thu ca, không phát sinh thưởng cá nhân'
-                    : 'Chỉ phát sinh khi đạt ngưỡng KPI ngày/tuần'}</small>
-                </article>
-              </div>
-
+              {/* 13/08/2026 — chủ hệ thống: "bỏ các tổng hợp đầu bảng, bỏ luôn chữ mô tả".
+                  Dải 4 thẻ tổng (doanh thu kỳ / ngày đạt KPI / năng suất TB / thưởng KPI)
+                  và đoạn ghi chú tách Ca trưởng đã gỡ: mọi con số đó đều đọc được ngay
+                  trong bảng xếp hạng bên dưới, còn chip "x/y có ngày đạt KPI" vẫn nằm ở
+                  tiêu đề section. ĐỪNG dựng lại dải tổng ở đây. */}
               <CompetitionClassificationTable
                 title={competitionRankingTitle}
                 rows={competitionRankingRows}
@@ -3015,6 +3798,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 allocations={competitionEvidenceAllocations}
                 sessions={competitionEvidenceSessions}
                 receipts={competitionEvidenceReceipts}
+                leaderShiftRevenue={competitionRankingMode === 'daily' ? dailyLeaderShiftRevenue : monthlyLeaderShiftRevenue}
                 capacityByKey={competitionCapacityByKey}
                 capacityMetric={effectiveCapacityMetric}
                 teamAverage={salesCapacity.teamAverage}
@@ -3040,358 +3824,389 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   to={rankingMonthTo}
                   branchLabel={branchId ? branchName(branchId) : 'Toàn hệ thống'}
                 />
+                <EmployeeSalesCapacityPoster
+                  posterRef={salesCapacityPosterRef}
+                  summary={monthlySalesCapacity}
+                  from={rankingMonthFrom}
+                  to={rankingMonthTo}
+                  branchLabel={branchId ? branchName(branchId) : 'Toàn hệ thống'}
+                />
               </div>
 
+              </>
+              )}
             </section>
           )}
 
-          {/* ===== BÁO CÁO KHO ===== */}
+          {/* ===== KHO HÀNG =====
+              13/08/2026 — dựng lại theo phản hồi chủ hệ thống: "bấm vô hiện ra
+              cái bên phải chi trời, kiểu như đang bị giấu nội dung".
+              Không còn drawer bên phải. Bấm một SKU thì nó MỞ NGAY TẠI DÒNG;
+              đối soát ca, sổ phát sinh và hao hụt nằm thẳng trên trang. */}
           {activeSection === 'inventory' && (
-            <section className="erp-workspace-panel admin-report-section">
-              <div className="section-title">
-                <div><span className="eyebrow dark">BÁO CÁO KHO</span><h2>Nhập, xuất, hao hụt và tồn kho trong kỳ</h2></div>
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => void runExport(
-                    'inventory',
-                    stockRows.length ? '' : 'Chưa có dữ liệu kho trong bộ lọc hiện tại để xuất Excel.',
-                    exportInventory,
-                    'Đã xuất Excel báo cáo kho.',
-                  )}
-                  disabled={exportBusy === 'inventory'}
-                >{exportBusy === 'inventory' ? 'Đang xuất…' : 'Xuất Excel'}</button>
-              </div>
-              <div className="admin-inventory-overview">
-                <div className="admin-inventory-overview-copy">
-                  <span>TỔNG QUAN KHO</span>
-                  <strong>{branchId ? branchName(branchId) : `${inventoryOverview.branches} chi nhánh`}</strong>
-                  <small>{formatDate(from)} — {formatDate(to)} · dữ liệu tự đồng bộ</small>
-                </div>
-                <article><span>SKU đang có tồn</span><b>{inventoryOverview.stockedSkus}</b><small>Tồn hiện tại lớn hơn 0</small></article>
-                <article className={inventoryOverview.lowSkus ? 'warning' : 'good'}><span>Cần chú ý</span><b>{inventoryOverview.lowSkus}</b><small>SKU chạm ngưỡng sắp hết</small></article>
-                <article><span>Phát sinh trong kỳ</span><b>{inventoryOverview.movements}</b><small>Dòng nhập, xuất, kiểm kê, hao hụt</small></article>
-              </div>
-              <div className="inventory-branch-section">
-                <div className="inventory-branch-section-head">
-                  <div>
-                    <span className="eyebrow dark">KHO THEO CHI NHÁNH</span>
-                    <h3>Tình trạng tồn và luân chuyển hàng hóa</h3>
-                  </div>
-                  <span className="inventory-branch-count">{branchInventorySummaries.length} điểm bán</span>
+            <div className="gt-page">
+              <PageHeader
+                title="KHO HÀNG"
+                subtitle={inventoryDate === todayKey
+                  ? `${branchId ? branchName(branchId) : 'Tất cả chi nhánh'} · Tồn hiện tại`
+                  : `${branchId ? branchName(branchId) : 'Tất cả chi nhánh'} · Tồn cuối ngày ${formatDate(inventoryDate)}`}
+                actions={
+                  <>
+                    <button
+                      type="button"
+                      className="gt-btn gt-btn--secondary"
+                      disabled={exportBusy === 'inventory'}
+                      onClick={() => void runExport('inventory', stockRows.length ? '' : 'Chưa có dữ liệu kho trong bộ lọc hiện tại để xuất Excel.', exportInventory, 'Đã xuất Excel báo cáo kho.')}
+                    >{exportBusy === 'inventory' ? 'Đang xuất…' : 'Xuất Excel'}</button>
+                    <button
+                      type="button"
+                      className="gt-btn gt-btn--secondary"
+                      disabled={exportBusy === 'inventory-loss'}
+                      onClick={() => void runExport('inventory-loss', inventoryWasteDetailRows.length ? '' : 'Chưa có hao hụt trong bộ lọc hiện tại để xuất Excel.', exportInventoryLoss, 'Đã xuất Excel danh sách hao hụt.')}
+                    >{exportBusy === 'inventory-loss' ? 'Đang xuất…' : 'Xuất hao hụt'}</button>
+                  </>
+                }
+              />
+
+              <Surface>
+                <div className="gt-pad">
+                  <SummaryLine items={[
+                    { text: `${inventoryDaySummary.total} mặt hàng` },
+                    { text: `${inventoryDaySummary.low} sắp hết`, tone: inventoryDaySummary.low ? 'warn' : undefined },
+                    { text: `${inventoryDaySummary.out} hết hàng`, tone: inventoryDaySummary.out ? 'bad' : undefined },
+                    { text: `${inventoryDaySummary.negative} âm kho`, tone: inventoryDaySummary.negative ? 'bad' : undefined },
+                  ]} />
                 </div>
 
-                {/* 07/08/2026: bỏ lưới thẻ cao 200px (mỗi chi nhánh một khối) —
-                    cùng luật với màn Kho ca trưởng ở §51: dòng, không dùng card. */}
-                <div className="admin-stock-branches" role="table" aria-label="Kho theo chi nhánh">
-                  <div className="admin-stock-branch-head" role="row">
-                    <span>Chi nhánh</span>
-                    <span>Tồn hiện tại</span>
-                    <span>Nhập trong kỳ</span>
-                    <span>POS bán trong kỳ</span>
-                    <span>Cảnh báo</span>
-                    <span />
+                <Toolbar>
+                  <SearchInput
+                    value={inventorySkuSearch}
+                    onChange={setInventorySkuSearch}
+                    placeholder="Tìm tên mặt hàng hoặc mã SKU"
+                    label="Tìm mặt hàng trong kho"
+                  />
+                  <FilterChips
+                    label="Lọc nhóm mặt hàng"
+                    value={inventoryCategoryFilter}
+                    onChange={setInventoryCategoryFilter}
+                    options={[
+                      { id: 'all', label: `Tất cả (${inventoryDayLines.length})` },
+                      { id: 'raw', label: 'Nguyên liệu' },
+                      { id: 'packaging', label: 'Bao bì' },
+                      { id: 'attention', label: `Cần chú ý (${inventoryDaySummary.low + inventoryDaySummary.out + inventoryDaySummary.negative})` },
+                    ]}
+                  />
+                </Toolbar>
+
+                <div className="gt-list" role="table">
+                  <div className="gt-list__head" role="row" style={{ '--gt-cols': inventoryStockCols } as CSSProperties}>
+                    <span>Mặt hàng</span>
+                    {!branchId && <span>Chi nhánh</span>}
+                    <span className="gt-cell--num">{inventoryDate === todayKey ? 'Tồn hiện tại' : `Tồn cuối ${formatDate(inventoryDate)}`}</span>
+                    <span>Trạng thái</span>
                   </div>
-                  {branchInventorySummaries.map(({ branch, lowCount, lossRate, stockLines, stockSummary, inboundSummary, dailyPosSummary }) => {
-                    const isSelected = inventoryDetailBranchId === branch.id
-                    const stockedCount = stockLines.filter((line) => line.expected > 0.0001).length
-                    const outCount = stockLines.filter((line) => line.expected <= 0.0001).length
+                  {loading ? <SkeletonRows rows={5} columns={3} /> : inventoryVisibleLines.map((line) => {
+                    const negative = line.closing < -0.0001
+                    const out = !negative && Math.abs(line.closing) <= 0.0001
+                    const low = !negative && !out && line.closing <= line.product.lowStock
+                    const open = inventorySkuDetail?.branchId === line.branchId && inventorySkuDetail?.productId === line.product.id
                     return (
-                      <button
-                        type="button"
-                        className={`admin-stock-branch-row${isSelected ? ' selected' : ''}`}
-                        key={branch.id}
-                        role="row"
-                        aria-expanded={isSelected}
-                        aria-controls="inventory-branch-detail-panel"
-                        onClick={() => setInventoryDetailBranchId((current) => current === branch.id ? '' : branch.id)}
-                      >
-                        <span data-label="Chi nhánh" role="cell" className="admin-stock-branch-name">
-                          <strong>{branch.name}</strong>
-                          <small>{stockedCount} SKU đang có tồn{outCount ? ` · ${outCount} SKU đã hết` : ''}</small>
-                        </span>
-                        <span data-label="Tồn hiện tại" role="cell"><b>{stockSummary}</b></span>
-                        <span data-label="Nhập trong kỳ" role="cell"><b>{inboundSummary}</b></span>
-                        <span data-label="POS bán trong kỳ" role="cell"><b>{dailyPosSummary}</b></span>
-                        <span data-label="Cảnh báo" role="cell" className="admin-stock-branch-flags">
-                          <i className={`inventory-health ${lowCount ? 'warning' : 'good'}`}>{lowCount ? `${lowCount} SKU sắp hết` : 'Tồn ổn định'}</i>
-                          <i className={`inventory-health ${lossRate > 12 ? 'danger' : lossRate > 7 ? 'warning' : 'good'}`}>Hao hụt {formatInventoryDecimal(lossRate, 1)}%</i>
-                        </span>
-                        <span role="cell" className="admin-stock-branch-action">{isSelected ? 'Thu gọn' : 'Xem chi tiết'}</span>
-                      </button>
+                      <Fragment key={`${line.branchId}-${line.product.id}`}>
+                        <button
+                          type="button"
+                          className={`gt-list__row${open ? ' is-selected' : ''}`}
+                          role="row"
+                          style={{ '--gt-cols': inventoryStockCols } as CSSProperties}
+                          aria-expanded={open}
+                          onClick={() => setInventorySkuDetail(open ? null : { branchId: line.branchId, productId: line.product.id })}
+                        >
+                          <span data-gt-primary><strong>{line.product.name}</strong><small>{line.product.sku}</small></span>
+                          {!branchId && <span data-gt-label="Chi nhánh">{branchName(line.branchId)}</span>}
+                          <span className="gt-cell--num" data-gt-label="Tồn"><b>{formatInventoryQuantity(line.closing, line.product.unit)}</b></span>
+                          <span data-gt-trailing>
+                            {negative
+                              ? <StatusBadge tone="bad">Âm kho</StatusBadge>
+                              : out
+                                ? <StatusBadge tone="bad">Hết hàng</StatusBadge>
+                                : low
+                                  ? <StatusBadge tone="warn">Sắp hết</StatusBadge>
+                                  : <StatusBadge tone="good">Đủ dùng</StatusBadge>}
+                            <i className="gt-chevron" aria-hidden="true">{open ? ' ⌃' : ' ⌄'}</i>
+                          </span>
+                        </button>
+
+                        {/* Mở NGAY TẠI DÒNG — không đẩy sang panel bên phải. */}
+                        {open && inventorySkuDetailData && (
+                          <div className="gt-inline-detail">
+                            <div className="gt-inline-detail__grid">
+                              <div>
+                                <span className="gt-metric__label">Đối chiếu ngày {formatDate(inventoryDate)}</span>
+                                <div className="gt-recon">
+                                  <ReconRow label="Tồn đầu ngày" value={formatInventoryQuantity(inventorySkuDetailData.opening, line.product.unit)} />
+                                  <ReconRow label="Nhập kho" value={`+${formatInventoryQuantity(inventorySkuDetailData.inbound, line.product.unit)}`} tone="pos" />
+                                  <ReconRow label="Thành phẩm tạo ra" value={`+${formatInventoryQuantity(inventorySkuDetailData.produced, line.product.unit)}`} tone="pos" />
+                                  <ReconRow label="Dùng để chế biến" value={`−${formatInventoryQuantity(inventorySkuDetailData.consumed, line.product.unit)}`} tone="neg" />
+                                  <ReconRow label="Bán hàng" value={`−${formatInventoryQuantity(inventorySkuDetailData.sold, line.product.unit)}`} tone="neg" />
+                                  <ReconRow label="Hao hụt" value={`−${formatInventoryQuantity(inventorySkuDetailData.waste, line.product.unit)}`} tone="neg" />
+                                  <ReconRow label="Điều chỉnh (kiểm kê)" value={formatInventoryDelta(inventorySkuDetailData.adjust, line.product.unit)} />
+                                  <ReconRow label="Tồn cuối" value={formatInventoryQuantity(inventorySkuDetailData.closing, line.product.unit)} total />
+                                </div>
+                              </div>
+                              <div>
+                                <span className="gt-metric__label">Biến động trong ngày</span>
+                                <div className="gt-timeline">
+                                  {inventorySkuDetailData.dayMovements.map((movement) => {
+                                    const outbound = ['processing_out', 'packing_out', 'sale_out', 'waste'].includes(movement.type)
+                                    return (
+                                      <div className="gt-timeline__item" key={movement.id}>
+                                        <time>{formatClockTime(movement.createdAt)}</time>
+                                        <span>
+                                          {MOVEMENT_LABELS[movement.type]}
+                                          {movement.note ? <small style={{ display: 'block', color: 'var(--gt-muted)' }}>{movement.note}</small> : null}
+                                        </span>
+                                        <b className={outbound ? 'gt-delta-out' : 'gt-delta-in'}>
+                                          {movement.type === 'count' ? '' : outbound ? '−' : '+'}
+                                          {formatInventoryQuantity(movement.quantity, line.product.unit)}
+                                        </b>
+                                      </div>
+                                    )
+                                  })}
+                                  {!inventorySkuDetailData.dayMovements.length && (
+                                    <p className="empty-copy">Không phát sinh phiếu nào trong ngày này.</p>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                            {inventorySkuCheckpoint && (
+                              <div className="gt-callout gt-callout--warn">
+                                <strong>Ngày này nằm trước lần kiểm kê đã xác nhận {formatDate(inventorySkuCheckpoint)}.</strong>
+                                <p>Tồn sau mốc kiểm kê luôn tính từ số đã đếm thực tế, không cộng dồn ngược các phiếu trước mốc.</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </Fragment>
                     )
                   })}
-                  {!branchInventorySummaries.length && <p className="empty-copy">Chưa có chi nhánh nào để hiển thị.</p>}
+                  {!loading && !inventoryVisibleLines.length && (
+                    <EmptyState
+                      title={inventoryDayLines.length ? 'Không có mặt hàng khớp bộ lọc' : 'Chưa có mặt hàng trong kho này'}
+                      description={inventoryDayLines.length ? 'Thử bỏ bớt từ khóa hoặc chọn lại nhóm mặt hàng.' : 'Chi nhánh này chưa phát sinh phiếu kho nào.'}
+                    />
+                  )}
                 </div>
+              </Surface>
 
-                {inventoryDetailSummary && (
-                  <section className="inventory-branch-detail-shell" id="inventory-branch-detail-panel" aria-live="polite">
-                    <header className="inventory-branch-detail-head">
-                      <div>
-                        <span className="eyebrow dark">CHI TIẾT TỒN KHO</span>
-                        <h3>{inventoryDetailSummary.branch.name}</h3>
-                        <p>Mỗi số lượng luôn kèm đúng đơn vị kg, g hoặc cái; không cộng lẫn các đơn vị.</p>
-                      </div>
-                      <button type="button" className="inventory-detail-close" onClick={() => setInventoryDetailBranchId('')} aria-label="Đóng chi tiết chi nhánh">×</button>
-                    </header>
-
-                    <div className="inventory-branch-detail-metrics">
-                      <div><span>Tồn hiện tại</span><b>{inventoryDetailSummary.stockSummary}</b></div>
-                      <div className={inventoryDetailSummary.lowCount ? 'warning' : ''}><span>SKU sắp hết</span><b>{inventoryDetailSummary.lowCount} SKU</b></div>
-                      <div><span>Nhập trong kỳ</span><b>{inventoryDetailSummary.inboundSummary}</b></div>
-                      <div><span>Xuất trong kỳ</span><b>{inventoryDetailSummary.outboundSummary}</b></div>
-                      <div className={inventoryDetailSummary.lossQty ? 'danger' : ''}><span>Hao hụt</span><b>{inventoryDetailSummary.lossSummary}</b></div>
-                      <div><span>Sửa tồn trong kỳ</span><b>{inventoryDetailSummary.adjustSummary}</b></div>
-                    </div>
-
-                    {/* Tìm không dấu + 3 chip lọc. Dòng nào cần xử lý được đẩy
-                        lên đầu (hết → sắp hết → còn hàng), xem `inventoryStockLines`. */}
-                    <div className="admin-stock-filterbar">
-                      <label className="admin-stock-search">
-                        <span aria-hidden="true">⌕</span>
-                        <input
-                          value={inventorySkuSearch}
-                          onChange={(event) => setInventorySkuSearch(event.target.value)}
-                          placeholder="Tìm tên hoặc mã SKU (không cần dấu)"
-                          aria-label="Tìm mặt hàng trong kho chi nhánh"
+              {/* ── HAO HỤT ─────────────────────────────────────────────────
+                  Chủ hệ thống yêu cầu xem được theo ngày/tháng/năm kèm biểu đồ.
+                  Cột biểu đồ chỉ cộng phần tính bằng KG — các đơn vị khác (cái,
+                  túi) đếm riêng ở dòng tóm tắt, vì cộng lẫn đơn vị là con số vô
+                  nghĩa. */}
+              <Surface>
+                <SectionHeader
+                  title="Hao hụt"
+                  description="Cột biểu đồ tính theo kg. Mặt hàng đơn vị khác được đếm riêng bên dưới."
+                  count={`${inventoryWasteAll.length} dòng`}
+                  aside={
+                    <FilterChips
+                      label="Nhóm hao hụt theo"
+                      value={wasteGrouping}
+                      onChange={setWasteGrouping}
+                      options={[{ id: 'day', label: 'Ngày' }, { id: 'month', label: 'Tháng' }, { id: 'year', label: 'Năm' }]}
+                    />
+                  }
+                />
+                <div className="gt-pad">
+                  <SummaryLine items={[
+                    { text: `${formatInventoryDecimal(inventoryWasteTotals.kg, 3)} kg`, tone: inventoryWasteTotals.kg ? 'bad' : undefined },
+                    { text: `${inventoryWasteTotals.otherCount} lượt đơn vị khác` },
+                    { text: `${inventoryWasteTotals.processing} lượt hao hụt chế biến` },
+                  ]} />
+                </div>
+                <div className="gt-pad" style={{ height: 240 }}>
+                  {inventoryWasteSeries.some((row) => row.kg > 0) ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={inventoryWasteSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="4 4" stroke="#eef2f7" vertical={false} />
+                        <XAxis dataKey="label" tick={{ fontSize: 11, fontWeight: 600, fill: '#93a1b3' }} axisLine={false} tickLine={false} minTickGap={12} />
+                        <YAxis tick={{ fontSize: 11, fontWeight: 600, fill: '#93a1b3' }} axisLine={false} tickLine={false} width={44} unit=" kg" />
+                        <Tooltip
+                          cursor={{ fill: 'rgba(200, 50, 47, .06)' }}
+                          contentStyle={{ borderRadius: 12, border: '1px solid #e4e9f0', boxShadow: '0 12px 32px rgba(15,31,51,.14)', fontSize: 12, fontWeight: 700 }}
+                          formatter={(value, name) => String(name) === 'kg'
+                            ? [`${formatInventoryDecimal(Number(value) || 0, 3)} kg`, 'Hao hụt']
+                            : [`${Number(value) || 0} lượt`, 'Số lượt']}
                         />
-                      </label>
-                      <div className="admin-stock-chips" role="group" aria-label="Lọc trạng thái tồn">
-                        {([
-                          ['all', `Tất cả (${inventoryDetailSummary.stockLines.length})`],
-                          ['attention', `Cần chú ý (${inventoryDetailSummary.lowCount})`],
-                          ['out', `Đã hết (${inventoryStockOutCount})`],
-                        ] as const).map(([id, label]) => (
-                          <button
-                            key={id}
-                            type="button"
-                            className={inventoryStockFilter === id ? 'is-active' : ''}
-                            aria-pressed={inventoryStockFilter === id}
-                            onClick={() => setInventoryStockFilter(id)}
-                          >{label}</button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="inventory-branch-detail-content">
-                      <div className="inventory-stock-table" role="table" aria-label={`Tồn kho ${inventoryDetailSummary.branch.name}`}>
-                        <div className="inventory-stock-head" role="row">
-                          <span>Sản phẩm / SKU</span>
-                          <span>Tồn hiện tại</span>
-                          <span>Trạng thái</span>
-                        </div>
-                        {inventoryStockLines.map((line) => {
-                          const isOut = line.expected <= 0.0001
-                          const isLow = !isOut && line.expected <= line.product.lowStock
-                          return (
-                            <article className={`inventory-stock-row${isOut ? ' out' : isLow ? ' warning' : ''}`} role="row" key={line.product.id}>
-                              <span className="inventory-stock-product" role="cell"><strong>{line.product.name}</strong><small>{line.product.sku}</small></span>
-                              <span className="inventory-stock-value" role="cell"><b>{formatInventoryQuantity(line.expected, line.product.unit)}</b></span>
-                              <span role="cell"><b className={`inventory-stock-status ${isOut ? 'out' : isLow ? 'warning' : 'good'}`}>{isOut ? 'Hết hàng' : isLow ? 'Sắp hết' : 'Ổn định'}</b></span>
-                            </article>
-                          )
-                        })}
-                        {!inventoryStockLines.length && <p className="empty-copy">Không có mặt hàng nào khớp bộ lọc hiện tại.</p>}
-                      </div>
-
-                      <aside className="inventory-loss-panel">
-                        <span className="eyebrow dark">Hao hụt cần chú ý</span>
-                        <strong>{formatInventoryDecimal(inventoryDetailSummary.lossRate, 1)}%</strong>
-                        <small>Tỷ lệ hao hụt trong khoảng ngày đã chọn</small>
-                        <div className="inventory-loss-progress" aria-hidden="true"><span style={{ width: `${Math.min(inventoryDetailSummary.lossRate, 100)}%` }} /></div>
-                        {inventoryDetailSummary.topLoss.length > 0 ? (
-                          <ul>
-                            {inventoryDetailSummary.topLoss.map((row) => (
-                              <li key={row.product.id}><span><b>{row.product.name}</b><small>{row.product.sku}</small></span><strong>{formatInventoryQuantity(row.waste, row.product.unit)}</strong></li>
-                            ))}
-                          </ul>
-                        ) : <p>Chưa ghi nhận hao hụt trong kỳ.</p>}
-                      </aside>
-                    </div>
-                  </section>
-                )}
-              </div>
-              <section className="inventory-shift-reconciliation">
-                <header className="inventory-shift-reconciliation-head">
-                  <div>
-                    <span className="eyebrow dark">ĐỐI CHIẾU THEO CA</span>
-                    <h3>Xuất bán và tồn bàn giao</h3>
-                    <p>Out chính thức = Tồn đầu + Nhập thêm − Tồn bàn giao − Hao hụt. POS chỉ dùng để đối chiếu, không trừ kho lần hai.</p>
-                  </div>
-                  <div className="inventory-shift-period-fields">
-                    <label>Từ ngày
-                      <input type="date" max={to} value={from} onChange={(event) => { if (event.target.value) setFrom(event.target.value) }} required />
-                    </label>
-                    <label>Đến ngày
-                      <input type="date" min={from} value={to} onChange={(event) => { if (event.target.value) setTo(event.target.value) }} required />
-                    </label>
-                  </div>
-                </header>
-                <div className="inventory-shift-reconciliation-summary">
-                  <span><small>Ca đã bàn giao</small><strong>{inventoryClosedShiftCount}/{inventoryShiftReconciliationRows.length} ca</strong></span>
-                  <span><small>Ca cần xem</small><strong>{inventoryShiftIssueRows.length} ca</strong></span>
-                  <span><small>POS đã bán</small><strong>{inventoryShiftPosSummary}</strong></span>
-                  <span><small>Out chính thức</small><strong>{inventoryShiftOfficialOutSummary}</strong></span>
-                  <span><small>Phiếu xuất riêng</small><strong>{inventoryDailyOutboundDocumentCount} phiếu · {inventoryDailyOutboundSummary}</strong></span>
+                        {/* Một series một màu ⇒ không cần chú giải; tiêu đề đã nói rõ. */}
+                        <Bar dataKey="kg" fill="#c8322f" radius={[4, 4, 0, 0]} maxBarSize={28} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : <EmptyState title="Không có hao hụt" description="Chưa ghi nhận hao hụt nào trong phạm vi đang xem." />}
                 </div>
-                {/* Mặc định chỉ hiện ca ĐANG MỞ hoặc ca có SKU lệch — chọn một
-                    tháng là hàng trăm ca, mà ca khớp số thì không cần đọc. */}
-                {inventoryShiftIssueRows.length > 0 && inventoryShiftIssueRows.length < inventoryShiftReconciliationRows.length && (
-                  <div className="admin-stock-chips" role="group" aria-label="Lọc ca đối chiếu">
-                    <button
-                      type="button"
-                      className={inventoryShiftOnlyIssues ? 'is-active' : ''}
-                      aria-pressed={inventoryShiftOnlyIssues}
-                      onClick={() => setInventoryShiftOnlyIssues(true)}
-                    >Ca cần xem ({inventoryShiftIssueRows.length})</button>
-                    <button
-                      type="button"
-                      className={!inventoryShiftOnlyIssues ? 'is-active' : ''}
-                      aria-pressed={!inventoryShiftOnlyIssues}
-                      onClick={() => setInventoryShiftOnlyIssues(false)}
-                    >Tất cả ({inventoryShiftReconciliationRows.length})</button>
-                  </div>
-                )}
-                <div className="inventory-shift-reconciliation-table" role="table" aria-label={`Đối chiếu xuất bán theo ca từ ${formatDate(from)} đến ${formatDate(to)}`}>
-                  <div className="inventory-shift-reconciliation-table-head" role="row">
-                    <span>Chi nhánh / ca</span>
-                    <span>Trạng thái</span>
-                    <span>Tồn đầu</span>
-                    <span>Nhập thêm</span>
-                    <span>POS đã bán</span>
-                    <span>Hao hụt</span>
-                    <span>Tồn bàn giao</span>
-                    <span>Out chính thức</span>
-                    <span>Chênh lệch</span>
-                  </div>
-                  {inventoryShiftVisibleRows.map((row) => (
-                    <article className={`inventory-shift-reconciliation-row ${row.status}`} role="row" key={row.sessionId}>
-                      <span data-label="Chi nhánh / ca" role="cell">
-                        <strong>{branchName(row.branchId)}</strong>
-                        <small>{formatDate(row.businessDate)} · Ca {row.sequence} · {formatShiftTime(row.startedAt, row.endedAt)}</small>
+
+                <DataList columns="minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr) auto">
+                  <DataHead>
+                    <span>Kỳ</span>
+                    <span>Chi nhánh nhiều nhất</span>
+                    <span className="gt-cell--num">Số lượt</span>
+                    <span className="gt-cell--num">Hao hụt</span>
+                  </DataHead>
+                  {inventoryWasteSeries.slice().reverse().map((row) => (
+                    <DataRow key={row.key}>
+                      <span data-gt-primary><strong>{row.label}</strong><small>{row.topProduct || '—'}</small></span>
+                      <span data-gt-label="Chi nhánh">{row.topBranch || '—'}</span>
+                      <span className="gt-cell--num" data-gt-label="Số lượt">{row.count}</span>
+                      <span className="gt-cell--num" data-gt-trailing>
+                        <b className="gt-delta-out">{row.summary}</b>
                       </span>
-                      <span data-label="Trạng thái" role="cell">
-                        <b className={`inventory-shift-status ${row.status}`}>
-                          {row.status === 'open' ? 'Ca đang mở · POS tạm tính' : 'Đã bàn giao'}
-                        </b>
-                        <small>{row.receiptCount} hóa đơn · {formatMoney(row.posRevenue)}</small>
-                      </span>
-                      <span data-label="Tồn đầu" role="cell"><b>{row.openingSummary}</b></span>
-                      <span data-label="Nhập thêm" role="cell"><b>{row.additionSummary}</b></span>
-                      <span data-label="POS đã bán" role="cell"><b>{row.posNativeSummary}</b><small>{row.posEquivalentSummary}</small></span>
-                      <span data-label="Hao hụt" role="cell"><b>{row.wasteSummary}</b></span>
-                      <span data-label="Tồn bàn giao" role="cell"><b>{row.closingSummary}</b></span>
-                      <span data-label="Out chính thức" role="cell"><b>{row.officialOutSummary}</b></span>
-                      <span data-label="Chênh lệch" role="cell"><b className={row.differenceTone}>{row.differenceLabel}</b></span>
-                      <details className="inventory-shift-reconciliation-details">
-                        <summary>Chi tiết đối chiếu theo SKU</summary>
-                        <div className="inventory-shift-reconciliation-lines">
-                          <div className="inventory-shift-reconciliation-line head">
-                            <span>Sản phẩm nguồn</span><span>Tồn đầu</span><span>Nhập thêm</span><span>Sửa tồn</span><span>POS quy đổi</span>
-                            <span>Hao hụt</span><span>Tồn cuối</span><span>Out</span><span>Lệch</span>
-                          </div>
-                          {row.lines.map((line) => (
-                            <div className="inventory-shift-reconciliation-line" key={line.productId}>
-                              <span data-label="Sản phẩm nguồn"><strong>{line.productName}</strong><small>{line.sku}</small></span>
-                              <span data-label="Tồn đầu">{formatInventoryQuantity(line.opening, line.unit)}</span>
-                              <span data-label="Nhập thêm">{formatInventoryQuantity(line.additions, line.unit)}</span>
-                              <span data-label="Sửa tồn">{line.adjust ? formatInventoryDelta(line.adjust, line.unit) : '—'}</span>
-                              <span data-label="POS quy đổi">{formatInventoryQuantity(line.posEquivalent, line.unit)}</span>
-                              <span data-label="Hao hụt">{formatInventoryQuantity(line.waste, line.unit)}</span>
-                              <span data-label="Tồn cuối">{line.closing === null ? 'Chưa bàn giao' : formatInventoryQuantity(line.closing, line.unit)}</span>
-                              <span data-label="Out">{line.officialOut === null ? 'Chưa chốt' : formatInventoryQuantity(line.officialOut, line.unit)}</span>
-                              <span data-label="Lệch">{line.difference === null ? 'Chưa đối chiếu' : formatInventoryQuantity(line.difference, line.unit)}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </details>
-                    </article>
+                    </DataRow>
                   ))}
-                  {!inventoryShiftReconciliationRows.length && <p className="empty-copy">Không có ca vận hành trong khoảng ngày và chi nhánh đã chọn.</p>}
-                </div>
-              </section>
-              {canOpenAdminConsole(user.role) && <>
-              {/* Sổ phát sinh kho: lọc theo loại phiếu + tìm không dấu + phân trang.
-                  Bản cũ đổ thẳng mọi phiếu của kỳ ra một khối duy nhất. */}
-              <div className="admin-ledger-filterbar">
-                <label className="admin-stock-search">
-                  <span aria-hidden="true">⌕</span>
-                  <input
-                    value={inventoryLedgerSearch}
-                    onChange={(event) => { setInventoryLedgerSearch(event.target.value); setInventoryLedgerPage(1) }}
-                    placeholder="Tìm mặt hàng, SKU hoặc ghi chú phiếu"
-                    aria-label="Tìm trong sổ phát sinh kho"
-                  />
-                </label>
-                <div className="admin-stock-chips" role="group" aria-label="Lọc loại phiếu kho">
-                  <button
-                    type="button"
-                    className={inventoryLedgerType === 'all' ? 'is-active' : ''}
-                    aria-pressed={inventoryLedgerType === 'all'}
-                    onClick={() => { setInventoryLedgerType('all'); setInventoryLedgerPage(1) }}
-                  >Tất cả ({inventoryLedgerRows.length})</button>
-                  {(Object.keys(MOVEMENT_LABELS) as Array<StockMovement['type']>)
-                    .filter((type) => (inventoryLedgerTypeCounts.get(type) || 0) > 0)
-                    .map((type) => (
-                      <button
-                        key={type}
-                        type="button"
-                        className={inventoryLedgerType === type ? 'is-active' : ''}
-                        aria-pressed={inventoryLedgerType === type}
-                        onClick={() => { setInventoryLedgerType(type); setInventoryLedgerPage(1) }}
-                      >{MOVEMENT_LABELS[type]} ({inventoryLedgerTypeCounts.get(type)})</button>
+                  {!inventoryWasteSeries.length && (
+                    <EmptyState title="Không có hao hụt" description="Chưa ghi nhận hao hụt nào." />
+                  )}
+                </DataList>
+
+                {/* Từng dòng hao hụt của kỳ đang lọc — số gộp ở trên trả lời
+                    "bao nhiêu", danh sách này trả lời "của cái gì, vì sao". */}
+                <details className="gt-fold">
+                  <summary>
+                    <strong>Chi tiết từng dòng</strong>
+                    <small>{inventoryWasteDetailRows.length} dòng trong kỳ {formatDate(from)}{from === to ? '' : ` → ${formatDate(to)}`}</small>
+                  </summary>
+                  <DataList columns="minmax(0, 1.8fr) minmax(0, 1fr) auto">
+                    {inventoryWasteDetailRows.map((row) => (
+                      <DataRow key={row.id}>
+                        <span data-gt-primary>
+                          <strong>{row.kind === 'processing' ? 'Chế biến' : 'Kho'} · {row.productName}</strong>
+                          <small>
+                            {formatDate(row.shiftDate)} · {row.sku}
+                            {row.sourceProductName ? ` · nguồn ${row.sourceProductName}` : ''}
+                            {row.note ? ` · ${row.note}` : ''}
+                          </small>
+                        </span>
+                        <span data-gt-label="Chi nhánh">{branchName(row.branchId)}</span>
+                        <span className="gt-cell--num" data-gt-trailing>
+                          <b className="gt-delta-out">{formatInventoryQuantity(row.quantity, row.unit)}</b>
+                        </span>
+                      </DataRow>
                     ))}
-                </div>
-              </div>
-              <div className="admin-inventory-ledger" role="table" aria-label="Danh sách phát sinh kho">
-                <div className="admin-inventory-ledger-head" role="row">
-                  <span>Ngày</span>
-                  <span>Chi nhánh</span>
-                  <span>Loại</span>
-                  <span>Thành phẩm / SKU</span>
-                  <span>Số lượng</span>
-                  <span>Người nhập</span>
-                  <span>Ghi chú</span>
-                </div>
-                {inventoryLedgerByDay.map(([date, rows], index) => (
-                  <details className="admin-ledger-day" key={date} open={index === 0}>
+                    {!inventoryWasteDetailRows.length && (
+                      <EmptyState title="Không có hao hụt" description="Chưa ghi nhận hao hụt trong kỳ đang lọc." />
+                    )}
+                  </DataList>
+                </details>
+              </Surface>
+
+              {/* Đối soát ca + sổ phát sinh: nằm THẲNG trên trang, thu gọn sẵn
+                  để không chiếm chỗ — không giấu sau menu như bản trước. */}
+              <Surface>
+                <details className="gt-fold">
+                  <summary>
+                    <strong>Đối soát theo ca</strong>
+                    <small>{inventoryClosedShiftCount}/{inventoryShiftReconciliationRows.length} ca đã bàn giao · {inventoryShiftIssueRows.length} ca cần xem</small>
+                  </summary>
+                  <div className="gt-pad">
+                    <SummaryLine items={[
+                      { text: `POS đã bán ${inventoryShiftPosSummary}` },
+                      { text: `Out chính thức ${inventoryShiftOfficialOutSummary}` },
+                      { text: `Phiếu xuất riêng ${inventoryDailyOutboundDocumentCount} phiếu · ${inventoryDailyOutboundSummary}` },
+                    ]} />
+                    <p className="gt-metric__hint">Out chính thức = Tồn đầu + Nhập thêm − Tồn bàn giao − Hao hụt. POS chỉ để đối chiếu, không trừ kho lần hai.</p>
+                  </div>
+                  <DataList columns="minmax(0, 1.6fr) minmax(0, 1fr) auto">
+                    {inventoryShiftVisibleRows.map((row) => (
+                      <DataRow key={row.sessionId}>
+                        <span data-gt-primary>
+                          <strong>{branchName(row.branchId)} · Ca {row.sequence}</strong>
+                          <small>{formatDate(row.businessDate)} · {formatShiftTime(row.startedAt, row.endedAt)} · {row.receiptCount} hóa đơn</small>
+                          <small>Tồn đầu {row.openingSummary} · Nhập {row.additionSummary} · POS {row.posNativeSummary} · Hao hụt {row.wasteSummary} · Tồn bàn giao {row.closingSummary}</small>
+                        </span>
+                        <span data-gt-label="Trạng thái">
+                          {row.status === 'open' ? <StatusBadge tone="info">Ca đang mở</StatusBadge> : <StatusBadge tone="good">Đã bàn giao</StatusBadge>}
+                        </span>
+                        <span className="gt-cell--num" data-gt-trailing><b className={row.differenceTone}>{row.differenceLabel}</b></span>
+                      </DataRow>
+                    ))}
+                    {!inventoryShiftReconciliationRows.length && (
+                      <EmptyState title="Không có ca vận hành" description="Không có ca nào trong khoảng ngày và chi nhánh đã chọn." />
+                    )}
+                  </DataList>
+                </details>
+              </Surface>
+
+              {canOpenAdminConsole(user.role) && (
+                <Surface>
+                  <details className="gt-fold">
                     <summary>
-                      <span><strong>{formatDate(date)}</strong><small>{rows.length} phát sinh kho</small></span>
-                      <span className="admin-ledger-day-count">{new Set(rows.map((row) => row.branchId)).size} chi nhánh</span>
+                      <strong>Sổ phát sinh kho</strong>
+                      <small>{inventoryLedgerFilteredRows.length}/{inventoryLedgerRows.length} phiếu · {formatDate(from)}{from === to ? '' : ` → ${formatDate(to)}`}</small>
                     </summary>
-                    {rows.map((movement) => {
-                      const product = productById(movement.productId)
-                      const creator = employees.find((employee) => employee.id === movement.createdBy)
-                      return (
-                        <article className="admin-inventory-ledger-row" role="row" key={movement.id}>
-                          <span data-label="Ngày"><strong>{formatDate(movement.shiftDate)}</strong><small>{formatDateTime(movement.createdAt)}</small></span>
-                          <span data-label="Chi nhánh">{branchName(movement.branchId)}</span>
-                          <span data-label="Loại"><b className={`inventory-movement-chip ${movement.type}`}>{MOVEMENT_LABELS[movement.type]}</b></span>
-                          <span data-label="Thành phẩm / SKU"><strong>{product?.name || movement.productId}</strong><small>{product?.sku || '-'}</small></span>
-                          <span data-label="Số lượng"><b>{formatInventoryQuantity(movement.quantity, product?.unit || 'đơn vị')}</b></span>
-                          <span data-label="Người nhập">{creator?.name || movement.createdBy || '-'}</span>
-                          <span data-label="Ghi chú">{movement.note || '-'}</span>
-                        </article>
-                      )
-                    })}
+                    <Toolbar>
+                      <SearchInput
+                        value={inventoryLedgerSearch}
+                        onChange={(value) => { setInventoryLedgerSearch(value); setInventoryLedgerPage(1) }}
+                        placeholder="Tìm mặt hàng, SKU hoặc ghi chú phiếu"
+                        label="Tìm trong sổ phát sinh kho"
+                      />
+                      <div className="gt-chips" role="group" aria-label="Lọc loại phiếu kho">
+                        <button
+                          type="button"
+                          className={inventoryLedgerType === 'all' ? 'is-active' : ''}
+                          onClick={() => { setInventoryLedgerType('all'); setInventoryLedgerPage(1) }}
+                        >Tất cả ({inventoryLedgerRows.length})</button>
+                        {(Object.keys(MOVEMENT_LABELS) as Array<StockMovement['type']>)
+                          .filter((type) => (inventoryLedgerTypeCounts.get(type) || 0) > 0)
+                          .map((type) => (
+                            <button
+                              key={type}
+                              type="button"
+                              className={inventoryLedgerType === type ? 'is-active' : ''}
+                              onClick={() => { setInventoryLedgerType(type); setInventoryLedgerPage(1) }}
+                            >{MOVEMENT_LABELS[type]} ({inventoryLedgerTypeCounts.get(type)})</button>
+                          ))}
+                      </div>
+                    </Toolbar>
+                    <DataList columns="minmax(0, 1.6fr) minmax(0, 1fr) auto">
+                      {inventoryLedgerByDay.map(([date, rows]) => (
+                        <Fragment key={date}>
+                          <DataHead><span>{formatDate(date)}</span><span>{rows.length} phát sinh</span><span /></DataHead>
+                          {rows.map((movement) => {
+                            const product = productById(movement.productId)
+                            const creator = employees.find((employee) => employee.id === movement.createdBy)
+                            const outbound = ['processing_out', 'packing_out', 'sale_out', 'waste'].includes(movement.type)
+                            return (
+                              <DataRow key={movement.id}>
+                                <span data-gt-primary>
+                                  <strong>{MOVEMENT_LABELS[movement.type]} · {product?.name || movement.productId}</strong>
+                                  <small>{branchName(movement.branchId)} · {formatDateTime(movement.createdAt)}{creator?.name ? ` · ${creator.name}` : ''}{movement.note ? ` · ${movement.note}` : ''}</small>
+                                </span>
+                                <span data-gt-label="SKU">{product?.sku || '—'}</span>
+                                <span className="gt-cell--num" data-gt-trailing>
+                                  <b className={outbound ? 'gt-delta-out' : 'gt-delta-in'}>
+                                    {movement.type === 'count' ? '' : outbound ? '−' : '+'}{formatInventoryQuantity(movement.quantity, product?.unit || 'đơn vị')}
+                                  </b>
+                                </span>
+                              </DataRow>
+                            )
+                          })}
+                        </Fragment>
+                      ))}
+                      {!inventoryLedgerFilteredRows.length && (
+                        <EmptyState title="Không có phát sinh kho" description="Chưa có phiếu kho nào khớp bộ lọc." />
+                      )}
+                    </DataList>
+                    {inventoryLedgerFilteredRows.length > 0 && <Pagination
+                      total={inventoryLedgerFilteredRows.length}
+                      page={inventoryLedgerSafePage}
+                      pageSize={inventoryLedgerPageSize}
+                      pageSizeOptions={[25, 50, 100]}
+                      onPageChange={setInventoryLedgerPage}
+                      onPageSizeChange={(size) => { setInventoryLedgerPageSize(size); setInventoryLedgerPage(1) }}
+                    />}
                   </details>
-                ))}
-                {!inventoryLedgerFilteredRows.length && <p className="empty-copy">
-                  {inventoryLedgerRows.length
-                    ? 'Không có phiếu kho nào khớp bộ lọc hiện tại.'
-                    : 'Không có phát sinh kho trong khoảng đã chọn.'}
-                </p>}
-              </div>
-              {inventoryLedgerFilteredRows.length > 0 && <Pagination
-                total={inventoryLedgerFilteredRows.length}
-                page={inventoryLedgerSafePage}
-                pageSize={inventoryLedgerPageSize}
-                pageSizeOptions={[25, 50, 100]}
-                onPageChange={setInventoryLedgerPage}
-                onPageSizeChange={(size) => { setInventoryLedgerPageSize(size); setInventoryLedgerPage(1) }}
-              />}
-              </>}
-            </section>
+                </Surface>
+              )}
+            </div>
           )}
 
           {/* ===== ĐẶT HÀNG ===== */}
@@ -3483,7 +4298,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     setCrmEmployeeId('')
                     setBranchProfileTab('overview')
                   }}
-                  onDeleteBranch={user.role === 'admin' ? (branch) => void removeBranchFromOperations(branch) : undefined}
+                  onDeleteBranch={canOperateConsole(user.role) ? (branch) => void removeBranchFromOperations(branch) : undefined}
                 />
               )}
               {!crmEmployeeId && !crmBranchId && accountsDirectory === 'branches' && showCreateBranch && !readOnly && (
@@ -3742,7 +4557,15 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                           </label>
                           <label>Ngày bắt đầu<input type="date" value={employeeCrmDraft.employmentStartDate} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, employmentStartDate: event.target.value })} /></label>
                           <label>Kết thúc thử việc<input type="date" value={employeeCrmDraft.probationEndDate} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, probationEndDate: event.target.value })} /></label>
-                          {employeeCrmDraft.employmentStatus === 'ended' && <label>Ngày nghỉ việc<input type="date" required value={employeeCrmDraft.employmentEndDate} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, employmentEndDate: event.target.value })} /></label>}
+                          {/* KHÔNG đặt `required`: bản cũ vừa bắt buộc ở đây vừa chặn ở RPC nên
+                              Admin không chuyển nổi hồ sơ sang Nghỉ việc khi chưa nhớ ngày. */}
+                          {employeeCrmDraft.employmentStatus === 'ended' && <label>Ngày nghỉ việc <small>(không bắt buộc)</small>
+                            <input type="date" value={employeeCrmDraft.employmentEndDate} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, employmentEndDate: event.target.value })} />
+                          </label>}
+                          {employeeCrmDraft.employmentStatus === 'ended' && <p className="admin-crm-lifecycle-hint wide">
+                            Để trống thì hệ thống lấy hôm nay làm ngày nghỉ. Người này sẽ <b>không còn trong bảng thi đua</b> và
+                            không xuất hiện ở <b>báo cáo các kỳ sau</b>; số liệu những kỳ họ đã đi làm vẫn giữ nguyên.
+                          </p>}
                           <label className="wide">Ghi chú quản lý<textarea value={employeeCrmDraft.employmentNote} maxLength={2000} onChange={(event) => setEmployeeCrmDraft({ ...employeeCrmDraft, employmentNote: event.target.value })} /></label>
                           <button type="button" className="primary-button" disabled={employeeCrmSaving} onClick={() => void saveEmployeeCrm(employee)}>{employeeCrmSaving ? 'Đang lưu…' : 'Lưu trạng thái việc làm'}</button>
                         </div>
@@ -3842,6 +4665,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                       setAccountEmploymentType('leader')
                       setAccountPositionTitle('Ca trưởng')
                     }
+                    if (role === 'shift_deputy') {
+                      setAccountEmploymentType('leader')
+                      setAccountPositionTitle('Ca phó')
+                    }
                   }}>
                     {ROLE_OPTIONS.map((role) => <option key={role.value} value={role.value}>{roleLabel(role.value, lang)}</option>)}
                   </select>
@@ -3898,80 +4725,137 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
 
         </div>
       </div>
+
+      {/* ───────────── Drawer của màn Doanh thu ─────────────
+          Đây là nơi ở mới của những khối đã bị gỡ khỏi màn chính: danh sách hóa
+          đơn, bảng doanh thu theo ngày, danh sách món và hiệu suất nhân viên
+          đầy đủ. Chuyển vị trí — KHÔNG xoá (§28, §86). */}
+      <Drawer
+        open={revenueTransactionsOpen}
+        onClose={() => setRevenueTransactionsOpen(false)}
+        title="Giao dịch"
+        subtitle={`${overviewBillRows.length} hóa đơn · ${formatDate(from)}${from === to ? '' : ` → ${formatDate(to)}`}`}
+        wide
+      >
+        <DataList columns="minmax(0, 1fr) auto">
+          {revenueTransactionsRows.map((receipt) => (
+            <DataRow key={receipt.id}>
+              <span data-gt-primary>
+                <strong>{receipt.code || 'Bill POS'}</strong>
+                <small>{formatDateTime(receipt.createdAt)} · {branchName(receipt.branchId)}{receipt.sellerName ? ` · ${receipt.sellerName}` : ''}</small>
+              </span>
+              <span className="gt-cell--num" data-gt-trailing>
+                <b>{formatMoney(receipt.totalAmount)}</b>
+                <small>{formatNumber(receipt.totalQuantity)} sản phẩm</small>
+              </span>
+            </DataRow>
+          ))}
+          {!overviewBillRows.length && <EmptyState title="Không có giao dịch" description="Chưa phát sinh hóa đơn trong khoảng thời gian này." />}
+        </DataList>
+        {overviewBillRows.length > revenueTransactionsPageSize && (
+          <Pagination
+            total={overviewBillRows.length}
+            page={revenueTransactionsSafePage}
+            pageSize={revenueTransactionsPageSize}
+            pageSizeOptions={[revenueTransactionsPageSize]}
+            onPageChange={setRevenueTransactionsPage}
+            onPageSizeChange={() => undefined}
+          />
+        )}
+      </Drawer>
+
+      <Drawer
+        open={revenueDailyOpen}
+        onClose={() => setRevenueDailyOpen(false)}
+        title="Doanh thu theo ngày"
+        subtitle={`${periodRevenueRows.length} ngày có doanh thu`}
+        wide
+      >
+        <DataList columns="minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) auto">
+          <DataHead>
+            <span>Ngày / chi nhánh</span>
+            <span className="gt-cell--num">Sản phẩm</span>
+            <span className="gt-cell--num">Doanh thu</span>
+            <span>Trạng thái</span>
+          </DataHead>
+          {periodRevenueRows.map((snap) => (
+            <DataRow key={snap.id}>
+              <span data-gt-primary><strong>{formatDate(snap.reportDate)}</strong><small>{branchName(snap.branchId)}</small></span>
+              <span className="gt-cell--num" data-gt-label="Sản phẩm">{snap.totalSold || 0}</span>
+              <span className="gt-cell--num" data-gt-label="Doanh thu">
+                <b>{formatMoney(snap.revenue)}</b>
+                {snap.kpi !== undefined && <small>KPI {snap.kpi}%{snap.grade ? ` · ${snap.grade}` : ''}</small>}
+              </span>
+              <span data-gt-trailing>
+                {snap.source === 'report'
+                  ? <StatusBadge tone="good">Đã chốt</StatusBadge>
+                  : <StatusBadge tone="info">Tạm tính</StatusBadge>}
+              </span>
+            </DataRow>
+          ))}
+          {!periodRevenueRows.length && (
+            <EmptyState
+              title="Chưa có báo cáo doanh thu"
+              description="Báo cáo sẽ xuất hiện sau khi ca trưởng chốt báo cáo cuối ngày."
+            />
+          )}
+        </DataList>
+      </Drawer>
+
+      <Drawer
+        open={revenueProductsOpen}
+        onClose={() => setRevenueProductsOpen(false)}
+        title="Món đóng góp doanh thu"
+        subtitle={`${businessProductRows.length} mặt hàng`}
+      >
+        {businessProductRows.map((row) => (
+          <RankBar
+            key={row.productId}
+            name={row.productName}
+            value={formatMoney(row.revenue)}
+            meta={`${formatNumber(row.quantity)} sản phẩm`}
+            share={row.revenue / Math.max(1, businessProductRows[0]?.revenue || 1)}
+            tone="info"
+          />
+        ))}
+        {!businessProductRows.length && <EmptyState title="Chưa có món nào" description="Chưa ghi nhận sản phẩm bán ra trong khoảng này." />}
+      </Drawer>
+
+      <Drawer
+        open={revenueSellersOpen}
+        onClose={() => setRevenueSellersOpen(false)}
+        title="Hiệu suất nhân viên"
+        subtitle={`${revenueSellerRows.length} người có doanh số`}
+        wide
+      >
+        <DataList columns="minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr)">
+          <DataHead>
+            <span>Nhân viên</span>
+            <span className="gt-cell--num">Đơn hàng</span>
+            <span className="gt-cell--num">Doanh thu</span>
+          </DataHead>
+          {revenueSellerRows.map((row) => (
+            <DataRow key={row.key}>
+              <span data-gt-primary><strong>{row.name}</strong><small>{branchName(row.branchId)}</small></span>
+              <span className="gt-cell--num" data-gt-label="Đơn hàng">{row.orders}</span>
+              <span className="gt-cell--num" data-gt-trailing><b>{formatMoney(row.revenue)}</b></span>
+            </DataRow>
+          ))}
+          {!revenueSellerRows.length && <EmptyState title="Chưa có nhân viên nào bán hàng" description="Chưa có hóa đơn POS trong bộ lọc này." />}
+        </DataList>
+      </Drawer>
+
+
     </div>
   )
 }
 
-const BUSINESS_CHART_COLORS = ['#c7e9f1', '#ffd6de', '#d8efd3', '#ffe8b8', '#d9d0ff', '#cde7ff']
 
 interface BusinessProductRow {
   productId: string
   productName: string
   quantity: number
   revenue: number
-}
-
-function BusinessProductCharts({ rows }: { rows: BusinessProductRow[] }) {
-  const topRows = rows.slice(0, 6)
-  const maxRevenue = Math.max(1, ...topRows.map((row) => row.revenue))
-  const totalRevenue = topRows.reduce((sum, row) => sum + row.revenue, 0)
-  if (!topRows.length) {
-    return (
-      <section className="section-card business-product-charts empty">
-        <div className="section-title">
-          <div><span className="eyebrow dark">MẶT HÀNG</span><h2>Món bán chạy nhất</h2></div>
-        </div>
-        <p className="empty-copy">Chưa có hóa đơn POS trong bộ lọc này.</p>
-      </section>
-    )
-  }
-  let cursor = 0
-  const pieStops = topRows.map((row, index) => {
-    const start = cursor
-    const size = row.revenue / Math.max(totalRevenue, 1) * 100
-    cursor += size
-    return `${BUSINESS_CHART_COLORS[index % BUSINESS_CHART_COLORS.length]} ${start}% ${cursor}%`
-  }).join(', ')
-  return (
-    <section className="section-card business-product-charts">
-      <div className="business-product-bars">
-        <div className="section-title">
-          <div><span className="eyebrow dark">MẶT HÀNG</span><h2>Món bán chạy nhất</h2></div>
-          <span className="date-chip">{formatMoney(totalRevenue)}</span>
-        </div>
-        {topRows.map((row, index) => (
-          <article key={row.productId}>
-            <span className="business-product-swatch" style={{ background: BUSINESS_CHART_COLORS[index % BUSINESS_CHART_COLORS.length] }} />
-            <div>
-              <div className="business-product-line">
-                <strong>{row.productName}</strong>
-                <b>{formatMoney(row.revenue)}</b>
-              </div>
-              <i><em style={{ width: `${Math.max(8, row.revenue / maxRevenue * 100)}%`, background: BUSINESS_CHART_COLORS[index % BUSINESS_CHART_COLORS.length] }} /></i>
-              <small>{formatNumber(row.quantity)} đơn vị bán</small>
-            </div>
-          </article>
-        ))}
-      </div>
-      <div className="business-product-pie">
-        <div className="section-title">
-          <div><span className="eyebrow dark">TỶ TRỌNG</span><h2>Doanh thu theo món</h2></div>
-        </div>
-        <div className="business-product-donut" style={{ background: `conic-gradient(${pieStops})` }}>
-          <span>{topRows.length}</span>
-          <small>món</small>
-        </div>
-        <div className="business-product-legend">
-          {topRows.map((row, index) => (
-            <span key={row.productId}>
-              <i style={{ background: BUSINESS_CHART_COLORS[index % BUSINESS_CHART_COLORS.length] }} />
-              {row.productName}
-            </span>
-          ))}
-        </div>
-      </div>
-    </section>
-  )
 }
 
 function EmployeeRevenueChart({ rows }: { rows: ReturnType<typeof buildCompetitionRows> }) {
@@ -4031,6 +4915,7 @@ function CompetitionClassificationTable({
   allocations,
   sessions,
   receipts,
+  leaderShiftRevenue,
   capacityByKey,
   capacityMetric,
   teamAverage,
@@ -4050,6 +4935,8 @@ function CompetitionClassificationTable({
   allocations: BagAllocation[]
   sessions: BagShiftSession[]
   receipts: SalesReceipt[]
+  /** Doanh thu ca trưởng theo ca làm — nguồn đối chiếu phải khớp doanh thu đã cộng. */
+  leaderShiftRevenue?: ReturnType<typeof buildShiftLeaderRecordedRevenue>
   capacityByKey: Map<string, SalesCapacityRow>
   capacityMetric: SalesCapacityMetric
   teamAverage: number
@@ -4059,8 +4946,8 @@ function CompetitionClassificationTable({
   const [detailTab, setDetailTab] = useState<'sources' | 'days'>('sources')
   useEffect(() => setExpandedRowKey(null), [title])
   const sourcesByRow = useMemo(
-    () => buildCompetitionSourcesByRow(rows, mode, from, to, allocations, sessions, receipts),
-    [allocations, from, mode, receipts, rows, sessions, to],
+    () => buildCompetitionSourcesByRow(rows, mode, from, to, allocations, sessions, receipts, leaderShiftRevenue),
+    [allocations, from, mode, receipts, rows, sessions, to, leaderShiftRevenue],
   )
 
   return <section className={`competition-classification-table${showReward ? ' with-reward' : ''}`} aria-label={title}>
@@ -4145,10 +5032,18 @@ function CompetitionClassificationTable({
                 ? `${capacity.teamRatio >= 100 ? '+' : '−'}${formatNumber(Math.abs(capacity.teamRatio - 100))}% so với TB đội`
                 : 'Chưa đủ dữ liệu so sánh'}</small>
           </span>
-          <span data-label="Xếp loại KPI" role="cell"><b>{row.rank}</b><small>{formatNumber(row.progress)}%</small></span>
+          {/* Ca trưởng chưa có chỉ tiêu (từ 01/08/2026) ⇒ không xếp hạng. Để trống
+              chứ không hiện "D 0%" — đọc như bị đánh giá kém trong khi chưa chấm. */}
+          <span data-label="Xếp loại KPI" role="cell">
+            <b>{row.rank || '—'}</b>
+            <small>{row.rank ? `${formatNumber(row.progress)}%` : 'Chưa chấm KPI'}</small>
+          </span>
           {showReward && <span data-label="Thưởng KPI" role="cell" className={`competition-classification-reward${row.commission > 0 ? ' earned' : ''}`}>
             <b>{formatMoney(row.commission)}</b>
-            <small>{row.commission > 0 ? 'Đã đạt thưởng ngày/tuần' : 'Chưa đạt ngưỡng ngày/tuần'}</small>
+            <small>{row.rewardLabels?.length
+              ? row.rewardLabels.join(' · ')
+              : 'Chưa đạt ngưỡng thưởng trong kỳ'}</small>
+            {!!row.pendingBonus && <small className="pending">Chờ xác nhận: {formatMoney(row.pendingBonus)} · {row.pendingRewardLabels?.join(' · ')}</small>}
           </span>}
         </div>
         {expanded && <div id={detailId} className="competition-drilldown-panel" role="region" aria-label={`Chi tiết của ${row.employeeName}`}>
@@ -4184,7 +5079,9 @@ function CompetitionClassificationTable({
             </p>}
             <div className="competition-drilldown-list">
               {sources.map((source) => <article key={`${source.kind}-${source.id}`}>
-                <span className={`competition-source-kind ${source.kind}`}>{source.kind === 'receipt' ? 'Hóa đơn' : 'Giao túi'}</span>
+                <span className={`competition-source-kind ${source.kind}`}>{source.kind === 'adjustment'
+                  ? 'Bổ sung KPI'
+                  : source.kind === 'receipt' ? 'Hóa đơn' : 'Giao túi'}</span>
                 <div>
                   <strong>{source.heading}</strong>
                   <p>{source.detail}</p>
@@ -4229,7 +5126,7 @@ function CompetitionClassificationTable({
 
 interface CompetitionDrilldownDisplaySource {
   id: string
-  kind: 'allocation' | 'receipt'
+  kind: 'allocation' | 'receipt' | 'adjustment'
   businessDate: string
   createdAt: string
   soldQuantity: number
@@ -4251,10 +5148,11 @@ function buildCompetitionSourcesByRow(
   allocations: BagAllocation[],
   sessions: BagShiftSession[],
   receipts: SalesReceipt[],
+  leaderShiftRevenue?: ReturnType<typeof buildShiftLeaderRecordedRevenue>,
 ) {
   const result = new Map<string, CompetitionDrilldownDisplaySource[]>()
   if (mode === 'leaders') {
-    const leaderSources = buildShiftLeaderReceiptSources(sessions, receipts, {
+    const leaderSources = buildShiftLeaderReceiptSources(sessions, receipts.filter((receipt) => !isKpiAdjustmentReceipt(receipt)), {
       branchIds: Array.from(new Set(rows.map((row) => row.branchId))),
       from,
       to,
@@ -4284,7 +5182,29 @@ function buildCompetitionSourcesByRow(
     return result
   }
 
+  // Ca trưởng (từ 01/08/2026) ăn doanh thu theo CA LÀM, nên nguồn đối chiếu phải
+  // đọc từ CHÍNH bộ hóa đơn đã cộng vào doanh thu đó. Dò lại theo `seller_id` như
+  // nhân viên thường sẽ ra 0 nguồn và cột "Kết quả" báo "Lệch" oan — đúng lỗi đã
+  // thấy trong file Excel ngày 11/08/2026.
+  const leaderRecorded = leaderShiftRevenue
   rows.forEach((row) => {
+    const recorded = leaderRecorded?.get(`${row.branchId}|${row.employeeKey}`)
+    if (recorded) {
+      result.set(competitionRowKey(row), recorded.sources.map((source) => ({
+        id: source.ownBillOutsideShift ? `own-${source.receipt.id}` : `${source.sessionId}-${source.receipt.id}`,
+        kind: 'receipt' as const,
+        businessDate: source.businessDate,
+        createdAt: source.receipt.createdAt,
+        soldQuantity: source.receipt.totalQuantity,
+        revenue: source.receipt.totalAmount,
+        heading: source.receipt.code || 'Hóa đơn POS',
+        sourceCode: source.receipt.code || '',
+        shiftLabel: source.ownBillOutsideShift ? 'Tự bấm ngoài ca' : `Ca ${source.sessionSequence}`,
+        detail: `${source.ownBillOutsideShift ? 'Ca trưởng tự bấm ở ca khác' : `Ca ${source.sessionSequence} do mình phụ trách`} · ${receiptLineSummary(source.receipt.lines)}`,
+        meta: source.receipt.sellerName,
+      })))
+      return
+    }
     const sources = buildEmployeeCompetitionRevenueSources(allocations, receipts, {
       branchId: row.branchId,
       employeeId: row.employeeKey,
@@ -4307,16 +5227,16 @@ function buildCompetitionSourcesByRow(
         }
       : {
           id: source.id,
-          kind: 'receipt',
+          kind: isKpiAdjustmentReceipt(source.receipt) ? 'adjustment' : 'receipt',
           businessDate: source.businessDate,
           createdAt: source.createdAt,
           soldQuantity: source.soldQuantity,
           revenue: source.revenue,
-          heading: source.receipt.code || 'Hóa đơn POS',
+          heading: isKpiAdjustmentReceipt(source.receipt) ? 'Bổ sung KPI lịch sử' : source.receipt.code || 'Hóa đơn POS',
           sourceCode: source.receipt.code || '',
           shiftLabel: '',
-          detail: receiptLineSummary(source.directLines),
-          meta: 'Bán trực tiếp',
+          detail: isKpiAdjustmentReceipt(source.receipt) ? 'Doanh thu thực tế trước khi dùng web' : receiptLineSummary(source.directLines),
+          meta: isKpiAdjustmentReceipt(source.receipt) ? 'Owner xác nhận' : 'Bán trực tiếp',
         })
     result.set(competitionRowKey(row), sources)
   })
@@ -4343,10 +5263,10 @@ function formatCapacityValue(metric: SalesCapacityMetric, value: number) {
  * được bao nhiêu" — biểu đồ so sánh với mốc trung bình của cả đội.
  *
  * 07/08/2026: khối này TỪNG có thêm 4 thẻ tổng và một danh sách đầy đủ, tức là
- * liệt kê lại đúng nhóm người của bảng xếp hạng ngay bên trên. Số tổng đã dời
- * lên dải `competition-overview`, số từng người đã thành CỘT trong bảng xếp
- * hạng — ở đây chỉ giữ phần mà bảng không làm được: nhìn phát thấy ai trên/dưới
- * mốc trung bình. ĐỪNG thêm lại danh sách vào đây.
+ * liệt kê lại đúng nhóm người của bảng xếp hạng ngay bên trên. Số từng người đã
+ * thành CỘT trong bảng xếp hạng, còn dải tổng thì bỏ hẳn (13/08/2026) — ở đây
+ * chỉ giữ phần mà bảng không làm được: nhìn phát thấy ai trên/dưới mốc trung
+ * bình. ĐỪNG thêm lại danh sách hay dải tổng vào đây.
  */
 function EmployeeSalesCapacityBoard({
   summary,
@@ -4428,6 +5348,65 @@ function EmployeeSalesCapacityBoard({
   </section>
 }
 
+/**
+ * Ảnh đối soát năng suất theo THÁNG. Khác poster Top 10, ảnh này giữ mọi nhân
+ * viên đo được và đặt ba con số cạnh nhau: doanh thu/ngày, sản phẩm/ngày và
+ * doanh thu/tháng. Như vậy ảnh gửi đi không phụ thuộc nút metric đang chọn.
+ */
+function EmployeeSalesCapacityPoster({
+  posterRef,
+  summary,
+  from,
+  to,
+  branchLabel,
+}: {
+  posterRef: { current: HTMLDivElement | null }
+  summary: SalesCapacitySummary
+  from: string
+  to: string
+  branchLabel: string
+}) {
+  const rows = summary.measuredRows
+  const averageProducts = summary.totalDays > 0 ? summary.totalSoldQuantity / summary.totalDays : 0
+  const averageMonth = summary.totalMonths > 0 ? summary.totalRevenue / summary.totalMonths : 0
+  return (
+    <div className="sales-capacity-poster" ref={posterRef} aria-hidden={!rows.length}>
+      <header>
+        <div>
+          <span>INFOGRAPHIC NĂNG SUẤT BÁN HÀNG</span>
+          <h3>Trung bình mỗi người bán</h3>
+          <p>{branchLabel} · {formatDate(from)} - {formatDate(to)}</p>
+        </div>
+        <strong>{formatNumber(rows.length)} nhân viên</strong>
+      </header>
+      <section className="sales-capacity-poster-kpis">
+        <article><span>Doanh thu / ngày — TB đội</span><b>{formatMoney(summary.teamAverage)}</b></article>
+        <article><span>Sản phẩm / ngày — TB đội</span><b>{formatNumber(averageProducts)}</b></article>
+        <article><span>Doanh thu / tháng — TB đội</span><b>{formatMoney(averageMonth)}</b></article>
+      </section>
+      <section className="sales-capacity-poster-table" role="table" aria-label="Trung bình bán hàng theo từng nhân viên">
+        <div className="head" role="row">
+          <span>Hạng</span><span>Nhân viên</span><span>Chi nhánh</span><span>Ngày bán</span><span>Doanh thu/ngày</span><span>SP/ngày</span><span>Doanh thu/tháng</span>
+        </div>
+        {rows.map((row, index) => (
+          <div role="row" key={`${row.branchId}-${row.employeeKey}`}>
+            <span><b>{index + 1}</b></span>
+            <span><strong>{row.employeeName}</strong></span>
+            <span>{branchName(row.branchId)}</span>
+            <span>{formatNumber(row.dayCount)}</span>
+            <span><b>{formatMoney(row.revenuePerDay)}</b></span>
+            <span>{formatNumber(row.quantityPerDay)}</span>
+            <span><b>{formatMoney(row.revenuePerMonth)}</b></span>
+          </div>
+        ))}
+      </section>
+      <footer>
+        Doanh thu/ngày và sản phẩm/ngày = tổng bán ÷ số ngày có check-in. Doanh thu/tháng = tổng bán ÷ số tháng có đi làm. Ca trưởng không nằm trong bảng này.
+      </footer>
+    </div>
+  )
+}
+
 function EmployeeCompetitionPoster({
   posterRef,
   rows,
@@ -4445,7 +5424,7 @@ function EmployeeCompetitionPoster({
   const topRows = rankedRows.slice(0, 3)
   const totalRevenue = rows.reduce((sum, row) => sum + row.revenue, 0)
   const totalSold = rows.reduce((sum, row) => sum + row.soldQuantity, 0)
-  const achievedCount = rows.filter((row) => row.progress >= 100).length
+  const achievedCount = rows.filter((row) => row.achievedDays > 0).length
   return (
     <div className="competition-poster-wrap" aria-hidden={!rankedRows.length}>
       <div className="competition-poster" ref={posterRef}>
@@ -4455,7 +5434,7 @@ function EmployeeCompetitionPoster({
             <h3>Thi đua nhân viên bán hàng</h3>
             <p>{branchLabel} · {formatDate(from)} - {formatDate(to)}</p>
           </div>
-          <strong>{achievedCount}/{Math.max(1, rows.length)} đạt KPI</strong>
+          <strong>{achievedCount}/{Math.max(1, rows.length)} có ngày đạt KPI</strong>
         </header>
         <section className="competition-poster-kpis">
           <div><span>Doanh thu</span><b>{formatMoney(totalRevenue)}</b></div>
@@ -4469,7 +5448,7 @@ function EmployeeCompetitionPoster({
               <strong>{row.employeeName}</strong>
               <span>{branchName(row.branchId)}</span>
               <b>{formatMoney(row.revenue)}</b>
-              <em>{formatNumber(row.progress)}% KPI · {row.rank}</em>
+              <em>{row.rank ? `${formatNumber(row.progress)}% KPI · ${row.rank}` : 'Chưa chấm KPI'}</em>
             </article>
           ))}
         </section>
@@ -4640,7 +5619,7 @@ function buildDailyEmployeeKpiRows(
         employee.positionTitle,
         date,
         date,
-      ) || DEFAULT_REVENUE_TARGET,
+      ),
       progress: 0,
       rank: 'D',
       dailyBonus: 0,
@@ -4690,7 +5669,9 @@ function buildDailyEmployeeKpiRows(
     row.totalHours = Number(hours.toFixed(2))
     row.progress = row.targetRevenue > 0 ? Math.min(200, row.revenue / row.targetRevenue * 100) : 0
     row.rank = kpiRank(row.progress)
-    row.dailyBonus = dailyKpiBonus(row.progress, row.role, row.employmentType, row.positionTitle)
+    row.dailyBonus = row.targetRevenue > 0
+      ? dailyKpiBonus(row.progress, row.role, row.employmentType, row.positionTitle)
+      : 0
   })
 
   return Array.from(rows.values())
@@ -4720,6 +5701,11 @@ function buildCompetitionRows(
     progress: number
     rank: string
     score: number
+    achievedDays: number
+    achievedShiftCount: number
+    pendingBonus?: number
+    rewardLabels?: string[]
+    pendingRewardLabels?: string[]
   }>()
   const employeeFor = (branchId: string, employeeKey: string, employeeName: string) => employees.find((employee) =>
     employee.branchId === branchId
@@ -4746,6 +5732,11 @@ function buildCompetitionRows(
       progress: existing?.progress || 0,
       rank: existing?.rank || 'D',
       score: Math.round(attendance.totalHours),
+      achievedDays: existing?.achievedDays || 0,
+      achievedShiftCount: 0,
+      pendingBonus: existing?.pendingBonus || 0,
+      rewardLabels: existing?.rewardLabels || [],
+      pendingRewardLabels: existing?.pendingRewardLabels || [],
     })
   }
   for (const row of commissionRows) {
@@ -4770,6 +5761,11 @@ function buildCompetitionRows(
       progress: row.progress,
       rank: row.rank,
       score: Math.round(row.revenue / 10000 + row.progress + (existing?.totalHours || 0) / 2),
+      achievedDays: row.achievedDays,
+      achievedShiftCount: 0,
+      pendingBonus: row.pendingBonus,
+      rewardLabels: row.rewardLabels,
+      pendingRewardLabels: row.pendingRewardLabels,
     })
   }
   return Array.from(rows.values())
@@ -5125,6 +6121,43 @@ function buildWasteRows(movements: StockMovement[]) {
   return Array.from(rows.values()).sort((a, b) => b.quantity - a.quantity)
 }
 
+function buildWasteDetailRows(movements: StockMovement[]): InventoryWasteDetailRow[] {
+  return movements
+    .filter((movement) => movement.type === 'waste')
+    .map((movement) => {
+      const product = productById(movement.productId)
+      const sourceProduct = movement.sourceProductId ? productById(movement.sourceProductId) : undefined
+      const sourceQuantity = Number(movement.sourceQuantity || 0)
+      return {
+        id: movement.id,
+        branchId: movement.branchId,
+        shiftDate: movement.shiftDate,
+        createdAt: movement.createdAt,
+        documentId: movement.documentId || movement.id,
+        productId: movement.productId,
+        productName: product?.name || movement.productId,
+        sku: product?.sku || '-',
+        unit: product?.unit || 'đơn vị',
+        quantity: Number(movement.quantity || 0),
+        kind: (movement.sourceProductId ? 'processing' : 'direct') as InventoryWasteDetailRow['kind'],
+        sourceProductId: movement.sourceProductId || '',
+        sourceProductName: sourceProduct?.name || '',
+        sourceSku: sourceProduct?.sku || '',
+        sourceUnit: sourceProduct?.unit || '',
+        sourceQuantity: sourceQuantity || undefined,
+        measuredWeightKg: movement.measuredWeightKg,
+        lossRate: sourceQuantity > 0 ? (Number(movement.quantity || 0) / sourceQuantity) * 100 : undefined,
+        createdBy: movement.createdBy,
+        note: movement.note || '',
+      }
+    })
+    .sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt)
+      || branchName(a.branchId).localeCompare(branchName(b.branchId), 'vi')
+      || a.productName.localeCompare(b.productName, 'vi'),
+    )
+}
+
 function buildAdminDailyTrendRows(rows: Array<{ reportDate: string; revenue: number }>, range: { from: string; to: string }) {
   const byDate = new Map<string, number>()
   rows.forEach((row) => byDate.set(row.reportDate, (byDate.get(row.reportDate) || 0) + row.revenue))
@@ -5137,21 +6170,6 @@ function buildAdminDailyTrendRows(rows: Array<{ reportDate: string; revenue: num
     cursor.setDate(cursor.getDate() + 1)
   }
   return output
-}
-
-function buildAdminAreaChart(rows: Array<{ date: string; revenue: number }>, maxRevenue: number) {
-  const width = 360
-  const padX = 12
-  const baseY = 142
-  const plotHeight = 124
-  const points = rows.map((row, index) => {
-    const x = rows.length <= 1 ? width / 2 : padX + index * ((width - padX * 2) / (rows.length - 1))
-    const y = baseY - (row.revenue / Math.max(maxRevenue, 1)) * plotHeight
-    return `${Math.round(x * 10) / 10},${Math.round(y * 10) / 10}`
-  })
-  const linePoints = points.join(' ')
-  const fillPoints = points.length ? `${padX},${baseY} ${linePoints} ${width - padX},${baseY}` : `${padX},${baseY} ${width - padX},${baseY}`
-  return { linePoints, fillPoints }
 }
 
 // Gom doanh thu POS theo (ngày × nhân viên × chi nhánh) trong khoảng đã lọc.
@@ -5193,12 +6211,30 @@ function buildCommissionRows(
   employees: EmployeeProfile[],
   attendanceRows: ReturnType<typeof buildAttendanceReport>,
   receipts: SalesReceipt[],
-  ruleDrafts: Record<string, { targetRevenue: string; commissionRate: string }>,
-  employeeKpiDrafts: Record<string, string>,
+  _ruleDrafts: Record<string, { targetRevenue: string; commissionRate: string }>,
+  _employeeKpiDrafts: Record<string, string>,
   from: string,
   to: string,
-  includedDates?: string[],
+  options: {
+    includedDates?: string[]
+    attendanceDetails?: ReturnType<typeof buildAttendanceDetailRows>
+    previousRevenueByEmployee?: Map<string, number>
+    enableMonthlyRewards?: boolean
+    /**
+     * Doanh thu ghi nhận theo CA LÀM của ca trưởng, khóa `${branchId}|${employeeId}`.
+     * Có map này nghĩa là kỳ đang xem áp luật từ 01/08/2026 (`usesLeaderShiftRevenue`):
+     * ca trưởng lấy số theo ca và CHƯA bị chấm KPI.
+     */
+    shiftLeaderRevenue?: Map<string, { revenue: number; soldQuantity: number; days?: Array<{ date: string; revenue: number; soldQuantity: number }> }>
+  } = {},
 ) {
+  const {
+    includedDates,
+    attendanceDetails = [],
+    previousRevenueByEmployee = new Map(),
+    enableMonthlyRewards = true,
+    shiftLeaderRevenue,
+  } = options
   const allocationsByDate = new Map<string, BagAllocation[]>()
   allocations.forEach((allocation) => {
     const date = allocationReportDate(allocation)
@@ -5301,34 +6337,170 @@ function buildCommissionRows(
     addDailyPerformance(date, receipt.branchId, employee, soldQuantity, revenue)
   })
 
-  const weekWins = new Map<string, { rowKey: string; achievedDays: number; perfectDays: number }>()
+  const branchDailyPerformance = new Map<string, { date: string; branchId: string; soldQuantity: number; revenue: number }>()
   dailyPerformance.forEach((day) => {
-    const rowKey = `${day.branchId}|${day.employee.id}`
-    const row = rows.get(rowKey)
-    if (!row) return
-    const dayTarget = employeePeriodRevenueTarget(
-      day.branchId,
-      day.employee.role,
-      day.employee.employmentType,
-      day.employee.positionTitle,
-      day.date,
-      day.date,
+    const key = `${day.date}|${day.branchId}`
+    const current = branchDailyPerformance.get(key) || {
+      date: day.date,
+      branchId: day.branchId,
+      soldQuantity: 0,
+      revenue: 0,
+    }
+    current.soldQuantity += day.soldQuantity
+    current.revenue += day.revenue
+    branchDailyPerformance.set(key, current)
+  })
+
+  const isVungTauTeamLeader = (employee?: EmployeeProfile) => Boolean(
+    employee?.branchId === 'lotte-vt'
+    && positionKpiKey(employee.role, employee.employmentType, employee.positionTitle) === 'shift_leader',
+  )
+  const isVungTauTeamLeaderForDate = (employee: EmployeeProfile | undefined, date: string) => (
+    isVungTauTeamLeader(employee) && usesVungTauNewKpi(date)
+  )
+  // Ca trưởng thường KHÔNG tự bấm bill nên không có dòng nào sinh ra từ hóa đơn /
+  // phiếu giao túi (tháng 7/2026: hai ca trưởng Vũng Tàu có đúng 0 hóa đơn đứng
+  // tên). Phải tạo dòng cho họ, nếu không họ biến mất khỏi bảng thi đua dù đã
+  // đứng tên hàng chục ca.
+  if (shiftLeaderRevenue) {
+    employees.forEach((employee) => {
+      if (employee.active === false || !employee.branchId) return
+      if (positionKpiKey(employee.role, employee.employmentType, employee.positionTitle) !== 'shift_leader') return
+      const recorded = shiftLeaderRevenue.get(`${employee.branchId}|${employee.id}`)
+      if (!recorded || recorded.revenue <= 0) return
+      const key = `${employee.branchId}|${employee.id}`
+      if (rows.has(key)) return
+      rows.set(key, {
+        employeeKey: employee.id,
+        employeeId: employee.id,
+        employeeName: employee.name,
+        branchId: employee.branchId,
+        soldQuantity: 0,
+        revenue: 0,
+        commissionBase: 0,
+        commission: 0,
+        achieved: false,
+        achievedDays: 0,
+        maxDailySold: 0,
+        dailyBonus: 0,
+        weeklyBonus: 0,
+        monthlyBonus: 0,
+        rank: 'D',
+      })
+    })
+  }
+
+  employees.filter((employee) => employee.active !== false && isVungTauTeamLeader(employee)).forEach((employee) => {
+    const key = `${employee.branchId}|${employee.id}`
+    if (rows.has(key)) return
+    const teamDays = Array.from(branchDailyPerformance.values()).filter((day) =>
+      day.branchId === 'lotte-vt' && usesVungTauNewKpi(day.date),
     )
-    const dayProgress = day.revenue / Math.max(1, dayTarget) * 100
-    row.dailyBonus += dailyKpiBonus(dayProgress, day.employee.role, day.employee.employmentType, day.employee.positionTitle)
+    if (!teamDays.some((day) => day.revenue > 0)) return
+    rows.set(key, {
+      employeeKey: employee.id,
+      employeeId: employee.id,
+      employeeName: employee.name,
+      branchId: employee.branchId!,
+      soldQuantity: 0,
+      revenue: 0,
+      commissionBase: 0,
+      commission: 0,
+      achieved: false,
+      achievedDays: 0,
+      maxDailySold: 0,
+      dailyBonus: 0,
+      weeklyBonus: 0,
+      monthlyBonus: 0,
+      rank: 'D',
+    })
+  })
+
+  const applyDailyResult = (
+    rowKey: string,
+    employee: EmployeeProfile,
+    date: string,
+    soldQuantity: number,
+    revenue: number,
+    dayTarget: number,
+    bonusMultiplier = 1,
+  ) => {
+    const row = rows.get(rowKey)
+    if (!row || dayTarget <= 0) return
+    const dayProgress = revenue / Math.max(1, dayTarget) * 100
+    row.dailyBonus += dailyKpiBonus(dayProgress, employee.role, employee.employmentType, employee.positionTitle) * bonusMultiplier
     row.achieved = row.achieved || dayProgress >= 100
     row.achievedDays += dayProgress >= 100 ? 1 : 0
-    row.maxDailySold = Math.max(row.maxDailySold, day.soldQuantity)
-    const weekKey = `${rowKey}|${weekStart(day.date)}`
-    const week = weekWins.get(weekKey) || { rowKey, achievedDays: 0, perfectDays: 0 }
-    if (dayProgress >= 100) week.achievedDays += 1
-    if (dayProgress >= 100) week.perfectDays += 1
-    weekWins.set(weekKey, week)
+    row.maxDailySold = Math.max(row.maxDailySold, soldQuantity)
+  }
+  dailyPerformance.forEach((day) => {
+    if (isVungTauTeamLeaderForDate(day.employee, day.date)) return
+    const rowKey = `${day.branchId}|${day.employee.id}`
+    applyDailyResult(
+      rowKey,
+      day.employee,
+      day.date,
+      day.soldQuantity,
+      day.revenue,
+      employeePeriodRevenueTarget(
+        day.branchId,
+        day.employee.role,
+        day.employee.employmentType,
+        day.employee.positionTitle,
+        day.date,
+        day.date,
+      ),
+    )
   })
-  weekWins.forEach((week) => {
-    const row = rows.get(week.rowKey)
-    if (!row) return
-    row.weeklyBonus += weeklyKpiBonus(week.achievedDays, week.perfectDays)
+  // Ca trưởng đã được chủ đặt mức KPI ⇒ chấm KPI NGÀY theo doanh thu ca mình làm.
+  // Không có bước này thì họ có hạng nhưng thưởng luôn bằng 0 (bảng ca trưởng không
+  // sinh `dailyPerformance` vì họ không đứng tên hóa đơn nào).
+  if (shiftLeaderRevenue) {
+    employees.forEach((employee) => {
+      if (!employee.branchId || !hasLeaderKpiTarget(employee.branchId)) return
+      if (positionKpiKey(employee.role, employee.employmentType, employee.positionTitle) !== 'shift_leader') return
+      const recorded = shiftLeaderRevenue.get(`${employee.branchId}|${employee.id}`)
+      recorded?.days?.forEach((day) => {
+        applyDailyResult(
+          `${employee.branchId}|${employee.id}`,
+          employee,
+          day.date,
+          day.soldQuantity,
+          day.revenue,
+          employeePeriodRevenueTarget(
+            employee.branchId!,
+            employee.role,
+            employee.employmentType,
+            employee.positionTitle,
+            day.date,
+            day.date,
+          ),
+        )
+      })
+    })
+  }
+
+  employees.filter(isVungTauTeamLeader).forEach((employee) => {
+    Array.from(branchDailyPerformance.values())
+      .filter((day) => day.branchId === 'lotte-vt' && usesVungTauNewKpi(day.date))
+      .forEach((day) => {
+        const workedShiftCount = attendanceDetails.filter((detail) =>
+          detail.branchId === day.branchId
+          && detail.workDate === day.date
+          && detail.totalHours > 0
+          && (detail.userId === employee.id || normalizeName(detail.employeeName) === normalizeName(employee.name)),
+        ).length
+        if (!workedShiftCount) return
+        applyDailyResult(
+          `${day.branchId}|${employee.id}`,
+          employee,
+          day.date,
+          day.soldQuantity,
+          day.revenue,
+          branchTeamPeriodRevenueTarget(day.branchId, day.date, day.date),
+          workedShiftCount,
+        )
+      })
   })
   type CommissionOutputRow = ReturnType<typeof summarizeEmployeeBagSales>[number] & {
     achievedDays: number
@@ -5342,8 +6514,15 @@ function buildCommissionRows(
     totalHours: number
     targetQuantity: number
     progress: number
+    role: Role
+    employmentType?: EmploymentType
+    positionTitle: string
+    specialBonus: number
+    pendingBonus: number
+    rewardLabels: string[]
+    pendingRewardLabels: string[]
   }
-  return Array.from(rows.values()).map((row): CommissionOutputRow | null => {
+  const baseRows = Array.from(rows.values()).map((row): CommissionOutputRow | null => {
     const employee = row.employeeId
       ? employees.find((item) => item.id === row.employeeId)
       : employees.find((item) => normalizeName(item.name) === normalizeName(row.employeeName))
@@ -5353,44 +6532,103 @@ function buildCommissionRows(
       item.branchId === row.branchId
       && (item.userId === employeeKey || normalizeName(item.employeeName) === normalizeName(row.employeeName)),
     )
-    const formulaTarget = includedDates
-      ? includedDates.reduce((sum, date) => sum + employeePeriodRevenueTarget(
-          row.branchId,
-          employee?.role,
-          employee?.employmentType,
-          employee?.positionTitle,
-          date,
-          date,
-        ), 0)
-      : employeePeriodRevenueTarget(
-          row.branchId,
-          employee?.role,
-          employee?.employmentType,
-          employee?.positionTitle,
-          from,
-          to,
+    const teamLeader = isVungTauTeamLeader(employee)
+    const formulaTarget = teamLeader
+      ? includedDates
+        ? includedDates.reduce((sum, date) => sum + employeeCompetitionPeriodRevenueTarget(
+            'lotte-vt', employee.role, employee.employmentType, employee.positionTitle, date, date,
+          ), 0)
+        : employeeCompetitionPeriodRevenueTarget(
+            'lotte-vt', employee.role, employee.employmentType, employee.positionTitle, from, to,
+          )
+      : includedDates
+        ? includedDates.reduce((sum, date) => sum + employeePeriodRevenueTarget(
+            row.branchId,
+            employee?.role,
+            employee?.employmentType,
+            employee?.positionTitle,
+            date,
+            date,
+          ), 0)
+        : employeePeriodRevenueTarget(
+            row.branchId,
+            employee?.role,
+            employee?.employmentType,
+            employee?.positionTitle,
+            from,
+            to,
+          )
+    const targetRevenue = Math.max(0, formulaTarget)
+    const teamDays = teamLeader
+      ? Array.from(branchDailyPerformance.values()).filter((day) => day.branchId === 'lotte-vt' && usesVungTauNewKpi(day.date))
+      : []
+    const leaderPersonalDays = teamLeader
+      ? Array.from(dailyPerformance.values()).filter((day) =>
+          day.branchId === 'lotte-vt' && day.employee.id === employee.id && !usesVungTauNewKpi(day.date),
         )
-    const targetRevenue = formulaTarget || DEFAULT_REVENUE_TARGET
-    const achieved = row.achievedDays > 0
-    const progress = Math.min(200, row.revenue / targetRevenue * 100)
+      : []
+    // Từ 01/08/2026: ca trưởng ghi nhận doanh thu theo CA LÀM.
+    // Còn CHẤM KPI hay không thì phụ thuộc chủ đã tự đặt mức trong Quản trị chưa
+    // (`hasLeaderKpiTarget`) — chưa đặt thì chỉ hiện con số, không %, không hạng,
+    // không thưởng; đặt rồi là chấm ngay, không cần build lại app.
+    const shiftLeaderRow = shiftLeaderRevenue && positionKpiKey(employee.role, employee.employmentType, employee.positionTitle) === 'shift_leader'
+      ? shiftLeaderRevenue.get(`${row.branchId}|${employeeKey}`) || { revenue: 0, soldQuantity: 0 }
+      : undefined
+    const leaderNotGraded = Boolean(shiftLeaderRow) && !hasLeaderKpiTarget(row.branchId)
+    const recordedLeader = leaderNotGraded ? shiftLeaderRow : undefined
+    const effectiveRevenue = shiftLeaderRow
+      ? shiftLeaderRow.revenue
+      : teamLeader
+        ? [...teamDays, ...leaderPersonalDays].reduce((sum, day) => sum + day.revenue, 0)
+        : row.revenue
+    const effectiveSoldQuantity = shiftLeaderRow
+      ? shiftLeaderRow.soldQuantity
+      : teamLeader
+        ? [...teamDays, ...leaderPersonalDays].reduce((sum, day) => sum + day.soldQuantity, 0)
+        : row.soldQuantity
+    const achieved = recordedLeader ? false : row.achievedDays > 0
+    const progress = recordedLeader || targetRevenue <= 0
+      ? 0
+      : Math.min(200, effectiveRevenue / targetRevenue * 100)
     const monthlyBonus = 0
-    const kpiBonus = row.dailyBonus + row.weeklyBonus
+    const dailyBonus = recordedLeader ? 0 : row.dailyBonus
+    const rewardLabels = [
+      dailyBonus > 0 ? `Thưởng ngày ${formatMoney(dailyBonus)}` : '',
+    ].filter(Boolean)
+    const kpiBonus = dailyBonus
     return {
       ...row,
+      revenue: effectiveRevenue,
+      soldQuantity: effectiveSoldQuantity,
       employeeKey,
       employeeName: employee?.name || row.employeeName,
       totalHours: attendance?.totalHours || 0,
-      targetQuantity: targetRevenue,
+      // Chưa có chỉ tiêu cho ca trưởng ⇒ để 0 và bỏ trống hạng, KHÔNG để rơi vào
+      // hạng D: 0/0 mà hiện "D" thì đọc như bị đánh giá kém.
+      targetQuantity: recordedLeader ? 0 : targetRevenue,
       achieved,
-      dailyBonus: row.dailyBonus,
-      weeklyBonus: row.weeklyBonus,
+      dailyBonus,
+      weeklyBonus: 0,
       monthlyBonus,
       commission: kpiBonus,
       progress,
-      rank: kpiRank(progress),
+      rank: recordedLeader ? '' : kpiRank(progress),
+      role: employee.role,
+      employmentType: employee.employmentType,
+      positionTitle: employee.positionTitle || roleLabel(employee.role),
+      specialBonus: 0,
+      pendingBonus: 0,
+      rewardLabels,
+      pendingRewardLabels: [],
     }
   }).filter((row): row is CommissionOutputRow => Boolean(row))
+
+  return baseRows
     .sort((a, b) => b.revenue - a.revenue || b.commission - a.commission)
+}
+
+function isKpiAdjustmentReceipt(receipt: SalesReceipt) {
+  return receipt.id.startsWith('kpi-adjustment:') || receipt.code.startsWith('KPIBS-')
 }
 
 function normalizeName(value: string) {
@@ -5399,13 +6637,6 @@ function normalizeName(value: string) {
 
 function allocationReportDate(allocation: BagAllocation) {
   return allocation.businessDate || allocation.settledAt?.slice(0, 10) || allocation.issuedAt.slice(0, 10)
-}
-
-function weekStart(value: string) {
-  const date = new Date(`${value}T00:00:00`)
-  const day = date.getDay() || 7
-  date.setDate(date.getDate() - day + 1)
-  return date.toISOString().slice(0, 10)
 }
 
 function styleSheet(sheet: import('exceljs').Worksheet, title: string) {
@@ -5610,6 +6841,32 @@ function formatMoney(value: number) {
   return `${Math.round(value).toLocaleString('vi-VN')}đ`
 }
 
+/** §82: xanh = xong/đúng giờ, xanh dương = đang diễn ra, đỏ = vắng. */
+function attendanceStatusTone(status: 'completed' | 'working' | 'absent' | 'scheduled'): 'good' | 'info' | 'bad' | 'neutral' {
+  if (status === 'completed') return 'good'
+  if (status === 'working') return 'info'
+  if (status === 'absent') return 'bad'
+  return 'neutral'
+}
+
+/** Khóa duy nhất của một dòng ca: có bản ghi thì theo bản ghi, chưa có thì theo đăng ký. */
+function attendanceRowKey(row: { registrationId: string; attendanceRecordId?: string | null }) {
+  return `${row.registrationId}|${row.attendanceRecordId || 'scheduled'}`
+}
+
+/** Chỉ giờ:phút theo giờ Việt Nam — dùng cho timeline và hoạt động gần đây. */
+function formatClockTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+/** 127.600.000 → "127,6tr". Chỉ dùng cho số tổng hợp trên dashboard/metric. */
+function formatCompactMoney(value: number) {
+  if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toLocaleString('vi-VN', { maximumFractionDigits: 1 })}tr`
+  return formatMoney(value)
+}
+
 function supplyStatusLabel(status: SupplyRequest['status']) {
   return status === 'pending' ? 'Chờ duyệt'
     : status === 'acknowledged' ? 'Đã nhận'
@@ -5660,6 +6917,14 @@ function shiftMonthKey(monthKey: string, amount: number) {
 }
 function attendanceDetailStatus(status: 'completed' | 'working' | 'absent' | 'scheduled') {
   return ({ completed: 'Đã hoàn thành', working: 'Đang làm', absent: 'Vắng', scheduled: 'Chưa tới ca' })[status]
+}
+
+/** N ngày gần nhất, tính cả hôm nay (7 ngày = hôm nay và 6 ngày trước). */
+function rollingRange(days: number) {
+  const to = new Date()
+  const from = new Date()
+  from.setDate(to.getDate() - Math.max(0, days - 1))
+  return { from: localDateKey(from), to: localDateKey(to) }
 }
 
 function monthRange(offset = 0) {

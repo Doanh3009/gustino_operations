@@ -14,7 +14,21 @@ import { localDateKey } from '../lib/dates'
 import { Time24Field } from './Time24Field'
 import type { AppUser, AttendanceAdjustmentRequest, AttendanceRecord, EmployeeProfile } from '../types'
 
-export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
+interface Props {
+  user: AppUser
+  /**
+   * Component này chứa HAI nghiệp vụ khác nhau và §69/§70 xếp chúng vào hai
+   * tầng khác nhau: "Bổ sung công" là nút chính của trang Chấm công, còn
+   * "Chứng từ công" nằm sau menu `•••`. `mode` chỉ chọn phần nào được vẽ —
+   * logic, RPC và validation không đổi. Mặc định `both` giữ nguyên hành vi cũ
+   * cho mọi nơi gọi khác.
+   */
+  mode?: 'both' | 'supplement' | 'archive'
+  /** Báo cho trang cha tải lại bảng công sau khi bổ sung / chốt giờ ra. */
+  onChanged?: () => void
+}
+
+export function AttendanceAdjustmentArchive({ user, mode = 'both', onChanged }: Props) {
   const today = new Date()
   const [branchId, setBranchId] = useState('')
   const [employeeId, setEmployeeId] = useState('')
@@ -69,7 +83,7 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
     return employees
       .filter((employee) => employee.active !== false
         && Boolean(employee.branchId)
-        && ['staff', 'shift_leader'].includes(employee.role)
+        && ['staff', 'shift_leader', 'shift_deputy'].includes(employee.role)
         && (!search || normalizeSearch(`${employee.name} ${branchName(employee.branchId || '')}`).includes(search)))
       .sort((a, b) => a.name.localeCompare(b.name, 'vi'))
   }, [employees, supplementEmployeeSearch])
@@ -120,6 +134,7 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
         reason: `Đơn quên check-out: ${row.reason}`.slice(0, 400),
       })
       await refresh()
+      onChanged?.()
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Không thể chốt giờ ra theo đơn này.')
     } finally {
@@ -165,6 +180,7 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
         reason: supplementReason,
       })
       await refresh()
+      onChanged?.()
       setSupplementFeedback(`Đã bổ sung công ${supplementStart}-${supplementEnd} ngày ${supplementDate} cho ${employee.name}. Dữ liệu đang đồng bộ realtime.`)
     } catch (reason) {
       setSupplementFeedback(reason instanceof Error ? reason.message : 'Không thể bổ sung công cho nhân viên.')
@@ -175,15 +191,17 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
 
   return (
     <>
-      {user.role === 'admin' && (
+      {user.role === 'admin' && mode !== 'archive' && (
         <section className="section-card attendance-supplement-card">
-          <div className="section-title">
-            <div>
-              <span className="eyebrow dark">BỔ SUNG CÔNG</span>
-              <h2>Khôi phục công khi hệ thống gặp lỗi</h2>
-              <p>Admin nhập đúng ca đã làm. Hệ thống tạo đăng ký ca và bản ghi vào/ra riêng, sau đó đồng bộ realtime vào bảng công và báo cáo.</p>
+          {mode === 'both' && (
+            <div className="section-title">
+              <div>
+                <span className="eyebrow dark">BỔ SUNG CÔNG</span>
+                <h2>Khôi phục công khi hệ thống gặp lỗi</h2>
+                <p>Admin nhập đúng ca đã làm. Hệ thống tạo đăng ký ca và bản ghi vào/ra riêng, sau đó đồng bộ realtime vào bảng công và báo cáo.</p>
+              </div>
             </div>
-          </div>
+          )}
           <form className="attendance-adjustment-form attendance-supplement-form" onSubmit={addAttendanceSupplement}>
             <label className="span-2 attendance-supplement-search">Tìm nhanh nhân viên
               <input
@@ -217,12 +235,15 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
           {supplementFeedback && <div className="feedback-bar">{supplementFeedback}<button type="button" onClick={() => setSupplementFeedback('')}>×</button></div>}
         </section>
       )}
+    {mode !== 'supplement' && (
     <section className="section-card attendance-adjustment-archive">
       <div className="section-title">
-        <div>
-          <span className="eyebrow dark">CHỨNG TỪ CÔNG</span>
-          <h2>Đơn đi trễ / về sớm / quên check-out</h2>
-        </div>
+        {mode === 'both'
+          ? <div>
+            <span className="eyebrow dark">CHỨNG TỪ CÔNG</span>
+            <h2>Đơn đi trễ / về sớm / quên check-out</h2>
+          </div>
+          : <div />}
         <button className="secondary-button" type="button" onClick={exportCsv} disabled={!rows.length}>Xuất CSV</button>
       </div>
       <div className="attendance-filter-grid">
@@ -307,6 +328,7 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
       {!loading && !rows.length && <p className="empty-copy">Chưa có chứng từ trong bộ lọc này.</p>}
       {loading && <p className="empty-copy">Đang tải chứng từ...</p>}
     </section>
+    )}
     </>
   )
 }

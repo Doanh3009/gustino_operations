@@ -84,10 +84,13 @@ for (const [path, label] of [
   ['pages/admin/DashboardPage.tsx', 'Tổng quan quản trị'],
 ]) {
   const source = await readPage(path)
+  // Điều cần khoá là DÙNG CHUNG bộ hiển thị, không phải tên hàm bọc. Sau
+  // redesign, Tổng quan gọi thẳng formatQuantity/formatStockAmount thay vì bọc
+  // qua một `formatNumber` cục bộ.
   assert.match(
     source,
-    /function formatNumber\([^)]*\)\s*\{?\s*return formatQuantity\(/,
-    `Màn ${label} phải hiển thị số lượng bằng formatQuantity dùng chung`,
+    /formatQuantity\(|formatStockAmount\(/,
+    `Màn ${label} phải hiển thị số lượng bằng bộ hiển thị kho dùng chung`,
   )
   assert.match(source, /from '\.\.\/(\.\.\/)?lib\/inventoryEntry'/, `Màn ${label} phải import bộ hiển thị kho dùng chung`)
 }

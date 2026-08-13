@@ -59,7 +59,7 @@ export function LoginPage({ onLogin }: Props) {
           await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined)
           throw new Error('Tài khoản này đã bị khóa hoặc chưa được cấp hồ sơ nhân sự.')
         }
-        const role = normalizeRole((profile?.role || metadata.role || 'shift_leader') as Role)
+        const role = normalizeRole((profile?.role || metadata.role || 'shift_leader') as Role, profile?.position_title || metadata.position_title || '')
         const profileBranchId = profile?.branch_id || metadata.branch_id || branchId
         let branchIds: string[] = []
         // SUP MT (giám sát) đối chiếu bảng lương/bảng công toàn hệ thống → thấy mọi chi nhánh active.
@@ -82,11 +82,11 @@ export function LoginPage({ onLogin }: Props) {
             ...((assignments || []) as Array<{ branch_id: string }>).map((item) => item.branch_id),
           ].filter(Boolean)))
         }
-        if ((role === 'staff' || role === 'shift_leader' || role === 'cashier') && !profileBranchId) {
+        if ((role === 'staff' || role === 'shift_leader' || role === 'shift_deputy' || role === 'cashier') && !profileBranchId) {
           await supabase.auth.signOut({ scope: 'local' }).catch(() => undefined)
           throw new Error('Tài khoản nhân viên chưa được gán chi nhánh. Liên hệ Admin để cập nhật trước khi đăng nhập.')
         }
-        if ((role === 'staff' || role === 'shift_leader' || role === 'cashier') && profileBranchId) {
+        if ((role === 'staff' || role === 'shift_leader' || role === 'shift_deputy' || role === 'cashier') && profileBranchId) {
           const { data: branch } = await supabase
             .from('branches')
             .select('id, active')
@@ -128,7 +128,7 @@ export function LoginPage({ onLogin }: Props) {
           const apiOffline = !account?.error && response.status >= 500
           throw new Error(apiOffline ? apiOfflineMessage() : account?.error || 'Tên đăng nhập hoặc mật khẩu không đúng.')
         }
-        const role = normalizeRole(account.role as Role)
+        const role = normalizeRole(account.role as Role, account.positionTitle || '')
         onLogin({
           id: account.id,
           name: account.name,

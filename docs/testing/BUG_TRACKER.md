@@ -1,5 +1,99 @@
 # Bug Tracker
 
+## 2026-08-12 — Bảng thi đua trộn Ca trưởng và đếm sai ý nghĩa “đạt KPI”
+
+### BUG-144 — `2/30` đang đếm đạt KPI cả kỳ, mâu thuẫn chính sách thưởng theo ngày
+
+- Severity: High (sai thông tin tổng hợp quản trị). Status: **Fixed local — all gates Passed, chưa deploy.**
+- Bằng chứng source: thẻ Admin và `summarizeCompetitionTeam` đều đếm `progress >= 100`, tức doanh thu tổng kỳ đạt 100% mục tiêu tháng. Dòng nhân viên/tiền thưởng lại dùng `achievedDays` và `dailyBonus`; do đó ảnh tháng 07 có nhiều người nhận thưởng/ngày đạt nhưng thẻ chỉ ghi hai người đạt tổng tháng.
+- Bằng chứng tách vai trò: `BOARD_ROLES` của bảng nhân viên còn chứa `shift_leader`; Admin dùng nguyên `monthlyCompetitionRows`/`dailyCompetitionRows` cho mode nhân viên, nên Ca trưởng đứng hạng 1–2 trong ảnh dù đã có `leaderCompetitionRows` và mode `Ca trưởng theo tháng` riêng.
+- Red-first: `node scripts/test-competition-leader-kpi-capacity-infographic.mjs` exit 1 vì fixture thực tế vẫn trả Ca trưởng trong bảng nhân viên. Phạm vi owner phê duyệt: loại Ca trưởng khỏi hai bảng nhân viên, giữ bảng Ca trưởng riêng, đổi summary thành người có ít nhất một ngày đạt + tổng lượt ngày đạt, và thêm export ảnh trung bình/ngày/tháng. Không đổi target, doanh thu, tiền thưởng hoặc dữ liệu lịch sử.
+- Fix: loại `shift_leader` tại builder public và tại hai nguồn daily/monthly của Admin, giữ nguyên builder/mode Ca trưởng riêng. Bộ đếm nhân viên dùng `achievedDays > 0`; infographic tháng xuất JPG từ dữ liệu năng suất sẵn có và liệt kê từng người. Focused regression trả `COMPETITION_LEADER_KPI_CAPACITY_INFOGRAPHIC_OK`, TypeScript exit 0; đang chờ regression rộng/build trước khi đóng hoàn tất local.
+- Related regression: 9/9 test thi đua/KPI/năng suất Passed, gồm chính sách daily-only và bảng Ca trưởng/Vũng Tàu hiện hữu. Không thay target, tiền thưởng, hóa đơn, chấm công hoặc dữ liệu lịch sử. Còn production build và bundle/diff gate.
+- Final gate: production build 738 modules và Supabase bundle guard Passed; built Admin/public assets có marker mới; syntax/scoped diff checks Passed. Visual browser QA không chạy được vì phiên không có in-app browser instance. Không migration/data write/deploy trong batch này.
+
+## 2026-08-12 — Quy tắc đi trễ áp sai ngày hiệu lực và sai biên phút
+
+### BUG-143 — Ca 01–11/08 bị hồi tố mốc sớm 15 phút; cùng phút mốc đã có thể bị tính trễ
+
+- Severity: High (ảnh hưởng bảng công/KPI lương khi xem lại). Status: **Fixed, deployed and live-verified** (`dpl_FsZdtstVYvLFYKuKfKBdBvmAehVh`).
+- Yêu cầu owner: toàn bộ chi nhánh chỉ dùng mốc giờ vào ca − 15 phút từ 12/08/2026; ngày trước đó dùng đúng giờ bắt đầu ca. Tại biên phút, ca 07:00 chỉ bắt đầu trễ ở 07:01.
+- Bằng chứng source: `EARLY_CHECK_IN_REQUIRED_FROM` đang là `2026-08-01`; nhánh lịch sử trả `scheduledStart + graceMinutes`; `lateMinutesFor` dùng `Math.round`, còn `isLateCheckIn` so sánh mili-giây ngay sau deadline. Vì vậy 11/08 07:00 có thể thành trễ 15 phút và 07:00:59/08:45:59 có thể bị tính trễ dù chưa sang phút kế tiếp.
+- Red-first: `node scripts/test-early-checkin-and-leader-shift-revenue.mjs` exit 1 với 9 failure đúng các biên trên. Phạm vi sửa được phép: helper tính trễ dùng chung, cờ/copy nhắc tại trang Chấm công và test liên quan; không sửa bản ghi chấm công, ca, chi nhánh hay dữ liệu lịch sử.
+- Fix: đổi effective date thành 12/08, nhánh lịch sử lấy đúng `scheduledStart`, dùng số phút hoàn chỉnh (`Math.floor`) và suy cờ trễ từ chính số phút đó. UI nhắc ca dùng giờ ca neo `+07:00` và cùng helper. Focused rerun Passed; chưa kết luận hoàn tất trước khi chạy regression/TypeScript/build.
+- Regression mở rộng chạy thật `buildAttendanceDetailRows` trên ba branch IDs và đều áp cùng quy tắc. Mười test chấm công khác cùng TypeScript cũng Passed; build là cổng còn lại trước khi đóng bản sửa local.
+- Final local gate: 11 related tests, TypeScript, 738-module production build and Supabase bundle guard Passed. Built main/Attendance assets contain the effective-date and minute-boundary markers. No migration or attendance-history write is required/performed.
+- Predeploy production evidence: live main `index-DUUWlmAC.js` contains `2026-08-01` and not `2026-08-12`; live Attendance `AttendancePage-Dg43dTgD.js` still has the prior `Check-in trước` copy and not the minute-boundary copy. Owner explicitly authorized deployment; release/live verification is in progress.
+- Release verification: Vercel remote build Passed with the same 738 modules and guarded hashes as local. Alias now serves `index-2Cbfhsi1.js` + `AttendancePage-Cz2cJlQm.js`; effective-date/new-copy markers are present, old Attendance copy absent, server-time is 200. No attendance row or database object was changed by this release.
+
+## 2026-08-10 (chiều) — Rà lỗi theo yêu cầu chủ quán
+
+### BUG-141 — `weekStart()` dựng ngày ở giờ máy rồi `toISOString()` (đúng mẫu BUG-138)
+
+- Severity: Low (mã chết). Status: **Đã gỡ, chưa deploy.**
+- Hiện tượng tiềm tàng: `new Date(\`${value}T00:00:00\`)` là nửa đêm GIỜ MÁY; ở UTC+7 `toISOString().slice(0,10)` trả về ngày HÔM TRƯỚC. `weekStart('2026-08-10')` (Thứ Hai) sẽ ra `2026-08-09` (Chủ nhật).
+- Vì sao chưa gây hại: hàm không còn nơi gọi nào kể từ khi chính sách tiền KPI chuyển sang daily-only (bỏ thưởng tuần). Đã gỡ hẳn khỏi `AdminPage.tsx` thay vì để lại làm bẫy cho phiên sau.
+- Chặn tái phát: `scripts/test-business-date-alignment.mjs` có bước quét mã nguồn cấm mẫu ngày thuần đi qua giờ máy.
+
+### BUG-142 — LAN server nhận danh tính từ header `X-User-*` giả mạo được khi thiếu token
+
+- Severity: Medium trong chế độ LAN, không ảnh hưởng production. Status: **Đã xác nhận, CHƯA sửa.**
+- `actor()` trong `scripts/lan-server.mjs` tra token trong `sessions`; không thấy thì trả về danh tính dựng từ `x-user-id` / `x-user-role` / `x-user-branch` kèm `authenticated: false`. Ai gọi mà không kiểm cờ `authenticated` sẽ tin một vai trò do người gọi tự khai.
+- Phạm vi: chỉ chạy khi thiếu `VITE_SUPABASE_*` (QA/offline trong mạng LAN). Production đi Supabase + RLS nên không dính.
+- Test đang đỏ ghi nhận đúng việc này: `test-lan-auth-contract`. Việc kế tiếp: soát mọi handler dùng `actor()` và bắt buộc `authenticated === true` cho đường ghi.
+
+### Tình trạng test đỏ còn lại (20/117)
+
+- Phần lớn là assert bám chuỗi mã nguồn đã lỗi thời chứ không phải lỗi sản phẩm. Ví dụ đã đối chiếu tận nơi: `test-core-business-button-guards` đòi `window.confirm` trong khi BUG-137 đã cố ý đổi sang `confirmRisky` (an toàn hơn trong WebView Zalo) và đòi hai hàm lương đã bị gỡ; `test-cashier-pos-workspace` đòi `canUseSales` chưa có `shift_deputy`; `test-fixed-sidebar-navigation` đòi nhãn `KPI nhân viên` đã đổi thành `Thi đua nhân viên`; `test-role-specific-admin-manager-ui` đòi `page === 'management'` chỉ cho `admin` trong khi SUP MT nay vào được ở chế độ chỉ xem.
+- Chưa sửa các harness này trong phiên: sửa assert cho khớp hiện trạng là việc riêng, gộp vào đây dễ che mất lỗi thật.
+
+## 2026-08-10 — Bổ sung nguồn doanh thu KPI trước khi dùng web
+
+- Đây là bổ sung dữ liệu nghiệp vụ do owner xác nhận, không phải lỗi mất hóa đơn. Audit trước ghi chứng minh 14/41 dòng đã có đúng, 1 dòng chỉ thiếu 33.000đ và 26 dòng chưa có nguồn web.
+- Đã triển khai bảng riêng và adapter KPI; production hiện có đúng 27 adjustment = 19.444.000đ, không tạo thêm `sales_receipts` (cửa sổ 03–10/07 giữ 187 hóa đơn) và không tác động kho. Tổng 41 dòng sau gộp là 30.679.000đ.
+- Regression, build, post-migration audit và live bundle verification Passed trên deployment `dpl_Ey2sk56RevSWUiHTbSHjJTYhUcg2`.
+
+## 2026-08-10 — Thay đổi chính sách tiền KPI sang daily-only
+
+- Đây là thay đổi nghiệp vụ được owner yêu cầu trực tiếp, không phải bug dữ liệu. Production `dpl_GkT1AtVXuTKo92DTdgmHzNVYBs8a` chỉ cộng thưởng ngày; thưởng tuần, tháng và giải tháng bằng 0 trong luồng tính tiền.
+- Regression `test-daily-only-kpi-reward-20260810.mjs` đã chứng minh đỏ với code cũ và Passed sau thay đổi. Các regression KPI ngược, xếp hạng, Vũng Tàu, timezone và phân vai cũng Passed; không có migration hoặc sửa dữ liệu lịch sử.
+
+## 2026-08-10 — KPI date-only bị lùi ngày ở múi giờ Việt Nam
+
+### BUG-138 — Thứ Bảy/Thứ Hai dùng nhầm mức KPI và kỳ trọn tháng không nhận KPI tháng cố định
+
+- Severity: High. Status: **Đã sửa, deploy và kiểm chứng production** (`dpl_2hkXxEmNwya1LyLBbr8ZU4J86kdy`).
+
+**Bằng chứng/root cause:** `employeePeriodRevenueTarget()` coi chuỗi nghiệp vụ `YYYY-MM-DD` như thời điểm local lúc 00:00 rồi đổi sang `toISOString()`. Ở UTC+7, `2026-08-08` thành `2026-08-07`; `isFullCalendarMonth()` cũng lấy ngày cuối tháng local rồi đổi UTC nên không bao giờ nhận đúng ngày cuối tháng. Regression mới `scripts/test-kpi-date-timezone.mjs` chạy đỏ trước sửa: khoảng 08/08–10/08 thành 07/08–09/08. `git blame` truy nguyên cả ba helper về commit `86d6442c` ngày 2026-07-16 15:30 +07.
+
+**Ảnh hưởng tháng 7/2026:** sau khi code trên được phát hành, màn hình tính lại kỳ 01/07–31/07 tạo dải 30/06–30/07, không dùng KPI tháng cố định. Mẫu PG part-time Gold Coast vì vậy có mẫu số 16.700.000đ thay vì 13.900.000đ; các vị trí khác tăng cùng cấu trúc 23 ngày thường + 8 cuối tuần thay cho mốc chuẩn 20 + 6. Bốn thứ Bảy (04, 11, 18, 25/07) bị dùng mức ngày thường; bốn thứ Hai (06, 13, 20, 27/07) bị dùng mức cuối tuần. Điều này có thể đổi % KPI/xếp hạng, thưởng ngày và số ngày đạt dùng cho thưởng tuần. Thưởng tháng vẫn bằng 0. Chưa audit dữ liệu từng nhân viên nên chưa kết luận số tiền lịch sử cụ thể và không tự sửa dữ liệu production.
+
+**Bản vá:** tạo ngày thuần bằng `Date.UTC`, tăng ngày bằng `setUTCDate/getUTCDate`, phân loại bằng `getUTCDay`. Sau bản vá kỹ thuật, owner phê duyệt một business change riêng cho khung Vũng Tàu và thưởng tháng; thay đổi đó được ghi riêng trong Decision Log, không phải sửa test để che BUG-138.
+
+**Kiểm chứng:** `KPI_DATE_TIMEZONE_OK` và `VUNG_TAU_KPI_20260810_OK` khóa đúng cả tháng 7/tháng 8 tại UTC+7; 10 regression KPI/thi đua/Excel/drill-down liên quan, TypeScript và build 727 modules Passed. Release production READY/aliased; live `commission-UPVEiE_r.js` chứa `Date.UTC`, `setUTCDate`, `getUTCDay` và đúng hằng số KPI mới. Audit sau release xác nhận tháng 7–10/08 có 1.620 hóa đơn Vũng Tàu, header=item, mismatch 0, không doanh thu vô chủ và không override KPI cá nhân. Không migration hoặc sửa doanh thu/chấm công lịch sử.
+
+### BUG-139 — Part-time làm ca 8 giờ chưa có quy tắc KPI được xác nhận
+
+- Severity: Medium. Status: **Đã xác nhận, sửa dữ liệu phân loại và deploy** (`dpl_DPEdP8QjYup6pN5iwjyc6NRqPcQR`).
+
+**Bằng chứng 09/08/2026:** Nguyễn Trần Nhật An và Nguyễn Minh Khoa tại Gold Coast đều có hồ sơ/lịch là `Part-time`, đăng ký/chấm công khoảng 8 giờ và doanh thu hệ thống lần lượt 1.556.000đ/1.306.000đ. Báo cáo ca trưởng dùng mốc 1.300.000đ như ca 8h (119,6% và 104,6%), trong khi code hiện phân loại bằng hồ sơ nên mốc Part-time cuối tuần là 650.000đ. Với mốc 1.300.000đ, tỷ lệ đúng từ doanh thu là 119,7% và 100,5%; riêng số 104,6% không khớp phép chia đã duyệt.
+
+**Mâu thuẫn cần chốt:** ảnh chính sách đặt tên `Part-time (4h)`/`Full-time (8h)`, nhưng chưa nói Part-time làm ca kéo dài 5h/8h phải nhân theo giờ, đổi sang mốc 8h, hay vẫn theo loại hợp đồng. Dữ liệu cùng ngày còn có Part-time 5h tại 23/10 nhưng báo cáo thủ công dùng một mốc khác, nên không đủ cơ sở suy diễn quy tắc. Không đổi hồ sơ Gold Coast, công thức giờ hoặc dữ liệu lịch sử chỉ để khớp báo cáo thủ công.
+
+**Giải quyết theo xác nhận trực tiếp:** Nhật An và Minh Khoa giữ role `staff` và chức danh hiển thị `Part-time (8h)`, nhưng nhóm KPI/ca đổi sang `full_time`, nên mục tiêu Gold Coast cuối tuần là 1.300.000đ. Production đọc lại đúng hai hồ sơ; 09/08 lần lượt là 119,7% và 100,5%. Không sửa doanh thu/chấm công.
+
+### BUG-140 — Chức danh trên lịch và quyền hồ sơ còn lệch ở Ca phó
+
+- Severity: High. Status: **Đã sửa, kiểm chứng production và deploy** (`dpl_DPEdP8QjYup6pN5iwjyc6NRqPcQR`).
+
+**Audit production chỉ đọc 10/08/2026:** 38 hồ sơ đang hoạt động tại ba điểm bán. So với ảnh lịch owner cung cấp, có một lệch chức danh chắc chắn: `Nguyễn Thị Yến` ở 23/10 được lịch ghi `Ca phó`, nhưng profile production đang là `Ca trưởng`. Điều này không đổi KPI ngày 23/10 vì hai mức ngày hiện bằng nhau, nhưng có thể đổi bậc thưởng tháng vì Ca trưởng và Ca phó dùng hai bảng thưởng khác nhau.
+
+**Lệch quyền vận hành:** `Đặng Thị Khánh Linh` và `Mã Thị Thanh Trúc` đã có đúng `position_title = Ca phó (8h)` để tính KPI Vũng Tàu, nhưng vẫn có `role=staff`, `employment_type=full_time`. Quy tắc repository dùng `role=shift_leader`, `employment_type=leader` cho Ca phó để có quyền vận hành ca; hai Ca phó Gold Coast/23/10 hiện đang theo cấu trúc này. Không tự nâng quyền tài khoản chỉ từ yêu cầu kiểm tra.
+
+**Điểm cần xác nhận tên/danh sách:** ảnh Gold Coast ghi `Võ Minh Thiện`, production ghi `Minh Thiện` (cùng Ca phó); ảnh 23/10 có vẻ lặp `Nguyễn Thị Lệ Quyên` ở cả Full-time và Part-time, trong khi production chỉ có một hồ sơ Full-time. Các nhân sự active không xuất hiện trong ảnh tuần không bị kết luận sai vai trò vì có thể đơn giản là không được xếp tuần đó.
+
+**Giải quyết theo xác nhận trực tiếp:** Yến, Khánh Linh và Thanh Trúc dùng storage role `staff`, employment group `leader`, chức danh `Ca phó (8h)`; frontend chuẩn hóa thành `shift_deputy`. Quyền Ca phó chỉ gồm bán hàng/chấm công/lịch, không mở/đứng tên/quản lý ca. Test role riêng và test chủ ca đều Passed; production đọc lại đủ ba hồ sơ đúng trạng thái. Các điểm mơ hồ về tên Minh Thiện/Lệ Quyên không bị tự ý sửa.
+
 ## 2026-08-05 — "Dữ liệu kho không đồng bộ sau khi chỉnh sửa"
 
 ### BUG-134 — Bản vá BUG-133 chỉ nâng độ chính xác hiển thị ở màn Kho nên mỗi màn đọc ra một con số khác nhau

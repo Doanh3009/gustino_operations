@@ -31,9 +31,19 @@ const access = await loadModule('../src/lib/access.ts')
 // 1. Ranh giới xem/ghi -------------------------------------------------------
 assert.equal(access.canOpenAdminConsole('supmt'), true, 'SUP MT phải vào được trang Quản trị')
 assert.equal(access.canOpenAdminConsole('admin'), true)
-for (const role of ['manager', 'shift_leader', 'staff', 'cashier', 'kitchen']) {
+// 13/08/2026: Quản lý nhận toàn bộ việc vận hành nên cũng vào console này.
+assert.equal(access.canOpenAdminConsole('manager'), true, 'Quản lý phải vào được console vận hành')
+for (const role of ['shift_leader', 'staff', 'cashier', 'kitchen']) {
   assert.equal(access.canOpenAdminConsole(role), false, `${role} không được vào trang Quản trị`)
 }
+// Ranh giới mới: chỉ Admin được đổi CẤU HÌNH hệ thống (giá, SKU, mức KPI…).
+assert.equal(access.canConfigureSystem('admin'), true)
+assert.equal(access.canConfigureSystem('manager'), false, 'Quản lý vận hành, không đổi luật hệ thống')
+assert.equal(access.canConfigureSystem('supmt'), false)
+// SUP MT xem được console nhưng KHÔNG thao tác ghi.
+assert.equal(access.canOperateConsole('manager'), true)
+assert.equal(access.canOperateConsole('admin'), true)
+assert.equal(access.canOperateConsole('supmt'), false, 'SUP MT chỉ xem, không ghi')
 assert.equal(access.isReadOnlyConsoleRole('supmt'), true, 'SUP MT là vai trò chỉ xem')
 assert.equal(access.isReadOnlyConsoleRole('admin'), false, 'Admin vẫn thao tác được')
 assert.equal(access.canUseSales('supmt'), false, 'SUP MT không bán hàng')
@@ -110,6 +120,8 @@ const adminSource = await readFile(new URL('../src/pages/AdminPage.tsx', import.
 assert.match(adminSource, /const readOnly = isReadOnlyConsoleRole\(user\.role\)/,
   'ManagementPage phải tính cờ readOnly từ vai trò')
 const readOnlyGuards = [
+  // Sau redesign (§67) Chỉnh công/Xóa ca nằm trong drawer chi tiết ca; cờ
+  // readOnly vẫn phải khóa cả cụm đó, cộng thêm ràng buộc chỉ Admin.
   { pattern: /\{!readOnly && \(row\.attendanceRecordId \?/, label: 'nút Chỉnh công/Xóa ca' },
   { pattern: /showCreateAccount && !readOnly/, label: 'biểu mẫu tạo tài khoản' },
   { pattern: /showCreateBranch && !readOnly/, label: 'biểu mẫu tạo chi nhánh' },

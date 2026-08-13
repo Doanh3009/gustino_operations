@@ -1,4 +1,4 @@
-export type Role = 'admin' | 'manager' | 'supmt' | 'shift_leader' | 'staff' | 'cashier' | 'kitchen'
+export type Role = 'admin' | 'manager' | 'supmt' | 'shift_leader' | 'shift_deputy' | 'staff' | 'cashier' | 'kitchen'
 export type EmploymentType = 'leader' | 'full_time' | 'part_time'
 export type EmploymentStatus = 'probation' | 'working' | 'ended'
 

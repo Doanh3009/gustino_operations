@@ -1,0 +1,849 @@
+/*
+ * GUSTINO — Design system dùng chung cho khu vực quản trị.
+ *
+ * Tiền tố `gt-` cố ý tách khỏi 18.000 dòng CSS lịch sử trong `styles.css`: bộ
+ * này là ngôn ngữ thiết kế MỚI (§9–§11, §79–§85), còn CSS cũ vẫn phải chạy
+ * nguyên vẹn cho những màn chưa redesign. Không sửa selector cũ để redesign —
+ * thêm class mới, giữ màn cũ sống.
+ */
+
+:root {
+  /* Thang spacing duy nhất (§80). Không dùng padding/margin ngẫu nhiên. */
+  --gt-1: 4px;
+  --gt-2: 8px;
+  --gt-3: 12px;
+  --gt-4: 16px;
+  --gt-5: 20px;
+  --gt-6: 24px;
+  --gt-8: 32px;
+  --gt-10: 40px;
+
+  /* Màu (§9). Navy = thông tin chính, lime = CTA/tốt, amber = chú ý, đỏ = lỗi. */
+  --gt-ink: #0f1f33;
+  --gt-ink-2: #33445c;
+  --gt-muted: #6b7c93;
+  --gt-faint: #93a1b3;
+  --gt-line: #e4e9f0;
+  --gt-line-soft: #eef2f7;
+  --gt-bg: #f5f7fa;
+  --gt-surface: #ffffff;
+  --gt-surface-2: #fbfcfd;
+
+  --gt-brand: #a8d12d;
+  --gt-brand-ink: #55700c;
+  --gt-brand-soft: #f1f8dd;
+  --gt-good: #17864c;
+  --gt-good-soft: #e6f5ec;
+  --gt-warn: #b4690e;
+  --gt-warn-soft: #fdf1de;
+  --gt-bad: #c8322f;
+  --gt-bad-soft: #fdeceb;
+  --gt-info: #1668c4;
+  --gt-info-soft: #e9f1fb;
+
+  --gt-radius: 12px;
+  --gt-radius-sm: 10px;
+  --gt-radius-lg: 14px;
+  --gt-shadow: 0 1px 2px rgba(15, 31, 51, .05);
+  --gt-shadow-pop: 0 12px 32px rgba(15, 31, 51, .14);
+}
+
+/* ── Khung trang ─────────────────────────────────────────────────────────── */
+
+.gt-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gt-5);
+  max-width: 1320px;              /* §73: không kéo full-width vô hạn */
+  margin: 0 auto;
+  width: 100%;
+  min-width: 0;
+}
+/* Khu vực nội dung của trang Quản trị không có padding riêng — cấp ở đây. */
+.admin-section-content > .gt-page { padding: var(--gt-5) var(--gt-5) var(--gt-6); }
+
+/* Nền chung + divider thay vì mỗi phần một floating card (§10). */
+.gt-surface {
+  background: var(--gt-surface);
+  border: 1px solid var(--gt-line);
+  border-radius: var(--gt-radius-lg);
+  box-shadow: var(--gt-shadow);
+  overflow: hidden;
+}
+.gt-surface > * + * { border-top: 1px solid var(--gt-line-soft); }
+.gt-pad { padding: var(--gt-4) var(--gt-5); }
+
+/* ── PageHeader (§13, §22, §32, §61) ─────────────────────────────────────── */
+
+.gt-page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--gt-3) var(--gt-5);
+}
+.gt-page-header__title h1 {
+  margin: 0;
+  color: var(--gt-ink);
+  font-size: 26px;                /* §11: page title 24–28 */
+  font-weight: 800;
+  letter-spacing: -.01em;
+  line-height: 1.2;
+}
+.gt-page-header__title p {
+  margin: var(--gt-1) 0 0;
+  color: var(--gt-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+.gt-page-header__context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gt-2);
+}
+.gt-page-header__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--gt-2);
+  margin-left: auto;
+}
+
+/* Thanh bộ lọc: XUẤT HIỆN ĐÚNG MỘT LẦN ở đầu trang (§6). */
+.gt-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gt-2);
+  padding: var(--gt-3) var(--gt-4);
+  background: var(--gt-surface);
+  border: 1px solid var(--gt-line);
+  border-radius: var(--gt-radius);
+}
+/* Trong console quản trị `.page.admin-page` bị ép `padding: 0`, nên thanh lọc
+   dạng THẺ bo góc bị dính sát mép trái/phải màn hình và đè lên đáy header —
+   đúng cảm giác "thanh bộ lọc quá tệ, quá xấu" (13/08/2026). Ở đó nó phải là
+   một THANH CÔNG CỤ chạy hết chiều ngang, nối liền dưới header.
+   CHỈ áp cho `.management-workspace`: workspace của Quản lý vẫn giữ padding
+   42px/4vw của `.page`, thanh full-bleed sẽ thành gạch chân lơ lửng. */
+.management-workspace .gt-filterbar {
+  padding: var(--gt-2) var(--gt-5);
+  border: 0;
+  border-bottom: 1px solid var(--gt-line);
+  border-radius: 0;
+}
+.gt-filterbar__group { display: flex; align-items: center; gap: var(--gt-2); }
+.gt-filterbar__sep { width: 1px; height: 20px; background: var(--gt-line); margin: 0 var(--gt-1); }
+.gt-filterbar__spacer { flex: 1 1 auto; }
+
+.gt-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-2);
+  height: 34px;
+  padding: 0 var(--gt-3);
+  border: 1px solid var(--gt-line);
+  border-radius: var(--gt-radius-sm);
+  background: var(--gt-surface);
+  color: var(--gt-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+/* Nhãn "CHI NHÁNH" / "NGÀY" không được xuống hàng: ô cao 34px mà nhãn vỡ hai
+   dòng thì cả thanh lọc lệch trục. */
+.gt-field > span {
+  flex: none;
+  white-space: nowrap;
+  color: var(--gt-faint);
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.gt-field:focus-within { border-color: var(--gt-brand-ink); box-shadow: 0 0 0 3px rgba(168, 209, 45, .22); }
+
+/* ── Ô nhập trong bộ gt-: GỠ style form kế thừa ──────────────────────────────
+ * `styles.css` khai `input, select, textarea { width: 100%; min-height: 50px;
+ * padding: 10px 13px; border: 1.5px solid; border-radius: 12px }` và nằm SAU
+ * `@import './ui.css'`, nên mọi thuộc tính bộ gt- không khai lại đều rơi xuống
+ * ô nhập. Hậu quả nhìn thấy được: ô tìm kiếm cao 50px nằm trong khung 36px nên
+ * chữ TRÀN RA NGOÀI VIỀN, và ô chi nhánh/ngày trong thanh lọc phình vỡ hàng.
+ * Reset đúng MỘT chỗ ở đây thay vì vá từng màn.
+ */
+.gt-field > input,
+.gt-field > select,
+.gt-search input {
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+/* Vòng sáng xanh lá của `input:focus` cũ vẽ NGAY BÊN TRONG khung — khung ngoài
+   đã có `:focus-within` lo việc đó rồi. */
+.gt-field > input:focus,
+.gt-field > select:focus,
+.gt-search input:focus { border: 0; box-shadow: none; }
+/* `background: transparent` ở trên xoá luôn mũi tên tự vẽ dùng chung của
+   `select`, và bản chung chừa tới 30px cho nó. Vẽ lại, chừa 15px. */
+.gt-field > select {
+  padding-right: 15px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%236b7c93' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: 9px 6px;
+  cursor: pointer;
+}
+
+/* ── Nút (§81) ───────────────────────────────────────────────────────────── */
+
+.gt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gt-2);
+  min-height: 36px;
+  padding: 0 var(--gt-4);
+  border-radius: var(--gt-radius-sm);
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .14s ease, border-color .14s ease, color .14s ease;
+}
+.gt-btn:disabled { opacity: .55; cursor: not-allowed; }
+.gt-btn--primary { background: var(--gt-brand); color: #23320a; }
+.gt-btn--primary:hover:not(:disabled) { background: #9bc426; }
+.gt-btn--secondary { background: var(--gt-surface); border-color: var(--gt-line); color: var(--gt-ink); }
+.gt-btn--secondary:hover:not(:disabled) { border-color: #cdd6e2; background: var(--gt-surface-2); }
+.gt-btn--ghost { background: transparent; color: var(--gt-info); }
+.gt-btn--ghost:hover:not(:disabled) { background: var(--gt-info-soft); }
+.gt-btn--danger { background: var(--gt-bad); color: #fff; }
+.gt-btn--sm { min-height: 30px; padding: 0 var(--gt-3); font-size: 12px; }
+.gt-btn:focus-visible { outline: 2px solid var(--gt-info); outline-offset: 2px; }
+
+/* ── OverflowMenu ••• (§7, §58, §86) ─────────────────────────────────────── */
+
+.gt-overflow { position: relative; display: inline-flex; }
+.gt-overflow__trigger {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--gt-line);
+  border-radius: var(--gt-radius-sm);
+  background: var(--gt-surface);
+  color: var(--gt-ink-2);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+.gt-overflow__trigger:hover { border-color: #cdd6e2; }
+.gt-overflow__panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  min-width: 216px;
+  padding: var(--gt-1);
+  background: var(--gt-surface);
+  border: 1px solid var(--gt-line);
+  border-radius: var(--gt-radius);
+  box-shadow: var(--gt-shadow-pop);
+  display: flex;
+  flex-direction: column;
+}
+.gt-overflow__panel button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gt-3);
+  width: 100%;
+  padding: var(--gt-2) var(--gt-3);
+  border: 0;
+  border-radius: var(--gt-radius-sm);
+  background: transparent;
+  color: var(--gt-ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.gt-overflow__panel button:hover:not(:disabled) { background: var(--gt-bg); }
+.gt-overflow__panel button:disabled { color: var(--gt-faint); cursor: not-allowed; }
+.gt-overflow__panel button.is-danger { color: var(--gt-bad); }
+.gt-overflow__panel hr { margin: var(--gt-1) var(--gt-2); border: 0; border-top: 1px solid var(--gt-line-soft); }
+
+/* ── Metric compact (§8, §14, §23) ───────────────────────────────────────── */
+
+.gt-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0;
+  background: var(--gt-surface);
+  border: 1px solid var(--gt-line);
+  border-radius: var(--gt-radius-lg);
+  overflow: hidden;
+}
+.gt-metric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gt-1);
+  padding: var(--gt-4) var(--gt-5);
+  border-left: 1px solid var(--gt-line-soft);
+}
+.gt-metric:first-child { border-left: 0; }
+.gt-metric__label {
+  color: var(--gt-faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.gt-metric__value {
+  color: var(--gt-ink);
+  font-size: 26px;                /* §11: số quan trọng 24–32 */
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -.02em;
+}
+.gt-metric__hint { color: var(--gt-muted); font-size: 12px; font-weight: 600; }
+.gt-metric__delta { font-size: 12px; font-weight: 700; }
+.gt-metric__delta.up { color: var(--gt-good); }
+.gt-metric__delta.down { color: var(--gt-bad); }
+.gt-metric__delta.flat { color: var(--gt-muted); }
+
+/* Summary một dòng thay cho hàng KPI card (§35, §62). */
+.gt-summary-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gt-2) var(--gt-3);
+  color: var(--gt-ink-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+.gt-summary-line b { color: var(--gt-ink); font-weight: 800; }
+.gt-summary-line i { color: var(--gt-line); font-style: normal; }
+.gt-summary-line .warn { color: var(--gt-warn); }
+.gt-summary-line .bad { color: var(--gt-bad); }
+
+/* ── SectionHeader ───────────────────────────────────────────────────────── */
+
+.gt-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gt-2) var(--gt-4);
+  padding: var(--gt-3) var(--gt-5);
+}
+.gt-section-head h2 {
+  margin: 0;
+  color: var(--gt-ink);
+  font-size: 17px;                /* §11: section title 18–22 → 17 cho khu vực dày dữ liệu */
+  font-weight: 800;
+  letter-spacing: -.01em;
+}
+.gt-section-head p { margin: 2px 0 0; color: var(--gt-muted); font-size: 12px; font-weight: 500; }
+.gt-section-head__aside { display: flex; align-items: center; gap: var(--gt-2); margin-left: auto; }
+.gt-section-count { color: var(--gt-muted); font-size: 12px; font-weight: 700; }
+
+/* ── StatusBadge (§82, §85: luôn có CHỮ, không chỉ màu) ──────────────────── */
+
+.gt-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.gt-badge--good { background: var(--gt-good-soft); color: var(--gt-good); }
+.gt-badge--warn { background: var(--gt-warn-soft); color: var(--gt-warn); }
+.gt-badge--bad { background: var(--gt-bad-soft); color: var(--gt-bad); }
+.gt-badge--info { background: var(--gt-info-soft); color: var(--gt-info); }
+.gt-badge--neutral { background: var(--gt-bg); color: var(--gt-muted); }
+
+/* ── Search + FilterChips (§36, §77) ─────────────────────────────────────── */
+
+.gt-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gt-2) var(--gt-3);
+  padding: var(--gt-3) var(--gt-5);
+}
+.gt-search {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gt-2);
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 340px;
+  height: 34px;
+  padding: 0 var(--gt-3);
+  border: 1px solid var(--gt-line);
+  border-radius: var(--gt-radius-sm);
+  background: var(--gt-surface);
+  overflow: hidden;              /* chốt chặn cuối: không gì được lòi ra ngoài viền */
+}
+.gt-search span { flex: none; color: var(--gt-faint); font-size: 14px; }
+.gt-search input { flex: 1; font-weight: 500; }
+.gt-search:focus-within { border-color: var(--gt-brand-ink); box-shadow: 0 0 0 3px rgba(168, 209, 45, .22); }
+
+/* Chip đang chọn dùng LIME thương hiệu (#a8d12d), không phải một viên đen
+   trung tính — 13/08/2026 chủ hệ thống: "sai màu chủ đạo". */
+.gt-chips { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.gt-chips button {
+  height: 32px;
+  padding: 0 var(--gt-3);
+  border: 1px solid var(--gt-line);
+  border-radius: 999px;
+  background: var(--gt-surface);
+  color: var(--gt-ink-2);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.gt-chips button:hover { border-color: #cdd6e2; }
+.gt-chips button.is-active { background: var(--gt-brand); border-color: #96bd23; color: #23320a; }
+
+/* Switch 3 chế độ xem cùng một dữ liệu (§64). */
+.gt-viewswitch {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: var(--gt-bg);
+  border: 1px solid var(--gt-line);
+  border-radius: var(--gt-radius-sm);
+}
+.gt-viewswitch button {
+  height: 30px;
+  padding: 0 var(--gt-3);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--gt-muted);
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.gt-viewswitch button.is-active { background: var(--gt-surface); color: var(--gt-ink); box-shadow: var(--gt-shadow); }
+
+/* ── ResponsiveList: desktop = lưới cột, mobile = dòng dọc (§38, §66, §72) ─ */
+
+/* Lưới cột đặt qua custom property `--gt-cols` trên chính hàng đó. ĐỪNG set
+   `style={{ gridTemplateColumns }}` inline: style inline thắng cả media query
+   nên nó vô hiệu hoá luôn bố cục dọc ≤900px bên dưới.
+   Cột nên có TRẦN px (vd `minmax(0, 340px)`) và cột cuối nuốt phần thừa
+   (`minmax(120px, 1fr)`) — để tất cả `fr` thì trên màn rộng các cột bị kéo giãn
+   ra hai mép, đọc một dòng phải quét mắt cả nghìn pixel. */
+.gt-list { display: flex; flex-direction: column; }
+.gt-list__head,
+.gt-list__row {
+  display: grid;
+  grid-template-columns: var(--gt-cols, 1fr);
+  align-items: center;
+  gap: var(--gt-3);
+  padding: var(--gt-2) var(--gt-5);
+}
+.gt-list__head {
+  color: var(--gt-faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--gt-line);
+  background: var(--gt-surface-2);
+}
+.gt-list__row {
+  min-height: 48px;
+  border-bottom: 1px solid var(--gt-line-soft);
+  font-size: 13.5px;
+  color: var(--gt-ink-2);
+  text-align: left;
+  background: transparent;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  width: 100%;
+  font-family: inherit;
+}
+.gt-list__row:last-child { border-bottom: 0; }
+button.gt-list__row { cursor: pointer; }
+button.gt-list__row:hover { background: var(--gt-surface-2); }
+button.gt-list__row.is-selected { background: var(--gt-info-soft); }
+.gt-list__row strong { color: var(--gt-ink); font-weight: 700; }
+.gt-list__row small { display: block; color: var(--gt-muted); font-size: 11.5px; font-weight: 500; line-height: 1.35; }
+.gt-cell--num { text-align: right; font-variant-numeric: tabular-nums; }
+.gt-cell--num b { font-weight: 700; }
+.gt-chevron { color: var(--gt-faint); font-size: 15px; }
+
+/* Ranking bar thay cho donut chart (§25, §26). */
+.gt-rank { display: flex; flex-direction: column; gap: var(--gt-1); }
+.gt-rank__top { display: flex; align-items: baseline; justify-content: space-between; gap: var(--gt-3); }
+.gt-rank__name { color: var(--gt-ink); font-size: 13.5px; font-weight: 700; }
+.gt-rank__value { color: var(--gt-ink); font-size: 13.5px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.gt-rank__meta { color: var(--gt-muted); font-size: 11.5px; font-weight: 600; }
+.gt-rank__track { height: 6px; border-radius: 999px; background: var(--gt-line-soft); overflow: hidden; }
+.gt-rank__fill { height: 100%; border-radius: 999px; background: var(--gt-brand); }
+.gt-rank__fill.is-info { background: #6aa9e8; }
+.gt-rank__fill.is-warn { background: #edb95e; }
+.gt-rank__fill.is-bad { background: #e08380; }
+
+/* Hai khối cạnh nhau trên desktop, xếp dọc trên mobile. */
+.gt-overview-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gt-5);
+}
+.gt-split-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: var(--gt-5);
+  align-items: start;
+}
+
+/* ── Cần xử lý (§17, §63) ────────────────────────────────────────────────── */
+
+.gt-attention__row {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  align-items: center;
+  gap: var(--gt-3);
+  padding: var(--gt-3) var(--gt-5);
+  border-bottom: 1px solid var(--gt-line-soft);
+}
+.gt-attention__row:last-child { border-bottom: 0; }
+.gt-attention__dot { width: 8px; height: 8px; border-radius: 999px; }
+.gt-attention__dot.bad { background: var(--gt-bad); }
+.gt-attention__dot.warn { background: #e0a13a; }
+.gt-attention__dot.info { background: var(--gt-info); }
+.gt-attention__body strong { display: block; color: var(--gt-ink); font-size: 13.5px; font-weight: 700; }
+.gt-attention__body small { display: block; color: var(--gt-muted); font-size: 12px; font-weight: 500; }
+
+/* ── Mở NGAY TẠI DÒNG ─────────────────────────────────────────────────────
+ * Chủ hệ thống 13/08/2026: "bấm vô hiện ra cái bên phải chi trời, kiểu như
+ * đang bị giấu nội dung". Chi tiết một dòng nay bung ra ngay dưới chính dòng
+ * đó, trong mạch đọc — không đẩy sang panel bên phải.
+ */
+.gt-inline-detail {
+  padding: var(--gt-4) var(--gt-5);
+  background: var(--gt-surface-2);
+  border-bottom: 1px solid var(--gt-line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gt-4);
+}
+.gt-inline-detail__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gt-6);
+}
+@media (max-width: 900px) {
+  .gt-inline-detail { padding: var(--gt-3) var(--gt-4); }
+  .gt-inline-detail__grid { grid-template-columns: minmax(0, 1fr); gap: var(--gt-4); }
+}
+
+/* Khối gấp: nội dung nằm THẲNG trên trang, chỉ thu gọn cho đỡ chật — khác hẳn
+   với việc giấu sau một menu rồi mở ra chỗ khác. */
+.gt-fold > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--gt-2) var(--gt-3);
+  padding: var(--gt-4) var(--gt-5);
+  cursor: pointer;
+  list-style: none;
+}
+.gt-fold > summary::-webkit-details-marker { display: none; }
+.gt-fold > summary::before {
+  content: '⌄';
+  color: var(--gt-faint);
+  font-size: 15px;
+  transition: transform .15s ease;
+}
+.gt-fold[open] > summary::before { transform: rotate(180deg); }
+.gt-fold > summary strong { color: var(--gt-ink); font-size: 17px; font-weight: 800; }
+.gt-fold > summary small { color: var(--gt-muted); font-size: 12.5px; font-weight: 600; }
+.gt-fold > summary:hover { background: var(--gt-surface-2); }
+
+/* ── Drawer (desktop) / BottomSheet (mobile) ─────────────────────────────── */
+
+.gt-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  background: rgba(15, 31, 51, .38);
+  display: flex;
+  justify-content: flex-end;
+}
+.gt-drawer {
+  display: flex;
+  flex-direction: column;
+  width: min(460px, 100%);
+  height: 100%;
+  background: var(--gt-surface);
+  box-shadow: var(--gt-shadow-pop);
+  animation: gt-slide-in .18s ease;
+}
+.gt-drawer--wide { width: min(720px, 100%); }
+@keyframes gt-slide-in { from { transform: translateX(24px); opacity: .6 } to { transform: none; opacity: 1 } }
+.gt-drawer__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gt-3);
+  padding: var(--gt-4) var(--gt-5);
+  border-bottom: 1px solid var(--gt-line);
+}
+.gt-drawer__head h2 { margin: 0; color: var(--gt-ink); font-size: 18px; font-weight: 800; }
+.gt-drawer__head p { margin: 2px 0 0; color: var(--gt-muted); font-size: 12.5px; font-weight: 600; }
+.gt-drawer__close {
+  margin-left: auto;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--gt-line);
+  border-radius: var(--gt-radius-sm);
+  background: var(--gt-surface);
+  color: var(--gt-muted);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+.gt-drawer__body { flex: 1; overflow: auto; padding: var(--gt-4) var(--gt-5); display: flex; flex-direction: column; gap: var(--gt-4); }
+.gt-drawer__foot { padding: var(--gt-3) var(--gt-5); border-top: 1px solid var(--gt-line); display: flex; gap: var(--gt-2); justify-content: flex-end; }
+
+/* Bảng đối chiếu trong drawer (§39). */
+.gt-recon { display: flex; flex-direction: column; }
+.gt-recon__row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--gt-3); padding: 7px 0; font-size: 13px; }
+.gt-recon__row span { color: var(--gt-ink-2); font-weight: 600; }
+.gt-recon__row b { color: var(--gt-ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+.gt-recon__row.is-total { border-top: 1px solid var(--gt-ink); margin-top: var(--gt-2); padding-top: var(--gt-3); }
+.gt-recon__row.is-total span, .gt-recon__row.is-total b { font-weight: 800; font-size: 14px; }
+.gt-recon__row .pos { color: var(--gt-good); }
+.gt-recon__row .neg { color: var(--gt-bad); }
+
+/* Timeline biến động trong ngày. */
+.gt-timeline { display: flex; flex-direction: column; gap: 0; }
+.gt-timeline__item { display: grid; grid-template-columns: 52px 1fr auto; gap: var(--gt-3); align-items: baseline; padding: var(--gt-2) 0; border-bottom: 1px solid var(--gt-line-soft); font-size: 13px; }
+.gt-timeline__item:last-child { border-bottom: 0; }
+.gt-timeline__item time { color: var(--gt-faint); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.gt-timeline__item b { font-variant-numeric: tabular-nums; font-weight: 700; }
+
+/* Dấu +/− của phiếu kho. Màu KÈM dấu, không chỉ màu (§85). */
+.gt-delta-in { color: var(--gt-good); }
+.gt-delta-out { color: var(--gt-bad); }
+
+/* Khối cảnh báo nghiệp vụ (checkpoint kiểm kê, ảnh hưởng backdated…). */
+.gt-callout {
+  padding: var(--gt-3) var(--gt-4);
+  border-radius: var(--gt-radius);
+  border: 1px solid transparent;
+  font-size: 13px;
+}
+.gt-callout strong { display: block; font-weight: 800; }
+.gt-callout p { margin: var(--gt-1) 0 0; font-weight: 500; line-height: 1.45; }
+.gt-callout--warn { background: var(--gt-warn-soft); border-color: #f0d7ab; color: #7a4708; }
+.gt-callout--info { background: var(--gt-info-soft); border-color: #cfe0f5; color: #124e94; }
+.gt-callout--bad { background: var(--gt-bad-soft); border-color: #f3c9c7; color: #96201e; }
+
+/* Màn Kho vận hành: dòng SKU bấm được + summary một dòng (§35, §38). */
+.wh-summary {
+  margin: 0;
+  padding: 2px 2px 6px;
+  color: var(--gt-ink-2);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.wh-summary b { color: var(--gt-ink); font-weight: 800; }
+.wh-summary .warn { color: var(--gt-warn); }
+.wh-summary .bad { color: var(--gt-bad); }
+button.wh-tr-tap {
+  width: 100%;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.wh-tr-tap:hover { background: var(--gt-surface-2); }
+button.wh-tr-tap:focus-visible { outline: 2px solid var(--gt-info); outline-offset: -2px; }
+.wh-state i { margin-left: 4px; color: var(--gt-faint); font-style: normal; }
+
+/* ── ActionSheet: "+ Phát sinh kho" (§40) ────────────────────────────────── */
+
+.gt-sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  background: rgba(15, 31, 51, .38);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--gt-4);
+}
+.gt-sheet {
+  width: min(420px, 100%);
+  background: var(--gt-surface);
+  border-radius: var(--gt-radius-lg);
+  box-shadow: var(--gt-shadow-pop);
+  overflow: hidden;
+}
+.gt-sheet__head { padding: var(--gt-4) var(--gt-5) var(--gt-2); }
+.gt-sheet__head h2 { margin: 0; font-size: 17px; font-weight: 800; color: var(--gt-ink); }
+.gt-sheet__head p { margin: 2px 0 0; font-size: 12.5px; color: var(--gt-muted); font-weight: 500; }
+.gt-sheet__list { display: flex; flex-direction: column; padding: var(--gt-2); }
+.gt-sheet__list button {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: var(--gt-3) var(--gt-4);
+  border: 0;
+  border-radius: var(--gt-radius-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.gt-sheet__list button:hover:not(:disabled) { background: var(--gt-bg); }
+.gt-sheet__list button:disabled { opacity: .5; cursor: not-allowed; }
+.gt-sheet__list strong { color: var(--gt-ink); font-size: 14px; font-weight: 700; }
+.gt-sheet__list small { color: var(--gt-muted); font-size: 12px; font-weight: 500; }
+.gt-sheet__foot { padding: var(--gt-2) var(--gt-4) var(--gt-4); }
+
+/* ── Empty / Error / Skeleton (§74–§76) ──────────────────────────────────── */
+
+.gt-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--gt-1);
+  padding: var(--gt-8) var(--gt-5);
+  text-align: center;
+}
+.gt-empty strong { color: var(--gt-ink); font-size: 14px; font-weight: 700; }
+.gt-empty p { margin: 0; color: var(--gt-muted); font-size: 13px; font-weight: 500; max-width: 46ch; }
+.gt-empty .gt-btn { margin-top: var(--gt-2); }
+
+.gt-skeleton { position: relative; overflow: hidden; background: var(--gt-line-soft); border-radius: 6px; }
+.gt-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .7), transparent);
+  animation: gt-shimmer 1.2s infinite;
+}
+@keyframes gt-shimmer { to { transform: translateX(100%) } }
+.gt-skeleton-row { display: flex; gap: var(--gt-3); padding: var(--gt-3) var(--gt-5); border-bottom: 1px solid var(--gt-line-soft); }
+.gt-skeleton-row .gt-skeleton { height: 14px; }
+
+/* ── Mobile (§38, §71, §72): 360 / 390 / 430 — không scroll ngang ────────── */
+
+@media (max-width: 1180px) {
+  .gt-overview-split,
+  .gt-split-main { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 900px) {
+  .gt-page { gap: var(--gt-4); }
+  .admin-section-content > .gt-page { padding: 0 var(--gt-3) var(--gt-5); }
+  /* Hai ô ngày phải xuống dòng được ở 360px, không đẩy tràn ngang. */
+  .gt-filterbar__group { flex: 1 1 100%; flex-wrap: wrap; }
+  .gt-filterbar__group .gt-field { flex: 1 1 140px; }
+  .gt-page-header { align-items: flex-start; }
+  .gt-page-header__title h1 { font-size: 21px; }
+  .gt-page-header__actions { margin-left: 0; width: 100%; }
+  .gt-page-header__actions .gt-btn { flex: 1; }
+
+  .gt-filterbar { padding: var(--gt-3); }
+  .management-workspace .gt-filterbar { padding: var(--gt-2) var(--gt-4); }
+  .gt-filterbar .gt-field { flex: 1 1 140px; }
+  .gt-filterbar__sep { display: none; }
+
+  /* iOS Safari zoom trang khi focus field có cỡ chữ < 16px. Reset ở trên hạ về
+     13px cho desktop, nên phải trả lại 16px + tăng chiều cao chạm trên mobile. */
+  .gt-field,
+  .gt-search { height: 40px; }
+  .gt-field > input,
+  .gt-field > select,
+  .gt-search input { font-size: 16px; }
+
+  .gt-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gt-metric { padding: var(--gt-3) var(--gt-4); border-left: 0; border-top: 1px solid var(--gt-line-soft); }
+  .gt-metric:nth-child(-n+2) { border-top: 0; }
+  .gt-metric:nth-child(even) { border-left: 1px solid var(--gt-line-soft); }
+  .gt-metric__value { font-size: 21px; }
+
+  .gt-section-head,
+  .gt-toolbar,
+  .gt-list__head,
+  .gt-list__row,
+  .gt-attention__row,
+  .gt-drawer__body,
+  .gt-drawer__head,
+  .gt-empty { padding-left: var(--gt-4); padding-right: var(--gt-4); }
+
+  /* Bảng ngang → dòng dọc. KHÔNG thu nhỏ bảng desktop. */
+  .gt-list__head { display: none; }
+  .gt-list__row {
+    grid-template-columns: 1fr auto;
+    align-items: start;
+    row-gap: var(--gt-1);
+    min-height: 64px;
+  }
+  .gt-list__row > [data-gt-label] { display: flex; align-items: baseline; justify-content: space-between; gap: var(--gt-3); }
+  .gt-list__row > [data-gt-label]::before {
+    content: attr(data-gt-label);
+    color: var(--gt-faint);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+  .gt-list__row > [data-gt-primary] { grid-column: 1; }
+  .gt-list__row > [data-gt-trailing] { grid-column: 2; grid-row: 1; text-align: right; }
+  .gt-list__row > [data-gt-span] { grid-column: 1 / -1; }
+
+  /* Drawer trượt từ đáy = bottom sheet. */
+  .gt-scrim { align-items: flex-end; justify-content: center; }
+  .gt-drawer,
+  .gt-drawer--wide {
+    width: 100%;
+    height: auto;
+    max-height: 88vh;
+    border-radius: var(--gt-radius-lg) var(--gt-radius-lg) 0 0;
+    animation: gt-slide-up .2s ease;
+  }
+  @keyframes gt-slide-up { from { transform: translateY(20px); opacity: .7 } to { transform: none; opacity: 1 } }
+
+  .gt-sheet-scrim { align-items: flex-end; padding: 0; }
+  .gt-sheet { width: 100%; border-radius: var(--gt-radius-lg) var(--gt-radius-lg) 0 0; }
+
+  /* §85: touch target đủ lớn trên mobile. */
+  .gt-btn, .gt-overflow__trigger, .gt-chips button, .gt-viewswitch button { min-height: 40px; }
+  .gt-overflow__trigger { width: 40px; }
+}
+
+@media (max-width: 380px) {
+  .gt-metrics { grid-template-columns: 1fr; }
+  .gt-metric:nth-child(even) { border-left: 0; }
+  .gt-metric:nth-child(2) { border-top: 1px solid var(--gt-line-soft); }
+}

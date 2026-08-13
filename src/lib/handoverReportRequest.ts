@@ -16,6 +16,12 @@ export interface HandoverReportRequest {
   shiftId: string
   sequence: number
   businessDate: string
+  /**
+   * Ai đặt yêu cầu này. `handover` = ca trưởng vừa bấm chốt & bàn giao ca.
+   * `schedule` = tới giờ gửi báo cáo (15:15 / 22:15) nên hệ thống tự đặt — đường
+   * này KHÔNG đòi ca phải đóng, vì báo cáo không còn phụ thuộc việc bàn giao.
+   */
+  trigger?: 'handover' | 'schedule'
 }
 
 function emitPendingChanged() {
@@ -32,7 +38,12 @@ export function readHandoverReportRequest(): HandoverReportRequest | null {
     if (!raw) return null
     const value = JSON.parse(raw)
     if (!value?.shiftId || !value?.businessDate || ![1, 2].includes(Number(value.sequence))) return null
-    return { shiftId: String(value.shiftId), sequence: Number(value.sequence), businessDate: String(value.businessDate) }
+    return {
+      shiftId: String(value.shiftId),
+      sequence: Number(value.sequence),
+      businessDate: String(value.businessDate),
+      trigger: value.trigger === 'schedule' ? 'schedule' : 'handover',
+    }
   } catch {
     return null
   }

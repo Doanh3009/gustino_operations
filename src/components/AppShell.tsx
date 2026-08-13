@@ -16,6 +16,7 @@ import { addLocalDateKeyDays, localDateKey } from '../lib/dates'
 import { burstGuard } from '../lib/browser'
 import { shouldUseLanApi, supabase, uniqueChannelName } from '../lib/supabase'
 import { ATTENDANCE_OUTBOX_EVENT, inspectAttendanceOutbox } from '../lib/attendanceOutbox'
+import { canSubmitResignation, canViewResignationInbox } from '../lib/resignationRequests'
 import { pendingHandoverReportForToday, REPORT_PENDING_EVENT, type HandoverReportRequest } from '../lib/handoverReportRequest'
 import type { AppUser } from '../types'
 import { AppFooter } from './AppFooter'
@@ -27,6 +28,8 @@ export type Page =
   | 'sales'
   | 'my-records'
   | 'my-timesheet'
+  | 'competition'
+  | 'resignation'
   | 'report-archive'
   | 'restaurant'
   | 'report'
@@ -64,18 +67,27 @@ interface NavItem {
   canShow: (user: AppUser) => boolean
 }
 
+/**
+ * ADMIN = console CẤU HÌNH (no-code), 13/08/2026.
+ *
+ * Việc hằng ngày (tổng quan, doanh thu, kho, chấm công, thi đua, đơn hàng, nhân
+ * sự) đã chuyển sang tài khoản Quản lý. Admin chỉ còn chỉnh HỆ THỐNG: sản phẩm,
+ * giá, khuyến mãi, chi nhánh, mức KPI, phân quyền — đổi được mà không phải sửa
+ * mã nguồn rồi deploy.
+ *
+ * Admin vẫn giữ lối vào console vận hành (nhóm dưới) để đối chiếu khi có sự cố —
+ * đổi vai trò không được xoá năng lực.
+ */
 const ADMIN_NAV: NavItem[] = [
+  { id: 'control', label: 'Cấu hình hệ thống', shortLabel: 'Cấu hình', icon: <IconSettings />, canShow: () => true },
   { id: 'management', section: 'overview', label: 'Tổng quan', icon: <IconDashboard />, canShow: () => true },
-  { id: 'management', section: 'revenue', label: 'Doanh thu', icon: <IconChart />, canShow: () => true },
-  // Admin không đặt hàng — chỉ theo dõi/lọc/xuất đơn của các chi nhánh ở mục Đặt hàng
-  // trong trang Quản trị, nên mục này trỏ vào đó thay vì trang đặt hàng của chi nhánh.
-  { id: 'management', section: 'requests', label: 'Đơn hàng', icon: <IconClipboard />, canShow: () => true },
+  { id: 'dashboard', label: 'Doanh thu', icon: <IconChart />, canShow: () => true },
   { id: 'management', section: 'inventory', label: 'Kho hàng', icon: <IconBox />, canShow: () => true },
-  { id: 'management', section: 'accounts', label: 'Nhân sự', icon: <IconUsers />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'management', section: 'attendance', label: 'Chấm công', icon: <IconClock />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'management', section: 'commission', label: 'Thi đua nhân viên', icon: <IconChart />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'report-archive', label: 'Báo cáo', icon: <IconReport />, canShow: (user) => canUseAdmin(user.role) },
-  { id: 'control', label: 'Cài đặt', icon: <IconSettings />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'management', section: 'attendance', label: 'Chấm công', icon: <IconClock />, canShow: () => true },
+  { id: 'management', section: 'commission', label: 'Thi đua nhân viên', shortLabel: 'Thi đua', icon: <IconChart />, canShow: () => true },
+  { id: 'management', section: 'requests', label: 'Đơn hàng', icon: <IconClipboard />, canShow: () => true },
+  { id: 'management', section: 'accounts', label: 'Nhân sự', icon: <IconUsers />, canShow: () => true },
+  { id: 'report-archive', label: 'Báo cáo', icon: <IconReport />, canShow: () => true },
 ]
 
 // SUP MT (giám sát thị trường) đi cùng bộ mục với admin để đối chiếu số liệu toàn
@@ -90,14 +102,25 @@ const SUPMT_NAV: NavItem[] = [
   { id: 'management', section: 'requests', label: 'Đơn hàng', icon: <IconClipboard />, canShow: () => true },
   { id: 'management', section: 'accounts', label: 'Nhân sự', icon: <IconUsers />, canShow: () => true },
   { id: 'attendance', label: 'Chấm công của tôi', shortLabel: 'Chấm công', icon: <IconUsers />, canShow: () => true },
-  { id: 'my-timesheet', label: 'Xem công', shortLabel: 'Công', icon: <IconClock />, canShow: () => true },
 ]
 
+/**
+ * QUẢN LÝ = người VẬN HÀNH (13/08/2026).
+ *
+ * Nhận đủ những việc Admin đang làm. Riêng **Doanh thu giữ nguyên trang
+ * `dashboard`** (`ManagerDashboardPage`) theo yêu cầu chủ hệ thống — thiết kế
+ * bảng số của Quản lý đẹp hơn nên giữ, không thay bằng mục doanh thu trong
+ * console.
+ */
 const MANAGER_NAV: NavItem[] = [
-  { id: 'dashboard', label: 'Doanh thu', icon: <IconDashboard />, canShow: () => true },
-  { id: 'manager-business', label: 'Kinh doanh', icon: <IconChart />, canShow: () => true },
-  { id: 'manager-inventory', label: 'Kho', icon: <IconBox />, canShow: () => true },
-  { id: 'report-archive', label: 'Báo cáo ngày', icon: <IconReport />, canShow: (user) => canUseManagement(user.role) },
+  { id: 'management', section: 'overview', label: 'Tổng quan', icon: <IconDashboard />, canShow: () => true },
+  { id: 'dashboard', label: 'Doanh thu', icon: <IconChart />, canShow: () => true },
+  { id: 'management', section: 'inventory', label: 'Kho hàng', icon: <IconBox />, canShow: () => true },
+  { id: 'management', section: 'attendance', label: 'Chấm công', icon: <IconClock />, canShow: () => true },
+  { id: 'management', section: 'commission', label: 'Thi đua nhân viên', shortLabel: 'Thi đua', icon: <IconChart />, canShow: () => true },
+  { id: 'management', section: 'requests', label: 'Đơn hàng', icon: <IconClipboard />, canShow: () => true },
+  { id: 'management', section: 'accounts', label: 'Nhân sự', icon: <IconUsers />, canShow: () => true },
+  { id: 'report-archive', label: 'Báo cáo ngày', shortLabel: 'Báo cáo', icon: <IconReport />, canShow: () => true },
 ]
 
 const NAV_ITEMS: NavItem[] = [
@@ -124,14 +147,16 @@ const NAV_ITEMS: NavItem[] = [
     label: 'Lịch sử & báo cáo',
     shortLabel: 'Lịch sử',
     icon: <IconHistory />,
-    canShow: (user) => user.role === 'staff' || user.role === 'shift_leader',
+    canShow: (user) => user.role === 'staff' || user.role === 'shift_leader' || user.role === 'shift_deputy',
   },
   {
-    id: 'my-timesheet',
-    label: 'Xem công',
-    shortLabel: 'Công',
-    icon: <IconClock />,
-    canShow: (user) => user.role === 'staff' || user.role === 'shift_leader' || user.role === 'supmt',
+    // Bảng thi đua rút gọn: ai bán hàng cũng xem được thứ hạng của mình, nhưng
+    // không có xuất Excel và không thấy giờ công/số ca của người khác.
+    id: 'competition',
+    label: 'Bảng thi đua',
+    shortLabel: 'Thi đua',
+    icon: <IconChart />,
+    canShow: (user) => canUseSales(user.role),
   },
   {
     id: 'handover',
@@ -162,6 +187,15 @@ const NAV_ITEMS: NavItem[] = [
     label: 'Đặt bếp',
     icon: <IconKitchen />,
     canShow: (user) => canUseKitchen(user.role),
+  },
+  {
+    // Nhân viên/Ca trưởng/Ca phó nộp đơn; Quản lý duyệt; Ca trưởng chi nhánh
+    // thấy đơn của chi nhánh mình để chủ động xếp lịch thay người.
+    id: 'resignation',
+    label: 'Đơn nghỉ việc',
+    shortLabel: 'Nghỉ việc',
+    icon: <IconClipboard />,
+    canShow: (user) => canSubmitResignation(user.role) || canViewResignationInbox(user.role),
   },
 ]
 
@@ -196,6 +230,8 @@ const EN_NAV_LABELS: Partial<Record<Page, { label: string; shortLabel?: string }
   sales: { label: 'Sales' },
   'my-records': { label: 'History & reports', shortLabel: 'History' },
   'my-timesheet': { label: 'My timesheet', shortLabel: 'Timesheet' },
+  competition: { label: 'Leaderboard', shortLabel: 'Board' },
+  resignation: { label: 'Resignation', shortLabel: 'Resign' },
   handover: { label: 'Shift handover', shortLabel: 'Handover' },
   inventory: { label: 'Inventory' },
   report: { label: 'Close shift' },
@@ -239,17 +275,17 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   const operationGuide = OPERATION_GUIDE_ITEMS.filter((item) => item.canShow(user))
   const showOperationGuide = false
   const showSundayReminder = new Date().getDay() === 0
-    && (user.role === 'staff' || user.role === 'shift_leader')
+    && (user.role === 'staff' || user.role === 'shift_leader' || user.role === 'shift_deputy')
     && page !== 'attendance'
     && !sundayReminderDismissed
   const showAttendanceReminder = Boolean(attendanceReminder)
-    && (user.role === 'staff' || user.role === 'shift_leader')
+    && (user.role === 'staff' || user.role === 'shift_leader' || user.role === 'shift_deputy')
     && page !== 'attendance'
     && !attendanceReminderDismissed
   // Bàn giao ca xong mà chưa chốt/gửi báo cáo là chuyện hay quên nhất; nhắc ở MỌI
   // trang cho tới khi báo cáo được gửi (cờ localStorage do màn Báo cáo xoá khi xong).
   const showReportReminder = Boolean(reportPending)
-    && user.role === 'shift_leader'
+    && (user.role === 'shift_leader' || user.role === 'shift_deputy')
     && page !== 'report'
     && !reportReminderDismissed
 
@@ -268,7 +304,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   }, [user.id, user.name, user.role, user.branchId, page])
 
   useEffect(() => {
-    if (user.role !== 'staff' && user.role !== 'shift_leader') return
+    if (user.role !== 'staff' && user.role !== 'shift_leader' && user.role !== 'shift_deputy') return
     if (page === 'attendance') {
       setAttendanceReminder(null)
       return
@@ -363,7 +399,10 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   useEffect(() => setAttendanceReminderDismissed(false), [attendanceReminder, attendanceReminderDay])
 
   useEffect(() => {
-    if (user.role !== 'shift_leader') {
+    // Ca phó cũng dựng và gửi được báo cáo (khớp `canRunScheduledReport`): 15:15 là
+    // đúng lúc ca trưởng Ca sáng tan ca, nếu chỉ ca trưởng thấy nhắc thì hôm nào họ
+    // tắt máy đúng giờ là không ai gửi.
+    if (user.role !== 'shift_leader' && user.role !== 'shift_deputy') {
       setReportPending(null)
       return
     }
@@ -511,7 +550,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
           <div>
             <small>CAPY NHẮC GỬI BÁO CÁO ✨</small>
             <strong>{reportPending?.sequence === 2 ? 'Báo cáo Ca tối + Tổng ngày chưa gửi' : 'Báo cáo Ca sáng chưa gửi'}</strong>
-            <span>Bạn đã bàn giao ca nhưng chưa chốt &amp; gửi báo cáo lên Zalo. Mở màn Báo cáo để gửi ngay nhé.</span>
+            <span>Đã tới giờ gửi báo cáo mà ảnh chưa lên được Zalo. Ảnh chỉ dựng được ở màn Báo cáo — mở màn đó là hệ thống tự gửi.</span>
           </div>
           <button type="button" onClick={() => { setReportReminderDismissed(true); onNavigate('report') }}>Gửi báo cáo ngay</button>
         </aside>

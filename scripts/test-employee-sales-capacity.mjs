@@ -96,8 +96,12 @@ assert.match(admin, /className="capacity-average-mark"/, 'Biểu đồ phải c�
 // không còn là danh sách thứ hai liệt kê lại đúng nhóm người đó.
 assert.doesNotMatch(admin, /className="capacity-list"/,
   'Danh sách năng suất riêng đã bị gộp vào bảng xếp hạng — đừng dựng lại danh sách thứ hai.')
+// 13/08/2026 — dải tổng đầu màn Thi đua cũng đã bỏ nốt; năng suất từng người
+// nằm trong CỘT của bảng xếp hạng, không có dải tổng nào ở đầu màn nữa.
 assert.doesNotMatch(admin, /className="capacity-summary-grid"/,
-  'Số tổng năng suất đã dời lên dải competition-overview — đừng dựng lại dải tổng thứ hai.')
+  'Số tổng năng suất nằm trong bảng xếp hạng — đừng dựng lại dải tổng ở đầu màn.')
+assert.doesNotMatch(admin, /className="competition-overview"/,
+  'Dải tổng đầu màn Thi đua đã bỏ — đừng dựng lại.')
 assert.doesNotMatch(admin, /<div className="adm-list">\s*\{commissionRows/,
   'Thẻ thưởng KPI trùng nhóm người của bảng xếp hạng đã bị gỡ.')
 assert.match(admin, /competition-classification-capacity/, 'Bảng xếp hạng thiếu cột năng suất.')
@@ -107,7 +111,7 @@ assert.match(admin, /Chưa có ngày công để tính trung bình/,
   'Người chưa có ngày công phải được nói rõ lý do thay vì hiện số 0 gây hiểu nhầm.')
 assert.match(admin, /so với TB đội/, 'Cột năng suất phải nói rõ chênh lệch so với trung bình đội.')
 
-for (const selector of ['.capacity-board {', '.capacity-chart {', '.capacity-average-mark {', '.competition-overview {']) {
+for (const selector of ['.capacity-board {', '.capacity-chart {', '.capacity-average-mark {']) {
   assert.ok(styles.includes(selector), `Thiếu CSS ${selector}`)
 }
 assert.ok(!styles.includes('.capacity-list-head,'), 'CSS danh sách năng suất cũ phải được dọn cùng lúc với markup.')

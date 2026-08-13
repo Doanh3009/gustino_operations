@@ -3,6 +3,7 @@ import { buildOperationalReportPatch, mergeBagSalesIntoReportState } from '../li
 import { DEFAULT_REVENUE_TARGET, dailyKpiBonus, employeeKpiKey, employeePeriodRevenueTarget, employeeRevenueTarget, fetchEmployeeKpiTargets, kpiRank, productSaleValues, summarizeEmployeeBagSales } from '../lib/commission'
 import { PRODUCTS, productById as catalogProductById } from '../lib/constants'
 import { branchName as configuredBranchName } from '../lib/branches'
+import { importChunk } from '../lib/lazyRoute'
 import { calculateStock, ensureOperationDay, fetchReportSnapshots, finalizeDailyReport, getOperationDay, saveShiftReportSnapshot, stockAdjustmentDeltas } from '../lib/store'
 import { formatQuantity } from '../lib/inventoryEntry'
 import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
@@ -408,10 +409,14 @@ if (!client) {
    * báo cáo Ca 1 không bao giờ được chốt/gửi Zalo.
    */
   function resolveLeaderShiftSession(sessions: BagShiftSession[], request: HandoverReportRequest | null) {
+    // Yêu cầu do HẸN GIỜ đặt (15:15 / 22:15) không xét quyền sở hữu ca: 15:15 là
+    // đúng lúc ca trưởng Ca 1 tan ca và tắt máy, nên nếu bắt buộc phải là chủ ca
+    // thì báo cáo Ca 1 sẽ không bao giờ được gửi. Ai đang mở app tại chi nhánh
+    // cũng dựng và gửi được — số liệu đọc từ máy chủ nên không phụ thuộc người bấm.
     const requested = request && request.businessDate === businessDate
       ? sessions.find((item) => item.id === request.shiftId
         && item.sequence === request.sequence
-        && ownsBagShiftSession(item, user))
+        && (request.trigger === 'schedule' || ownsBagShiftSession(item, user)))
       : undefined
     return requested || latestOwnedBagShiftSession(sessions, user)
   }
@@ -470,15 +475,22 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
   const shiftReportEntry = leaderShiftSession ? reportSnapshot?.payload.shiftReports?.[leaderShiftSession.id] : undefined
   const isSecondShiftFinalization = leaderShiftSession?.sequence === 2
   const canResumeSecondShiftFinalization = Boolean(isSecondShiftFinalization && shiftReportEntry && !finalized)
+  // Báo cáo chạy theo ĐỒNG HỒ, không theo việc bàn giao (đổi 11/08/2026): tới giờ
+  // là gửi, ca còn mở cũng gửi. Số liệu của ca lấy theo vùng giờ 15:15 nên không
+  // phụ thuộc lúc nào ca được mở/đóng. Đường bấm tay vẫn giữ nguyên các ràng buộc
+  // cũ để ca trưởng không chốt nhầm ca đang bán dở.
+  const scheduledFinalization = handoverReportRequest?.trigger === 'schedule'
+    && handoverReportRequest.businessDate === businessDate
+    && handoverReportRequest.shiftId === leaderShiftSession?.id
   const finalizeBlockedReason = finalized
     ? 'Ca 2 và Tổng ngày đã được chốt.'
     : !leaderShiftSession
       ? 'Không tìm thấy ca do bạn phụ trách trong ngày hôm nay.'
-      : leaderShiftSession.status !== 'closed'
+      : leaderShiftSession.status !== 'closed' && !scheduledFinalization
         ? `Ca ${leaderShiftSession.sequence} chưa bàn giao xong. Hãy chụp ảnh cuối ca và chốt Bàn giao trước.`
         : shiftReportEntry && !canResumeSecondShiftFinalization
           ? `Báo cáo Ca ${leaderShiftSession.sequence} đã được chốt trước đó.`
-          : isSecondShiftFinalization && dailyReport.openShiftCount > 0
+          : isSecondShiftFinalization && dailyReport.openShiftCount > 0 && !scheduledFinalization
             ? 'Ca 2 chỉ được chốt khi không còn ca nào đang mở, vì nút này đồng thời chốt Tổng ngày.'
             : ''
   const canFinalize = !finalizeBlockedReason
@@ -603,7 +615,10 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
       if (!freshLeaderShiftSession) {
         throw new Error('Không tìm thấy ca do bạn phụ trách trong ngày hôm nay.')
       }
-      if (freshLeaderShiftSession.status !== 'closed') {
+      const freshScheduledFinalization = handoverReportRequest?.trigger === 'schedule'
+        && handoverReportRequest.businessDate === businessDate
+        && handoverReportRequest.shiftId === freshLeaderShiftSession.id
+      if (freshLeaderShiftSession.status !== 'closed' && !freshScheduledFinalization) {
         throw new Error(`Ca ${freshLeaderShiftSession.sequence} chưa bàn giao xong. Hãy chụp ảnh cuối ca và chốt Bàn giao trước.`)
       }
 
@@ -626,7 +641,7 @@ const hasShiftOne = bagSessions.some((item) => item.sequence === 1)
       if (freshShiftReportEntry && !freshCanResumeSecondShiftFinalization) {
         throw new Error(`Báo cáo Ca ${freshLeaderShiftSession.sequence} đã được chốt trước đó.`)
       }
-      if (freshIsSecondShiftFinalization && freshDailyReport.openShiftCount > 0) {
+      if (freshIsSecondShiftFinalization && freshDailyReport.openShiftCount > 0 && !freshScheduledFinalization) {
         throw new Error('Ca 2 chỉ được chốt khi không còn ca nào đang mở, vì nút này đồng thời chốt Tổng ngày.')
       }
 
@@ -773,7 +788,8 @@ closingImage: [...freshDailyReport.proofImages].reverse().find((item) => item.la
 
     if (!shiftReportEntry) {
       // Chưa chốt báo cáo cho ca này → chốt + gửi trọn gói.
-      if (leaderShiftSession.status !== 'closed' || finalized) return
+      // Yêu cầu do hẹn giờ đặt thì KHÔNG đợi ca đóng: tới 15:15 / 22:15 là gửi.
+      if ((leaderShiftSession.status !== 'closed' && request.trigger !== 'schedule') || finalized) return
       const attemptKey = `${request.shiftId}:${request.businessDate}`
       if (automaticFinalizeAttemptRef.current === attemptKey) return
       automaticFinalizeAttemptRef.current = attemptKey
@@ -1488,13 +1504,13 @@ const key = `${branchId}|${employeeKey}`
       ),
       employeeKpiTargets,
     )
-    current.commission = dailyKpiBonus(
-      current.revenue / Math.max(1, current.targetRevenue) * 100,
+    current.commission = current.targetRevenue > 0 ? dailyKpiBonus(
+      current.revenue / current.targetRevenue * 100,
       registration?.employmentType === 'leader' ? 'shift_leader' : 'staff',
       registration?.employmentType,
       registration?.positionTitle,
-    )
-    current.achievedCommission = current.revenue >= current.targetRevenue
+    ) : 0
+    current.achievedCommission = current.targetRevenue > 0 && current.revenue >= current.targetRevenue
     const product = productById(allocation.productId)
 const productRow = current.productMap.get(allocation.productId) || {
       productId: allocation.productId,
@@ -1542,13 +1558,13 @@ const productRow = current.productMap.get(allocation.productId) || {
       ),
       employeeKpiTargets,
     )
-    current.achievedCommission = current.revenue >= current.targetRevenue
-    current.commission = dailyKpiBonus(
-      current.revenue / Math.max(1, current.targetRevenue) * 100,
+    current.achievedCommission = current.targetRevenue > 0 && current.revenue >= current.targetRevenue
+    current.commission = current.targetRevenue > 0 ? dailyKpiBonus(
+      current.revenue / current.targetRevenue * 100,
       registration?.employmentType === 'leader' ? 'shift_leader' : 'staff',
       registration?.employmentType,
       registration?.positionTitle,
-    )
+    ) : 0
     directLines.forEach((line) => {
       const product = productById(line.productId)
       const productRow = current.productMap.get(line.productId) || {
@@ -1870,7 +1886,7 @@ async function captureReportPosterBlob(
   let exportFrame: HTMLDivElement | null = null
   try {
     await waitForPaint()
-    const { default: html2canvas } = await import('html2canvas')
+    const { default: html2canvas } = await importChunk(() => import('html2canvas'))
     const exportTarget = target.cloneNode(true) as HTMLDivElement
     exportTarget.classList.add('rp-poster-export')
     exportFrame = document.createElement('div')

@@ -12,8 +12,13 @@ const [admin, shell, routes, dashboard, workbookSource] = await Promise.all([
 // Admin phải tìm thấy màn thi đua bằng đúng tên nghiệp vụ, kể cả từ Tổng quan.
 assert.match(shell, /section: 'commission', label: 'Thi đua nhân viên'/)
 assert.match(routes, /section: 'commission'[\s\S]*label: 'Thi đua nhân viên'/)
-assert.match(dashboard, /href="#\/admin\/sales-performance"/)
-assert.match(dashboard, />Thi đua nhân viên</)
+// Sau redesign (§18) Tổng quan không còn banner lớn chỉ chứa một chữ "Xem bảng
+// thi đua" — nó hiển thị top thật kèm lối sang màn thi đua. Lối đó phải đổi cả
+// URL để refresh/Back còn đúng (§89), và URL phải là route thi đua thật.
+assert.match(dashboard, /Xem bảng thi đua/)
+assert.match(dashboard, /onOpenSection\('commission'\)/)
+assert.match(dashboard, /Thi đua hôm nay/)
+assert.match(admin, /navigateAdminHash\(adminRouteForSection\(section\)\)/)
 assert.match(admin, /<h2>Thi đua nhân viên<\/h2>/)
 
 // Workbook mới phải tách rõ tổng hợp tháng, từng ngày/nhân viên và chi tiết nguồn.

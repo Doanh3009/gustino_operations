@@ -1,12 +1,13 @@
 import { isMissingTable, userHeaders } from './core'
 import { configuredProductPrice } from './constants'
+import { promotionalPriceFor } from './promotions'
 import { shouldUseLanApi, supabase } from './supabase'
 import type { AppUser, BagAllocation, CommissionRule, EmploymentType, Role } from '../types'
 
 export const DEFAULT_REVENUE_TARGET = 2000000
 export const DEFAULT_COMMISSION_RATE = 2
 
-export type KpiPositionKey = 'pg_part_time' | 'pg_full_time' | 'shift_leader'
+export type KpiPositionKey = 'pg_part_time' | 'pg_full_time' | 'shift_deputy' | 'shift_leader'
 
 export interface PositionKpiFormula {
   branchId: string
@@ -18,17 +19,30 @@ export interface PositionKpiFormula {
 
 const STANDARD_MONTH_WEEKDAYS = 20
 const STANDARD_MONTH_WEEKENDS = 6
+export const VUNG_TAU_NEW_KPI_FROM = '2026-07-01'
+export const VUNG_TAU_NEW_KPI_TO = '2026-07-15'
 
 export const POSITION_KPI_FORMULAS: PositionKpiFormula[] = [
   { branchId: 'gold-coast', position: 'pg_part_time', weekdayTarget: 500000, weekendTarget: 650000, monthlyTarget: 13900000 },
   { branchId: 'gold-coast', position: 'pg_full_time', weekdayTarget: 1000000, weekendTarget: 1300000, monthlyTarget: 27800000 },
+  { branchId: 'gold-coast', position: 'shift_deputy', weekdayTarget: 300000, weekendTarget: 390000, monthlyTarget: 8340000 },
   { branchId: 'gold-coast', position: 'shift_leader', weekdayTarget: 300000, weekendTarget: 390000, monthlyTarget: 8340000 },
+  // Khung gốc Vũng Tàu: áp dụng trước 01/07 và từ 16/07/2026 trở đi.
   { branchId: 'lotte-vt', position: 'pg_part_time', weekdayTarget: 600000, weekendTarget: 780000, monthlyTarget: 16680000 },
   { branchId: 'lotte-vt', position: 'pg_full_time', weekdayTarget: 1200000, weekendTarget: 1560000, monthlyTarget: 33360000 },
+  { branchId: 'lotte-vt', position: 'shift_deputy', weekdayTarget: 360000, weekendTarget: 468000, monthlyTarget: 10008000 },
   { branchId: 'lotte-vt', position: 'shift_leader', weekdayTarget: 360000, weekendTarget: 468000, monthlyTarget: 10008000 },
   { branchId: 'lotte-2310', position: 'pg_part_time', weekdayTarget: 400000, weekendTarget: 550000, monthlyTarget: 11300000 },
   { branchId: 'lotte-2310', position: 'pg_full_time', weekdayTarget: 800000, weekendTarget: 1100000, monthlyTarget: 22600000 },
+  { branchId: 'lotte-2310', position: 'shift_deputy', weekdayTarget: 240000, weekendTarget: 330000, monthlyTarget: 6780000 },
   { branchId: 'lotte-2310', position: 'shift_leader', weekdayTarget: 240000, weekendTarget: 330000, monthlyTarget: 6780000 },
+]
+
+export const VUNG_TAU_NEW_POSITION_KPI_FORMULAS: PositionKpiFormula[] = [
+  { branchId: 'lotte-vt', position: 'pg_part_time', weekdayTarget: 550000, weekendTarget: 650000, monthlyTarget: 14900000 },
+  { branchId: 'lotte-vt', position: 'pg_full_time', weekdayTarget: 1050000, weekendTarget: 1300000, monthlyTarget: 28800000 },
+  { branchId: 'lotte-vt', position: 'shift_deputy', weekdayTarget: 500000, weekendTarget: 500000, monthlyTarget: 13000000 },
+  { branchId: 'lotte-vt', position: 'shift_leader', weekdayTarget: 0, weekendTarget: 0, monthlyTarget: 0 },
 ]
 
 export const BRANCH_MONTHLY_KPI_TOTALS: Record<string, number> = {
@@ -37,9 +51,116 @@ export const BRANCH_MONTHLY_KPI_TOTALS: Record<string, number> = {
   'lotte-2310': 58760000,
 }
 
+const BRANCH_KPI_STAFFING: Record<string, Partial<Record<KpiPositionKey, number>>> = {
+  'gold-coast': { pg_full_time: 4, shift_leader: 2 },
+  // Vũng Tàu: 4 Full-time + 1 Ca phó; Ca trưởng dùng KPI team và không có KPI cá nhân.
+  'lotte-vt': { pg_full_time: 4, shift_deputy: 1, shift_leader: 1 },
+  'lotte-2310': { pg_part_time: 4, shift_leader: 2 },
+}
+
+/* ------------------------------------------------------------------ *
+ * Mức KPI do Admin chỉnh trong giao diện (bảng `branch_kpi_formulas`)
+ * ------------------------------------------------------------------ *
+ * Lớp ghi đè các hằng số ở trên. Trước đây đổi một con số KPI là phải sửa
+ * `POSITION_KPI_FORMULAS` rồi build + deploy; nay Admin tự sửa trong trang
+ * Quản trị → Thi đua nhân viên → "Mức KPI theo chi nhánh".
+ *
+ * Nạp một lần khi trang tải (`applyBranchKpiOverrides` trong
+ * `lib/branchKpiFormulas.ts`) rồi mọi hàm tính KPI đọc chung ở đây, nên
+ * KHÔNG cần đổi chữ ký của hàng chục lời gọi rải khắp AdminPage/ReportPage/
+ * ManagerDashboardPage.
+ */
+export interface BranchKpiOverride extends PositionKpiFormula {
+  headcount: number
+  effectiveFrom?: string
+}
+
+let branchKpiOverrides = new Map<string, BranchKpiOverride>()
+
+export function setBranchKpiOverrides(rows: BranchKpiOverride[]) {
+  branchKpiOverrides = new Map(rows.map((row) => [`${row.branchId}|${row.position}`, row]))
+}
+
+export function listBranchKpiOverrides(): BranchKpiOverride[] {
+  return Array.from(branchKpiOverrides.values())
+}
+
+export function branchKpiOverrideFor(branchId: string, position: KpiPositionKey) {
+  return branchKpiOverrides.get(`${branchId}|${position}`)
+}
+
+function normalizedEffectiveFrom(value?: string) {
+  const date = String(value || '').slice(0, 10)
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : undefined
+}
+
+function activeBranchKpiOverrideFor(branchId: string, position: KpiPositionKey, date?: string) {
+  const override = branchKpiOverrideFor(branchId, position)
+  const effectiveFrom = normalizedEffectiveFrom(override?.effectiveFrom)
+  if (!override || (effectiveFrom && date && date < effectiveFrom)) return undefined
+  return override
+}
+
+/** Mức mặc định trong code — dùng làm giá trị khởi tạo và nút "Khôi phục mặc định". */
+export function defaultPositionKpiFormula(branchId: string, position: KpiPositionKey) {
+  return POSITION_KPI_FORMULAS.find((item) => item.branchId === branchId && item.position === position)
+}
+
+export function defaultBranchKpiHeadcount(branchId: string, position: KpiPositionKey) {
+  return Number(BRANCH_KPI_STAFFING[branchId]?.[position] || 0)
+}
+
+/**
+ * Cửa sổ Vũng Tàu 01–15/07/2026 đã được audit và chốt số với chủ hệ thống
+ * (CODEMAP §55/§56). Override của Admin KHÔNG được sửa lại kỳ đó, nếu không
+ * mọi con số đối soát tháng 7 đã ký sẽ đổi theo mà không ai biết.
+ */
+function isFrozenVungTauWindow(branchId: string, date?: string) {
+  return branchId === 'lotte-vt' && !!date && usesVungTauNewKpi(date)
+}
+
+/** Nguồn sự thật duy nhất cho một (chi nhánh, vị trí, ngày): kỳ đã chốt → override → mặc định. */
+function resolvedPositionFormula(branchId: string, position: KpiPositionKey, date?: string) {
+  if (isFrozenVungTauWindow(branchId, date)) {
+    return VUNG_TAU_NEW_POSITION_KPI_FORMULAS.find((item) => item.branchId === branchId && item.position === position)
+      || defaultPositionKpiFormula(branchId, position)
+  }
+  return activeBranchKpiOverrideFor(branchId, position, date) || defaultPositionKpiFormula(branchId, position)
+}
+
+function resolvedHeadcount(branchId: string, position: KpiPositionKey, date?: string) {
+  const override = activeBranchKpiOverrideFor(branchId, position, date)
+  if (override) return Math.max(0, Number(override.headcount || 0))
+  return defaultBranchKpiHeadcount(branchId, position)
+}
+
+/** Cơ cấu nhân sự chuẩn dùng cho KPI team, đã áp override của Admin. */
+function branchStaffing(branchId: string, date?: string): Array<[KpiPositionKey, number]> {
+  const positions = new Set<KpiPositionKey>([
+    ...Object.keys(BRANCH_KPI_STAFFING[branchId] || {}) as KpiPositionKey[],
+    ...listBranchKpiOverrides().filter((row) => row.branchId === branchId).map((row) => row.position),
+  ])
+  return Array.from(positions)
+    .map((position) => [position, resolvedHeadcount(branchId, position, date)] as [KpiPositionKey, number])
+    .filter(([, headcount]) => headcount > 0)
+}
+
+function samePositionFormula(a?: PositionKpiFormula, b?: PositionKpiFormula) {
+  return Number(a?.weekdayTarget || 0) === Number(b?.weekdayTarget || 0)
+    && Number(a?.weekendTarget || 0) === Number(b?.weekendTarget || 0)
+    && Number(a?.monthlyTarget || 0) === Number(b?.monthlyTarget || 0)
+}
+
+function positionFormulaChangesWithin(branchId: string, position: KpiPositionKey, dates: string[]) {
+  const first = resolvedPositionFormula(branchId, position, dates[0])
+  return dates.some((date) => !samePositionFormula(first, resolvedPositionFormula(branchId, position, date)))
+}
+
 export function positionKpiKey(role?: Role, employmentType?: EmploymentType, positionTitle = ''): KpiPositionKey {
   const title = positionTitle.toLocaleLowerCase('vi')
-  if (role === 'shift_leader' || employmentType === 'leader' || title.includes('ca trưởng') || title.includes('ca phó')) {
+  const normalizedTitle = title.normalize('NFD').replace(/\p{Diacritic}/gu, '')
+  if (role === 'shift_deputy' || normalizedTitle.includes('ca pho') || normalizedTitle.includes('pho quan ly ca')) return 'shift_deputy'
+  if (role === 'shift_leader' || employmentType === 'leader' || normalizedTitle.includes('ca truong')) {
     return 'shift_leader'
   }
   if (employmentType === 'full_time' || title.includes('full')) return 'pg_full_time'
@@ -51,10 +172,12 @@ export function positionKpiFormula(
   role?: Role,
   employmentType?: EmploymentType,
   positionTitle = '',
+  date?: string,
 ) {
   const position = positionKpiKey(role, employmentType, positionTitle)
-  return POSITION_KPI_FORMULAS.find((item) => item.branchId === branchId && item.position === position)
-    || POSITION_KPI_FORMULAS.find((item) => item.branchId === 'gold-coast' && item.position === position)
+  return resolvedPositionFormula(branchId, position, date)
+    || activeBranchKpiOverrideFor('gold-coast', position, date)
+    || defaultPositionKpiFormula('gold-coast', position)
 }
 
 export function employeePeriodRevenueTarget(
@@ -65,15 +188,107 @@ export function employeePeriodRevenueTarget(
   from?: string,
   to?: string,
 ) {
-  const formula = positionKpiFormula(branchId, role, employmentType, positionTitle)
+  const formula = positionKpiFormula(branchId, role, employmentType, positionTitle, to)
   if (!formula) return DEFAULT_REVENUE_TARGET
   if (!from || !to) return formula.monthlyTarget
-  if (isFullCalendarMonth(from, to)) return formula.monthlyTarget
-  let total = 0
-  for (const date of dateRange(from, to)) {
-    total += isWeekend(date) ? formula.weekendTarget : formula.weekdayTarget
+  const dates = dateRange(from, to)
+  const mixedVungTauWindow = branchId === 'lotte-vt' && dates.some(usesVungTauNewKpi)
+  const position = positionKpiKey(role, employmentType, positionTitle)
+  if (isFullCalendarMonth(from, to) && !mixedVungTauWindow && !positionFormulaChangesWithin(branchId, position, dates)) {
+    return formula.monthlyTarget
   }
+  let total = 0
+  for (const date of dates) {
+    const dateFormula = positionKpiFormula(branchId, role, employmentType, positionTitle, date)
+    if (dateFormula) total += isWeekend(date) ? dateFormula.weekendTarget : dateFormula.weekdayTarget
+  }
+  if (
+    branchId === 'lotte-vt'
+    && position === 'shift_leader'
+    && dates.some(usesVungTauNewKpi)
+  ) return total
   return total || formula.monthlyTarget
+}
+
+export function branchTeamPeriodRevenueTarget(branchId: string, from?: string, to?: string) {
+  const staffing = branchStaffing(branchId, to)
+  if (!staffing.length) return BRANCH_MONTHLY_KPI_TOTALS[branchId] || DEFAULT_REVENUE_TARGET
+  const monthlyTotal = (date?: string) => branchStaffing(branchId, date).reduce((sum, [position, headcount]) => {
+    const formula = resolvedPositionFormula(branchId, position, date)
+    return sum + (formula?.monthlyTarget || 0) * headcount
+  }, 0)
+  if (!from || !to) return monthlyTotal()
+  const dates = dateRange(from, to)
+  const mixedVungTauWindow = branchId === 'lotte-vt' && dates.some(usesVungTauNewKpi)
+  const firstMonthlyTotal = monthlyTotal(dates[0])
+  const monthlyTotalChanges = dates.some((date) => monthlyTotal(date) !== firstMonthlyTotal)
+  if (isFullCalendarMonth(from, to) && !mixedVungTauWindow && !monthlyTotalChanges) return monthlyTotal(to)
+  return dates.reduce((sum, date) => sum + branchStaffing(branchId, date).reduce((daySum, [position, headcount]) => {
+    const formula = resolvedPositionFormula(branchId, position, date)
+    const target = formula ? (isWeekend(date) ? formula.weekendTarget : formula.weekdayTarget) : 0
+    return daySum + target * headcount
+  }, 0), 0)
+}
+
+export function employeeCompetitionPeriodRevenueTarget(
+  branchId: string,
+  role?: Role,
+  employmentType?: EmploymentType,
+  positionTitle = '',
+  from?: string,
+  to?: string,
+) {
+  const isVungTauLeader = branchId === 'lotte-vt'
+    && positionKpiKey(role, employmentType, positionTitle) === 'shift_leader'
+  if (!isVungTauLeader || !from || !to) {
+    return employeePeriodRevenueTarget(branchId, role, employmentType, positionTitle, from, to)
+  }
+  return dateRange(from, to).reduce((sum, date) => sum + (
+    usesVungTauNewKpi(date)
+      ? branchTeamPeriodRevenueTarget(branchId, date, date)
+      : employeePeriodRevenueTarget(branchId, role, employmentType, positionTitle, date, date)
+  ), 0)
+}
+
+export function usesVungTauNewKpi(date: string) {
+  return date >= VUNG_TAU_NEW_KPI_FROM && date <= VUNG_TAU_NEW_KPI_TO
+}
+
+/**
+ * **Từ 01/08/2026: doanh thu ca trưởng ghi nhận theo CA LÀM** — tổng doanh thu các
+ * ca mình đứng tên ca trưởng, cộng hóa đơn tự bấm ở ca người khác
+ * (`buildShiftLeaderRecordedRevenue`).
+ *
+ * Kèm theo: **ca trưởng chưa bị chấm KPI.** Chủ quán chưa quyết chỉ tiêu mới
+ * (11/08/2026) — mà giữ chỉ tiêu cũ thì vô nghĩa: doanh thu theo ca lớn gấp ba lần
+ * chỉ tiêu cá nhân nên ai cũng vượt 200%. Vì vậy chỉ GHI NHẬN con số: không chỉ
+ * tiêu, không %, không xếp hạng, không thưởng KPI. Khi có chỉ tiêu thì bỏ cờ này.
+ *
+ * Trước mốc: giữ nguyên số đã chốt (gồm cả luật KPI đội Vũng Tàu 01–15/07).
+ */
+export const LEADER_SHIFT_REVENUE_FROM = '2026-08-01'
+
+export function usesLeaderShiftRevenue(periodFrom: string) {
+  return String(periodFrom || '') >= LEADER_SHIFT_REVENUE_FROM
+}
+
+/**
+ * Chủ hệ thống đã TỰ ĐẶT chỉ tiêu cho ca trưởng ở chi nhánh này chưa?
+ * (Quản trị → Thi đua nhân viên → "Mức KPI theo chi nhánh", bảng `branch_kpi_formulas`.)
+ *
+ * Chưa đặt ⇒ ca trưởng chỉ GHI NHẬN doanh thu theo ca, không %, không hạng, không
+ * thưởng. Đặt rồi ⇒ chấm KPI bình thường ngay, không phải build lại app.
+ *
+ * KHÔNG lấy `POSITION_KPI_FORMULAS` làm căn cứ: đó là mức mặc định trong mã nguồn
+ * cho thời "doanh thu ca trưởng = hóa đơn tự bấm", nhỏ hơn doanh thu theo ca khoảng
+ * ba lần nên dùng lại là ai cũng vượt 200%.
+ */
+export function hasLeaderKpiTarget(branchId: string) {
+  const override = branchKpiOverrideFor(branchId, 'shift_leader')
+  if (!override) return false
+  return Number(override.monthlyTarget || 0) > 0
+    || Number(override.weekdayTarget || 0) > 0
+    || Number(override.weekendTarget || 0) > 0
 }
 
 export function kpiRank(progress: number) {
@@ -91,7 +306,7 @@ export function dailyKpiBonus(
   positionTitle = '',
 ) {
   const position = positionKpiKey(role, employmentType, positionTitle)
-  if (position === 'shift_leader') return progress >= 100 ? 30000 : 0
+  if (position === 'shift_leader' || position === 'shift_deputy') return progress >= 100 ? 30000 : 0
   if (progress >= 110) return 40000
   if (progress >= 100) return 20000
   return 0
@@ -104,8 +319,8 @@ export function monthlyKpiBonus(
   positionTitle = '',
 ) {
   const position = positionKpiKey(role, employmentType, positionTitle)
-  const isLeader = position === 'shift_leader' && positionTitle.toLocaleLowerCase('vi').includes('trưởng')
-  const fullTimeOrDeputy = position === 'pg_full_time' || position === 'shift_leader'
+  const isLeader = position === 'shift_leader'
+  const fullTimeOrDeputy = position === 'pg_full_time' || position === 'shift_deputy' || isLeader
   if (!fullTimeOrDeputy || progress < 80) return 0
   const leaderTiers = [
     [120, 5000000],
@@ -125,32 +340,78 @@ export function monthlyKpiBonus(
   return tiers.find(([threshold]) => progress >= threshold)?.[1] || 0
 }
 
+export function monthlySpecialBonus(input: {
+  position: KpiPositionKey
+  revenue: number
+  previousRevenue?: number
+  achievedDays: number
+  totalShifts: number
+  lateCount: number
+  absentCount: number
+  isTopRevenueInGroup: boolean
+  disciplineConfirmed: boolean
+}) {
+  const confirmedLabels: string[] = []
+  const pendingLabels: string[] = []
+  let confirmedBonus = 0
+  let pendingBonus = 0
+  const previousRevenue = Math.max(0, input.previousRevenue || 0)
+  if (previousRevenue > 0 && input.revenue * 100 >= previousRevenue * 115 && input.achievedDays >= 10) {
+    confirmedBonus += 400000
+    confirmedLabels.push('Most Improved')
+  }
+  if (input.achievedDays >= 26 && input.totalShifts >= 26 && input.lateCount === 0 && input.absentCount === 0) {
+    confirmedBonus += 500000
+    confirmedLabels.push('Perfect Month')
+  }
+  if (
+    (input.position === 'pg_part_time' || input.position === 'pg_full_time')
+    && input.isTopRevenueInGroup
+    && input.achievedDays >= 26
+  ) {
+    const pgBonus = input.position === 'pg_part_time' ? 500000 : 1000000
+    if (input.disciplineConfirmed) {
+      confirmedBonus += pgBonus
+      confirmedLabels.push('PG of the Month')
+    } else {
+      pendingBonus += pgBonus
+      pendingLabels.push('PG of the Month — chờ Admin xác nhận kỷ luật')
+    }
+  }
+  return { confirmedBonus, pendingBonus, confirmedLabels, pendingLabels }
+}
+
 export function weeklyKpiBonus(achievedDays: number, perfectWeekDays: number) {
   if (perfectWeekDays >= 6) return 200000
   if (achievedDays >= 5) return 100000
   return 0
 }
 
-function isFullCalendarMonth(from: string, to: string) {
+export function isFullCalendarMonth(from: string, to: string) {
   if (from.slice(0, 7) !== to.slice(0, 7) || !from.endsWith('-01')) return false
-  const end = new Date(Number(to.slice(0, 4)), Number(to.slice(5, 7)), 0)
+  const end = new Date(Date.UTC(Number(to.slice(0, 4)), Number(to.slice(5, 7)), 0))
   return to === end.toISOString().slice(0, 10)
 }
 
 function dateRange(from: string, to: string) {
   const dates: string[] = []
-  const cursor = new Date(`${from}T00:00:00`)
-  const end = new Date(`${to}T00:00:00`)
+  const cursor = dateOnlyUtc(from)
+  const end = dateOnlyUtc(to)
   while (cursor <= end) {
     dates.push(cursor.toISOString().slice(0, 10))
-    cursor.setDate(cursor.getDate() + 1)
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
   }
   return dates
 }
 
 function isWeekend(date: string) {
-  const day = new Date(`${date}T00:00:00`).getDay()
+  const day = dateOnlyUtc(date).getUTCDay()
   return day === 0 || day === 6
+}
+
+function dateOnlyUtc(value: string) {
+  const [year, month, day] = value.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day))
 }
 
 const PRODUCT_PRICES: Record<string, number> = {
@@ -206,6 +467,12 @@ export function employeeRevenueTarget(
   fallback = DEFAULT_REVENUE_TARGET,
   targets: Record<string, number> = loadEmployeeRevenueTargets(),
 ) {
+  // Mức Vũng Tàu trong chính sách 10/08/2026 áp dụng thống nhất cho mọi nhân sự
+  // và mọi kỳ được xem lại; override cá nhân cũ không được làm sống lại khung cũ.
+  if (branchId === 'lotte-vt') return Math.max(0, fallback)
+  // Target 0 là quy tắc nghiệp vụ có chủ đích (Ca trưởng Vũng Tàu không chạy số
+  // cá nhân), nên không được để một override cũ trong DB bật KPI cá nhân lại.
+  if (fallback <= 0) return 0
   return targets[employeeKpiKey(branchId, employeeKey)] || fallback
 }
 
@@ -295,10 +562,32 @@ export async function saveEmployeeRevenueTarget(user: AppUser, target: EmployeeK
   throw new Error('Thiếu bảng employee_kpi_targets trên Supabase, không lưu KPI tạm trên trình duyệt.')
 }
 
-export function productSaleValues(productId: string, quantity: number) {
-  const price = configuredProductPrice(productId, PRODUCT_PRICES[productId] || 0)
+/**
+ * Giá và doanh thu của một SKU.
+ *
+ * `options` là ĐƯỜNG DUY NHẤT để khuyến mãi tác động vào giá, và nó cố ý KHÔNG
+ * có mặc định "hôm nay": hàm này cũng được dùng để tính lại doanh thu của các
+ * ngày đã qua (túi phát cho nhân viên, KPI, báo cáo). Nếu tự lấy ngày hôm nay
+ * thì một chương trình khuyến mãi chạy hôm nay sẽ viết lại doanh thu tháng
+ * trước — đúng cái lỗi mà bảng khuyến mãi sinh ra để chấm dứt.
+ *
+ * Không truyền `options` ⇒ giá gốc, hành vi y như trước khi có khuyến mãi.
+ * Chỉ nơi nào BIẾT CHẮC ngày nghiệp vụ mới được truyền vào.
+ */
+export function productSaleValues(
+  productId: string,
+  quantity: number,
+  options?: { branchId?: string; date?: string },
+) {
+  const basePrice = configuredProductPrice(productId, PRODUCT_PRICES[productId] || 0)
+  const price = options?.date
+    ? promotionalPriceFor(productId, basePrice, { branchId: options.branchId, date: options.date }).price
+    : basePrice
   return {
     price,
+    basePrice,
+    /** Có đang bán dưới giá niêm yết không — để POS gạch ngang giá cũ. */
+    discounted: price < basePrice,
     revenue: Math.round(quantity * price),
     commissionBase: Math.round(quantity * commissionPerBag(price)),
   }

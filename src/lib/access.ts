@@ -1,7 +1,9 @@
 import type { Role } from '../types'
 import { getLang, T, type Lang } from './i18n'
 
-export const OPERATION_ROLES: Role[] = ['shift_leader']
+// Ca phó vận hành ca NGANG Ca trưởng. Từ 13/08/2026 ranh giới cuối cùng cũng
+// được gỡ: ca phó đứng tên phiên ca như ca trưởng, ai vào ca thì bấm nhận ca.
+export const OPERATION_ROLES: Role[] = ['shift_leader', 'shift_deputy']
 export const MANAGEMENT_ROLES: Role[] = ['admin', 'manager']
 export const KITCHEN_ROLES: Role[] = ['admin', 'kitchen']
 
@@ -10,7 +12,7 @@ export function canUseAdmin(role: Role) {
 }
 
 export function canUseSales(role: Role) {
-  return ['shift_leader', 'staff', 'cashier'].includes(role)
+  return ['shift_leader', 'shift_deputy', 'staff', 'cashier'].includes(role)
 }
 
 export function canUseOperations(role: Role) {
@@ -31,13 +33,39 @@ export function canReviewPayroll(role: Role) {
   return role === 'admin' || role === 'supmt'
 }
 
-// Trang Quản trị (#/admin/*): admin vừa xem vừa thao tác, SUP MT chỉ xem.
-// SUP MT (Supervisor Market Trade) giám sát doanh thu/doanh số/lịch ca/chấm công
-// của TOÀN hệ thống nên nhìn thấy đúng những gì admin nhìn thấy.
-export const ADMIN_CONSOLE_ROLES: Role[] = ['admin', 'supmt']
+/**
+ * **Phân vai Admin ↔ Quản lý (chủ hệ thống chốt 13/08/2026).**
+ *
+ *   · **Quản lý** = người VẬN HÀNH. Làm toàn bộ việc hằng ngày: tổng quan, doanh
+ *     thu, kho, chấm công, thi đua, đơn hàng, nhân sự. Đây là những việc trước
+ *     đây Admin phải làm.
+ *   · **Admin** = người CẤU HÌNH, làm việc kiểu no-code: sản phẩm, giá, khuyến
+ *     mãi, chi nhánh, mức KPI, phân quyền, nhật ký. Đổi cách vận hành mà không
+ *     phải sửa mã nguồn rồi deploy lại.
+ *   · **SUP MT** giám sát: xem đúng những gì Quản lý xem, không ghi được gì.
+ *
+ * Admin KHÔNG bị tước quyền xem console vận hành — tước đi là mất khả năng đối
+ * chiếu khi có sự cố (§86: đổi vai trò không được xoá năng lực). Chỉ khác ở chỗ
+ * mặc định vào đâu và thanh điều hướng ưu tiên gì.
+ */
+export const ADMIN_CONSOLE_ROLES: Role[] = ['admin', 'manager', 'supmt']
 
 export function canOpenAdminConsole(role: Role) {
   return ADMIN_CONSOLE_ROLES.includes(role)
+}
+
+/** Console CẤU HÌNH no-code — chỉ Admin. Quản lý không đổi giá/SKU/mức KPI. */
+export function canConfigureSystem(role: Role) {
+  return role === 'admin'
+}
+
+/**
+ * Được THAO TÁC (ghi) trong console vận hành: chỉnh công, xóa ca, tạo tài khoản,
+ * duyệt đơn… Trước đây các mục này khoá bằng `canUseAdmin` nên Quản lý không mở
+ * được — chính là thứ phải chuyển sang cho Quản lý.
+ */
+export function canOperateConsole(role: Role) {
+  return role === 'admin' || role === 'manager'
 }
 
 /**
@@ -63,7 +91,9 @@ export function isBranchlessRole(role: Role) {
   return role === 'manager' || role === 'kitchen' || role === 'supmt'
 }
 
-export function normalizeRole(role: Role): Role {
+export function normalizeRole(role: Role, positionTitle = ''): Role {
+  const title = positionTitle.toLocaleLowerCase('vi').normalize('NFD').replace(/\p{Diacritic}/gu, '')
+  if (role === 'shift_deputy' || /(^|[^a-z])ca pho([^a-z]|$)/.test(title)) return 'shift_deputy'
   return role
 }
 
@@ -76,6 +106,7 @@ export function employeePositionLabel(employee?: { positionTitle?: string; emplo
   if (type === 'leader') return 'Ca trưởng'
   if (type === 'full_time') return 'Full-time'
   if (type === 'part_time') return 'Part-time'
+  if (employee?.role === 'shift_deputy') return 'Ca phó'
   return employee?.role === 'shift_leader' ? 'Ca trưởng' : 'Nhân viên'
 }
 
@@ -91,6 +122,7 @@ export function roleLabel(role: Role, lang: Lang = getLang()) {
       manager: 'Manager',
       supmt: 'Supervisor (SUP MT)',
       shift_leader: 'Shift Leader',
+      shift_deputy: 'Deputy Shift Leader',
       staff: 'Staff',
       cashier: 'POS Cashier',
       kitchen: 'Kitchen',
@@ -102,6 +134,7 @@ export function roleLabel(role: Role, lang: Lang = getLang()) {
     manager: tx.roleManager,
     supmt: 'Giám sát (SUP MT)',
     shift_leader: tx.roleShiftLeader,
+    shift_deputy: 'Ca phó',
     staff: tx.roleStaff,
     cashier: 'Thu ngân POS',
     kitchen: tx.roleKitchen,

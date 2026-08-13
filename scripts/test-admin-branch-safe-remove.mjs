@@ -13,7 +13,9 @@ assert(admin.includes("user.role !== 'admin'"), 'Xóa chi nhánh chưa giới h�
 assert(admin.includes('active: branch.id === branchToRemove.id ? false'), 'Xóa chi nhánh đang không dùng trạng thái ngưng hoạt động.')
 assert(admin.includes('Dữ liệu lịch sử vẫn được giữ nguyên'), 'Thông báo chưa xác nhận bảo toàn dữ liệu lịch sử.')
 assert(admin.includes('await syncConfiguredBranchRows(user, next)'), 'Trạng thái chi nhánh chưa đồng bộ cloud.')
-assert(admin.includes('onDeleteBranch={user.role ==='), 'Danh sách chưa giới hạn nút xóa theo vai trò.')
+// 13/08/2026: Quản lý nhận việc vận hành nên cũng xóa được chi nhánh ngưng hoạt
+// động; nút vẫn phải giới hạn theo VAI TRÒ, không hiện cho mọi người.
+assert(admin.includes('onDeleteBranch={canOperateConsole(user.role)'), 'Danh sách chưa giới hạn nút xóa theo vai trò.')
 assert(!admin.includes('hardDeleteConfiguredBranch('), 'Admin CRM không được gọi xóa vĩnh viễn dây chuyền.')
 assert(page.includes("deletingId === branch.id ? 'Đang xóa…' : 'Xóa'"), 'Thiếu trạng thái nút xóa chi nhánh.')
 assert(page.includes('event.stopPropagation()'), 'Nút xóa có thể vô tình mở trang chi tiết.')

@@ -7,7 +7,7 @@ import {
   type AttendanceOutboxDurability,
   type AttendanceOutboxOp,
 } from './attendanceOutbox'
-import { hasSystemWideScope, isBranchlessRole } from './access'
+import { hasSystemWideScope, isBranchlessRole, normalizeRole } from './access'
 import { detectDeviceEnvironment } from './deviceReadiness'
 import { branchIds, branchName } from './branches'
 import { localDateKey } from './dates'
@@ -15,6 +15,7 @@ import { shouldUseLanApi, supabase } from './supabase'
 import { usernameToEmail, validateUsername } from './authIdentity'
 import { formatWorkDurationBetween } from './workDuration'
 import { resolveLateCheckOutAt } from './lateCheckOut'
+import { EARLY_CHECK_IN_MINUTES, isLateCheckIn, lateMinutesFor, usesEarlyCheckInRule } from './attendanceLateness'
 import { isAttendanceAutoClosedError } from './attendanceErrors'
 import { buildAttendanceAdjustmentNoteMap } from './attendanceNotes'
 export { ATTENDANCE_AUTO_CLOSE_ADDRESS_PREFIX, isAttendanceAutoClosedError } from './attendanceErrors'
@@ -52,7 +53,27 @@ export const DEFAULT_WORK_SHIFT_TEMPLATES: Array<Pick<WorkShift, 'name' | 'start
 ]
 
 export function canManageShiftSetup(user: AppUser) {
-  return user.role === 'admin' || user.role === 'manager' || user.role === 'shift_leader'
+  return user.role === 'admin' || user.role === 'manager' || user.role === 'shift_leader' || user.role === 'shift_deputy'
+}
+
+/**
+ * Vai trò LƯU XUỐNG database. Enum `app_role` không có `shift_deputy` — Ca phó
+ * dùng chung role `shift_leader` và phân biệt với Ca trưởng bằng `position_title`
+ * (mô hình gốc, CODEMAP mục 2). Đọc lên thì `normalizeRole` suy ngược ra
+ * `shift_deputy` từ chức danh để tính KPI riêng.
+ *
+ * TRƯỚC 10/08/2026 hàm này lưu Ca phó thành `staff` với lý do "Ca phó chỉ có
+ * quyền như nhân viên". Hậu quả: Admin chọn "Ca phó" trong trang Nhân sự thì hồ
+ * sơ bị ghi là `staff`, và MỌI policy RLS của bảng vận hành (kho, phiên ca, báo
+ * cáo, đặt hàng) chỉ cho `shift_leader` — nên Ca phó vào Kho/Bàn giao là trắng
+ * màn hình. Đúng triệu chứng "đã set quyền rồi mà vẫn không vào được".
+ *
+ * Chủ hệ thống chốt: Ca phó truy cập ngang Ca trưởng. Việc duy nhất họ vẫn không
+ * được làm là ĐỨNG TÊN phiên ca khi chi nhánh đã xếp ca trưởng — luật đó do
+ * `isDeputyShiftLeader`/`blockedAsDeputy` giữ theo chức danh, không theo role.
+ */
+function storedRole(role: Role) {
+  return role === 'shift_deputy' ? 'shift_leader' : role
 }
 
 function authHeaders(user: AppUser) {
@@ -60,7 +81,7 @@ function authHeaders(user: AppUser) {
     'Content-Type': 'application/json',
     ...(user.authToken ? { Authorization: `Bearer ${user.authToken}` } : {}),
     'X-User-Id': user.id,
-    'X-User-Role': user.role,
+    'X-User-Role': storedRole(user.role),
     'X-User-Branch': user.branchId,
     'X-User-Branches': (user.branchIds || [user.branchId]).join(','),
   }
@@ -163,7 +184,7 @@ export async function fetchEmployees(user: AppUser, options: { includeInactive?:
     id: row.id,
     name: row.full_name,
     email: row.email || undefined,
-    role: row.role,
+    role: normalizeRole(row.role, row.position_title || ''),
     branchId: row.branch_id || undefined,
     active: row.active !== false,
     hasLoginAccount: Boolean(row.email),
@@ -443,19 +464,22 @@ export async function createEmployeeAccount(user: AppUser, input: CreateEmployee
   if (input.password.length < 6) throw new Error('Mật khẩu cần ít nhất 6 ký tự.')
   const payload = {
     ...input,
+    role: storedRole(input.role),
     username,
     email: usernameToEmail(username),
     temporaryPassword: input.password,
     branchName: input.branchId ? branchName(input.branchId) : undefined,
   }
   if (shouldUseAttendanceApi(user)) {
-    return attendanceApi<EmployeeProfile>(user, '/employees', {
+    const employee = await attendanceApi<EmployeeProfile>(user, '/employees', {
       method: 'POST',
       body: JSON.stringify(payload),
     })
+    return { ...employee, role: normalizeRole(employee.role, employee.positionTitle) }
   }
   const data = await invokeManageEmployee({ action: 'create', ...payload })
-  return data.employee as EmployeeProfile
+  const employee = data.employee as EmployeeProfile
+  return { ...employee, role: normalizeRole(employee.role, employee.positionTitle) }
 }
 
 export async function resetEmployeePassword(user: AppUser, employeeId: string, temporaryPassword: string): Promise<void> {
@@ -520,13 +544,13 @@ export async function updateEmployeeRole(user: AppUser, employeeId: string, role
   if (shouldUseAttendanceApi(user)) {
     await attendanceApi(user, `/employees/${employeeId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ role }),
+      body: JSON.stringify({ role: storedRole(role) }),
     })
     return
   }
   const { error } = await supabase!.rpc('admin_update_profile_role', {
     p_profile_id: employeeId,
-    p_role: role,
+    p_role: storedRole(role),
   })
   if (error) throw error
 }
@@ -548,18 +572,22 @@ export async function updateEmployeeDetails(
     throw new Error('Bạn không thể tự hạ quyền Admin của chính mình.')
   }
   if (shouldUseAttendanceApi(user)) {
-    return attendanceApi<EmployeeProfile>(user, `/employees/${employeeId}`, {
+    const safePatch = { ...patch, role: patch.role ? storedRole(patch.role) : undefined }
+    const employee = await attendanceApi<EmployeeProfile>(user, `/employees/${employeeId}`, {
       method: 'PATCH',
-      body: JSON.stringify(patch),
+      body: JSON.stringify(safePatch),
     })
+    return { ...employee, role: normalizeRole(employee.role, employee.positionTitle) }
   }
   const data = await invokeManageEmployee({
     action: 'update',
     employeeId,
     ...patch,
+    role: patch.role ? storedRole(patch.role) : undefined,
     branchName: patch.branchId ? branchName(patch.branchId) : undefined,
   })
-  return data.employee as EmployeeProfile
+  const employee = data.employee as EmployeeProfile
+  return { ...employee, role: normalizeRole(employee.role, employee.positionTitle) }
 }
 
 export async function fetchShiftRegistrations(user: AppUser, filters: AttendanceFilters = {}): Promise<ShiftRegistration[]> {
@@ -1833,7 +1861,7 @@ export function buildAttendanceReport(
       row.totalShifts += 1
       const checkIn = new Date(record.checkInTime)
       const grace = graceMinutesByShift.get(registration.shiftId || '') ?? 5
-      if (checkIn.getTime() > scheduledStart.getTime() + grace * 60000) row.lateCount += 1
+      if (isLateCheckIn(registration.workDate, scheduledStart, checkIn, grace)) row.lateCount += 1
       if (record.checkOutTime) {
         const workedHours = Math.max(0, (new Date(record.checkOutTime).getTime() - checkIn.getTime()) / 3600000)
         row.totalHours += workedHours
@@ -2109,9 +2137,7 @@ export function buildAttendanceDetailRows(
     const checkIn = record ? new Date(record.checkInTime) : undefined
     const checkOut = record?.checkOutTime ? new Date(record.checkOutTime) : undefined
     const grace = graceMinutesByShift.get(registration.shiftId || '') ?? 5
-    const lateMinutes = checkIn
-      ? Math.max(0, Math.round((checkIn.getTime() - scheduledStart.getTime()) / 60000) - grace)
-      : 0
+    const lateMinutes = lateMinutesFor(registration.workDate, scheduledStart, checkIn, grace)
     const status: AttendanceDetailRow['status'] = record
       ? checkOut ? 'completed' : 'working'
       : now > scheduledEnd ? 'absent' : 'scheduled'

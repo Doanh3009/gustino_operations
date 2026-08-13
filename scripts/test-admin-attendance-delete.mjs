@@ -52,7 +52,9 @@ assert.match(admin, /Lý do xóa/)
 assert.match(admin, /Xóa dòng/)
 assert.match(admin, /deleteEmptyShiftRegistrationByAdmin/)
 assert.match(admin, /kind: 'empty-registration'/)
-assert.match(admin, /registrationId: row\.registrationId/)
+// Sau redesign (§67) thao tác xóa nằm trong drawer chi tiết ca, nên nguồn dòng
+// là `attendanceDetailRow` thay vì biến `row` của vòng lặp danh sách.
+assert.match(admin, /registrationId: (row|attendanceDetailRow)\.registrationId/)
 assert.match(admin, /Chỉ xóa đăng ký ca chưa có bản ghi chấm công/)
 assert.match(styles, /\.attendance-delete-button/)
 assert.match(styles, /\.attendance-delete-confirm/)

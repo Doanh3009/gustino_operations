@@ -134,7 +134,19 @@ assert.deepEqual(byId['never-moved'], { productId: 'never-moved', expected: 0, a
 assert.equal(typeof store.fetchMovementsDelta, 'function')
 const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8')
 assert.match(appSource, /if \(document\.hidden\) return/)
-assert.match(appSource, /ticks % 10 === 0 \? refreshMovements\(\) : syncMovements\(\)/)
+assert.match(appSource, /ticks % FULL_MOVEMENT_REFRESH_TICKS === 0 \? refreshMovements\(\) : syncMovements\(\)/)
+// 10/08/2026: nhịp tải ĐẦY ĐỦ hạ từ 10 nhịp (2,5 phút) xuống 120 nhịp (30 phút).
+// Đo `pg_stat_statements` trên prod: lệnh đọc sổ kho theo chi nhánh chạy 114.680
+// lượt, trung bình 685 ms, tổng ~21,8 giờ CPU — đứng đầu toàn hệ thống. Phiếu mới
+// đã về qua nhịp gia số 15 giây, phiếu bị xoá được bộ đếm 3 ngày và event realtime
+// DELETE bắt, nên lượt tải đầy đủ chỉ còn là lưới an toàn.
+assert.match(appSource, /const FULL_MOVEMENT_REFRESH_TICKS = 120/)
+// Chỉ mục khớp đúng ORDER BY của lệnh đọc đó phải tồn tại trong migration.
+const stockIndexMigration = await readFile(
+  new URL('../supabase/migrations/20260810_stock_movements_read_index.sql', import.meta.url),
+  'utf8',
+)
+assert.match(stockIndexMigration, /stock_movements \(branch_id, created_at desc, id desc\)/)
 // 07/08/2026: mốc phát hiện XOÁ phiếu đổi từ `count exact` TOÀN chi nhánh sang
 // đếm vài ngày gần nhất rồi so với chính danh sách đang giữ trong máy. Truy vấn
 // đếm toàn chi nhánh là điểm nghẽn số 1 trên prod: 15.428 lượt × 2.025 ms.

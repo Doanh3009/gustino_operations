@@ -1,12 +1,12 @@
-// BUG-117: báo cáo TỪNG CA lọc hóa đơn theo đúng cửa sổ giờ của phiên ca nên
-// hóa đơn bán TRƯỚC giờ mở Ca 1, trong KHOẢNG TRỐNG giữa hai ca (Ca 2 mở trễ)
-// hay khi hai ca CHỒNG GIỜ đều bị mất/đếm trùng — ảnh Ca 1 + Ca 2 lệch Tổng ngày.
-// Bằng chứng production 31/07 Lotte 23/10: Ca 2 mở 17:17, 122.000đ bán trong
-// 15:16→17:17 biến mất khỏi cả hai ảnh; 28/07 Gold Coast mất 662.000đ tương tự;
-// 29/07 Gold Coast mất hóa đơn 89.000đ tạo lúc 09:01 TRƯỚC giờ mở ca.
+// Phân vùng doanh thu theo ca chạy theo ĐỒNG HỒ (chủ quán chốt 11/08/2026):
+// hóa đơn tới 15:15 thuộc Ca 1, sau 15:15 thuộc Ca 2 — bất kể phiên ca mở lúc nào,
+// đóng lúc nào, hay ca trưởng có bấm bàn giao hay không.
 //
-// Quy tắc mới (src/lib/shiftReportScope.ts): ngày được chia bằng đúng MỘT điểm
-// cắt giữa hai ca kề nhau → tổng doanh thu các ca LUÔN bằng tổng ngày.
+// Lịch sử để không quay lại: bản đầu lọc theo cửa sổ giờ của phiên ca nên hóa đơn
+// bán trong "khoảng trống" giữa hai ca biến mất khỏi cả hai ảnh (31/07 Lotte 23/10
+// Ca 2 mở 17:17, mất 122.000đ; 28/07 Gold Coast mất 662.000đ; 29/07 Gold Coast mất
+// hóa đơn 89.000đ tạo lúc 09:01 trước giờ mở ca). Bản thứ hai (BUG-117) cắt tại
+// điểm giao giữa hai phiên ca — hết hở, nhưng ranh giới vẫn trôi theo giờ bấm nút.
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -25,13 +25,23 @@ await build({
   bundle: true,
   logLevel: 'silent',
 })
-const { sessionScopeWindow, timestampInScopeWindow, isTimestampInSessionScope } = await import(pathToFileURL(outFile).href)
+const {
+  sessionScopeWindow,
+  timestampInScopeWindow,
+  isTimestampInSessionScope,
+  shiftCutoverTimestamp,
+  SHIFT_CUTOVER_TIME,
+} = await import(pathToFileURL(outFile).href)
+
+const BUSINESS_DATE = '2026-07-31'
+// 15:15 giờ Việt Nam = 08:15Z. Mọi mốc bên dưới ghi theo UTC cho khỏi nhầm.
+const CUTOVER_UTC = '2026-07-31T08:15:00.000Z'
 
 function session(id, sequence, startedAt, endedAt, extra = {}) {
   return {
     id,
     branchId: 'lotte-2310',
-    businessDate: '2026-07-31',
+    businessDate: BUSINESS_DATE,
     sequence,
     status: endedAt ? 'closed' : 'open',
     leaderId: `leader-${sequence}`,
@@ -44,7 +54,7 @@ function session(id, sequence, startedAt, endedAt, extra = {}) {
 }
 
 function receipt(code, createdAt, amount) {
-  return { code, createdAt, totalAmount: amount, branchId: 'lotte-2310', businessDate: '2026-07-31' }
+  return { code, createdAt, totalAmount: amount, branchId: 'lotte-2310', businessDate: BUSINESS_DATE }
 }
 
 function splitRevenue(sessions, receipts) {
@@ -56,11 +66,11 @@ function splitRevenue(sessions, receipts) {
   })
 }
 
-function expectSplit(label, sessions, receipts, expected) {
+function expectSplit(label, sessions, receipts, expected, { checkTotal = true } = {}) {
   const actual = splitRevenue(sessions, receipts)
   const total = receipts.reduce((sum, item) => sum + item.totalAmount, 0)
   const actualTotal = actual.reduce((sum, value) => sum + value, 0)
-  if (actualTotal !== total) {
+  if (checkTotal && actualTotal !== total) {
     failures.push(`${label}: tổng các ca ${actualTotal} ≠ tổng ngày ${total} — vẫn còn hở/chồng.`)
   }
   expected.forEach((value, index) => {
@@ -70,10 +80,17 @@ function expectSplit(label, sessions, receipts, expected) {
   })
 }
 
+// ---- Mốc cắt đúng 15:15 giờ Việt Nam ----------------------------------------
+if (SHIFT_CUTOVER_TIME !== '15:15') {
+  failures.push(`Mốc cắt phải là 15:15, đang là ${SHIFT_CUTOVER_TIME}.`)
+}
+if (shiftCutoverTimestamp(BUSINESS_DATE) !== CUTOVER_UTC) {
+  failures.push(`Mốc cắt của ${BUSINESS_DATE} phải là ${CUTOVER_UTC}, nhận ${shiftCutoverTimestamp(BUSINESS_DATE)}.`)
+}
+
 // ---- Kịch bản THẬT 31/07 Lotte 23/10: Ca 2 mở trễ 121 phút -------------------
-// Ca 1: 06:55 → 15:16:01. Ca 2: 17:17:05 → 22:10. POS: 681k trước 15:16,
-// 122k trong khoảng trống, 681k sau 17:17. Trước bản vá: Ca 1 = 681k, Ca 2 = 681k,
-// mất 122k. Sau bản vá: khoảng trống thuộc Ca 2 (ca kế tiếp chịu trách nhiệm quầy).
+// Ca 1 mở 06:55 đóng 15:16; Ca 2 mở tận 17:17. Ranh giới KHÔNG đi theo giờ đó nữa:
+// 122k bán lúc 16:00 vẫn thuộc Ca 2 vì đã qua 15:15.
 {
   const sessions = [
     session('s1', 1, '2026-07-30T23:55:00.000Z', '2026-07-31T08:16:01.000Z'),
@@ -101,21 +118,36 @@ function expectSplit(label, sessions, receipts, expected) {
   expectSplit('Bán trước giờ mở ca', sessions, receipts, [589000, 700000])
 }
 
-// ---- Hai ca CHỒNG GIỜ: điểm cắt là giờ mở Ca 2, không đếm trùng --------------
+// ---- Ca trưởng chốt Ca 1 SỚM: doanh thu tới 15:15 vẫn là của Ca 1 ------------
+// Đây là điểm khác hẳn bản cũ: trước đây chốt lúc 13:30 là mọi hóa đơn 13:30→15:15
+// rơi sang Ca 2. Giờ giờ bấm nút không còn ảnh hưởng ranh giới.
 {
   const sessions = [
-    session('s1', 1, '2026-07-31T00:00:00.000Z', '2026-07-31T08:30:00.000Z'),
-    session('s2', 2, '2026-07-31T08:00:00.000Z', '2026-07-31T15:00:00.000Z'),
+    session('s1', 1, '2026-07-31T00:00:00.000Z', '2026-07-31T06:30:00.000Z'),
+    session('s2', 2, '2026-07-31T06:35:00.000Z', '2026-07-31T15:00:00.000Z'),
   ]
   const receipts = [
-    receipt('HD-1', '2026-07-31T07:00:00.000Z', 100000),
-    receipt('HD-OVERLAP', '2026-07-31T08:10:00.000Z', 89000),
+    receipt('HD-1', '2026-07-31T05:00:00.000Z', 100000),
+    receipt('HD-AFTER-CLOSE', '2026-07-31T07:00:00.000Z', 89000),
     receipt('HD-2', '2026-07-31T12:00:00.000Z', 200000),
   ]
-  expectSplit('Hai ca chồng giờ', sessions, receipts, [100000, 289000])
+  expectSplit('Chốt Ca 1 sớm', sessions, receipts, [189000, 200000])
 }
 
-// ---- Bán SAU giờ đóng ca cuối vẫn thuộc ca cuối ------------------------------
+// ---- Ca trưởng chốt Ca 1 MUỘN: doanh thu sau 15:15 đã là của Ca 2 ------------
+{
+  const sessions = [
+    session('s1', 1, '2026-07-31T00:00:00.000Z', '2026-07-31T11:00:00.000Z'),
+    session('s2', 2, '2026-07-31T11:05:00.000Z', '2026-07-31T15:00:00.000Z'),
+  ]
+  const receipts = [
+    receipt('HD-1', '2026-07-31T05:00:00.000Z', 300000),
+    receipt('HD-LATE-CA1', '2026-07-31T10:00:00.000Z', 150000),
+  ]
+  expectSplit('Chốt Ca 1 muộn', sessions, receipts, [300000, 150000])
+}
+
+// ---- Bán sau giờ đóng ca cuối vẫn thuộc ca cuối ------------------------------
 {
   const sessions = [
     session('s1', 1, '2026-07-31T00:00:00.000Z', '2026-07-31T08:15:00.000Z'),
@@ -128,7 +160,9 @@ function expectSplit(label, sessions, receipts, expected) {
   expectSplit('Bán sau giờ đóng ca cuối', sessions, receipts, [300000, 50000])
 }
 
-// ---- Chỉ có MỘT ca: ôm trọn ngày ---------------------------------------------
+// ---- Chỉ có MỘT ca (Ca 2 không ai mở): Ca 1 CHỈ ôm phần trước 15:15 ----------
+// Hệ quả có ý thức của luật đồng hồ: phần bán sau 15:15 không thuộc ảnh ca nào,
+// nhưng vẫn nằm đủ trong ảnh Tổng ngày (Tổng ngày đọc theo business_date).
 {
   const only = session('s1', 1, '2026-07-31T02:00:00.000Z', '2026-07-31T08:15:00.000Z')
   const receipts = [
@@ -136,10 +170,10 @@ function expectSplit(label, sessions, receipts, expected) {
     receipt('HD-IN', '2026-07-31T05:00:00.000Z', 20000),
     receipt('HD-LATE', '2026-07-31T09:00:00.000Z', 30000),
   ]
-  expectSplit('Một ca duy nhất', [only], receipts, [60000])
+  expectSplit('Chỉ có Ca 1', [only], receipts, [30000], { checkTotal: false })
 }
 
-// ---- Ca 1 còn MỞ khi Ca 2 đã mở (bất thường): cắt tại giờ mở Ca 2 ------------
+// ---- Ca 1 còn MỞ khi Ca 2 đã mở (bất thường): vẫn cắt tại 15:15 -------------
 {
   const sessions = [
     session('s1', 1, '2026-07-31T00:00:00.000Z', ''),
@@ -156,18 +190,35 @@ function expectSplit(label, sessions, receipts, expected) {
 {
   const lone = session('sx', 2, '2026-07-31T08:16:00.000Z', '2026-07-31T15:00:00.000Z')
   if (!isTimestampInSessionScope('2026-07-31T09:00:00.000Z', lone, [])) {
-    failures.push('Phiên đứng một mình phải nhận hóa đơn trong ngày của nó.')
+    failures.push('Phiên đứng một mình phải nhận hóa đơn sau 15:15 của ngày nó.')
+  }
+  if (isTimestampInSessionScope('2026-07-31T07:00:00.000Z', lone, [])) {
+    failures.push('Ca 2 không được nhận hóa đơn bán trước 15:15.')
   }
 }
 
-// ---- Biên: đúng mốc điểm cắt thuộc ca TRƯỚC, không rơi vào cả hai ------------
+// ---- Biên: ĐÚNG 15:15 thuộc Ca 1, 15:15:01 đã sang Ca 2 ---------------------
 {
   const sessions = [
     session('s1', 1, '2026-07-31T00:00:00.000Z', '2026-07-31T08:15:00.000Z'),
     session('s2', 2, '2026-07-31T08:20:00.000Z', '2026-07-31T15:00:00.000Z'),
   ]
-  const atCut = receipt('HD-CUT', '2026-07-31T08:15:00.000Z', 40000)
-  expectSplit('Hóa đơn đúng mốc cắt', sessions, [atCut], [40000, 0])
+  expectSplit('Hóa đơn đúng 15:15', sessions, [receipt('HD-CUT', CUTOVER_UTC, 40000)], [40000, 0])
+  expectSplit('Hóa đơn 15:15:01', sessions, [receipt('HD-NEXT', '2026-07-31T08:15:01.000Z', 40000)], [0, 40000])
+}
+
+// ---- Định dạng thời gian của PostgREST (`+00:00`) phải so đúng giá trị -------
+// So chuỗi thì '…Z' > '…+00:00' theo bảng mã ⇒ cả ngày doanh thu rơi nhầm ca.
+{
+  const sessions = [
+    session('s1', 1, '2026-07-31T00:00:00+00:00', '2026-07-31T08:15:00+00:00'),
+    session('s2', 2, '2026-07-31T08:20:00+00:00', '2026-07-31T15:00:00+00:00'),
+  ]
+  const receipts = [
+    receipt('HD-PG-1', '2026-07-31T05:00:00.123456+00:00', 70000),
+    receipt('HD-PG-2', '2026-07-31T09:00:00.654321+00:00', 30000),
+  ]
+  expectSplit('Timestamp kiểu PostgREST', sessions, receipts, [70000, 30000])
 }
 
 if (failures.length) {

@@ -112,21 +112,21 @@ assert.deepEqual(
 assert.deepEqual(primaryLeadersScheduledFor(1, '2026-08-08', [caNgay], healthyShifts).length, 1)
 assert.deepEqual(primaryLeadersScheduledFor(2, '2026-08-08', [caNgay], healthyShifts).length, 1)
 
-// ── 5. Ca phó và part-time không chen vào thứ tự ───────────────────────────
+// ── 5. Part-time không chen vào thứ tự; ca phó thì CÓ (đổi 13/08/2026) ──────
+// Ca phó nay ngang ca trưởng nên được xếp phiên ca như mọi người vận hành khác.
+// Part-time vẫn tuyệt đối không đứng tên ca.
 const caPho = reg('r-pho', 'u-pho', 'ca-1', '06:30', '15:15', { positionTitle: 'Ca phó' })
 const partTime = reg('r-pt', 'u-pt', undefined, '06:00', '14:00', { employmentType: 'part_time', positionTitle: 'Part-time' })
 const lanXanh = [caPho, partTime, som, toi]
-assert.deepEqual(operationalSequencesFor(caPho, lanXanh, healthyShifts), [])
-assert.deepEqual(operationalSequencesFor(partTime, lanXanh, healthyShifts), [])
-assert.deepEqual(
-  operationalSequencesFor(som, lanXanh, healthyShifts),
-  [1],
-  'Ca phó vào sớm hơn cũng không được đẩy ca trưởng xuống Ca 2 (BUG-100 giữ nguyên).',
-)
+assert.deepEqual(operationalSequencesFor(partTime, lanXanh, healthyShifts), [], 'Part-time không bao giờ đứng tên ca.')
+// Ca phó vào 06:30 là khung sớm nhất ⇒ đứng Ca 1; ca trưởng 07:15 thành khung
+// giữa nên không đứng ca nào, nhưng vẫn còn nút "Nhận ca ngay" để tự nhận.
+assert.deepEqual(operationalSequencesFor(caPho, lanXanh, healthyShifts), [1])
+assert.deepEqual(operationalSequencesFor(som, lanXanh, healthyShifts), [])
 assert.deepEqual(operationalSequencesFor(toi, lanXanh, healthyShifts), [2])
 assert.deepEqual(
   leaderRegistrationsInOrder('2026-08-08', 'lotte-vt', lanXanh, healthyShifts).map((item) => item.id),
-  ['r-som', 'r-toi'],
+  ['r-pho', 'r-som', 'r-toi'],
 )
 
 // ── 6. Đăng ký chưa duyệt không chiếm chỗ ──────────────────────────────────
@@ -149,10 +149,17 @@ assert.match(
   /canOpenNextScheduledOperationalShift\(registration, sessions, registrations, workShifts\)/,
   'Đường mở ca sau check-in cũng phải dùng danh sách đăng ký của ngày.',
 )
+// 13/08/2026: không còn "trả quyền chủ ca" tự động. Ca đang mở thì bộ dò ca để
+// yên — ai bấm nhận ca thì ca mang tên người đó cho tới khi chốt & bàn giao.
+assert.doesNotMatch(
+  autoOpenSource,
+  /operationalSequencesFor\(holder!, registrations, workShifts\)/,
+  'Cơ chế tự chuyển quyền chủ ca đã gỡ, không được dựng lại.',
+)
 assert.match(
   autoOpenSource,
-  /operationalSequencesFor\(holder!, registrations, workShifts\)\.includes\(session\.sequence\)/,
-  'Việc trả quyền chủ ca phải bám cùng một luật xếp ca.',
+  /if \(sessions\.some\(\(item\) => item\.status === 'open'\)\) return skip\('shift-already-open'\)/,
+  'Ca đang mở thì bộ dò ca phải dừng, không đụng vào quyền chủ ca.',
 )
 assert.match(
   handoverSource,

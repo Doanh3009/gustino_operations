@@ -10,11 +10,29 @@ export const config = { maxDuration: 60 }
 
 type ReportKind = 'shift-1' | 'shift-2' | 'day'
 
+// Khớp `REPORT_DUE_TIMES` trong src/lib/reportSchedule.ts: Ca 1 gửi lúc 15:15,
+// Ca 2 và Tổng ngày gửi lúc 22:15. Chỉ dùng cho ảnh KHÔNG gửi ngay (sendNow=false);
+// đường hẹn giờ của app luôn gửi ngay tại đúng mốc nên không đi qua đây.
 const REPORT_SEND_TIMES: Record<ReportKind, string> = {
   'shift-1': '15:15',
-  'shift-2': '22:00',
+  'shift-2': '22:15',
   day: '22:15',
 }
+/**
+ * Ai được xếp lịch gửi báo cáo.
+ *
+ * 13/08/2026 — mở rộng để gỡ NGHẼN GỬI BÁO CÁO TỰ ĐỘNG. Trước đây chỉ đúng ca
+ * trưởng đã đóng ca đó mới gửi được báo cáo của ca đó (`leader_id = operator.id`
+ * trong `verifyClosedShiftAndSnapshot`). Ca trưởng Ca 1 tan ca lúc 15:20 rồi tắt
+ * máy là báo cáo Ca 1 kẹt vĩnh viễn: ca trưởng Ca 2 mở app, hệ thống phát hiện
+ * còn thiếu và chuyển sang màn Báo cáo, nhưng API trả 409 nên không ai gửi nổi.
+ *
+ * Nay bất kỳ người vận hành nào CÙNG CHI NHÁNH cũng gửi được. Các chốt an toàn
+ * vẫn nguyên: ca phải đã đóng, phải có snapshot báo cáo, Ca 2 phải hết ca đang
+ * mở, và người gửi được ghi vết trong `n8nDelivery.queuedBy`.
+ */
+const OPERATOR_ROLES = ['shift_leader', 'shift_deputy', 'manager', 'admin']
+
 const MAX_BASE64_CHARS = 3_200_000
 const N8N_WEBHOOK_TIMEOUT_MS = 20_000
 const N8N_ERROR_DETAIL_MAX_CHARS = 240
@@ -109,14 +127,14 @@ export default async function handler(request: any, response: any) {
   if (request.method !== 'POST') return response.status(405).json({ error: 'Method not allowed.' })
   const operator = await authenticatedOperator(request.headers?.authorization)
   if (!operator) return response.status(401).json({ error: 'Phiên đăng nhập không hợp lệ để xếp lịch báo cáo.' })
-  if (!['shift_leader', 'admin'].includes(operator.role) || operator.active === false) {
-    return response.status(403).json({ error: 'Chỉ ca trưởng hoặc Admin được xếp lịch báo cáo.' })
+  if (!OPERATOR_ROLES.includes(operator.role) || operator.active === false) {
+    return response.status(403).json({ error: 'Chỉ người vận hành ca hoặc quản lý được xếp lịch báo cáo.' })
   }
 
   const input = typeof request.body === 'string' ? JSON.parse(request.body) : request.body
-  if (!input || input.leaderId !== operator.id) {
-    return response.status(403).json({ error: 'Người chốt báo cáo không khớp phiên đăng nhập.' })
-  }
+  if (!input) return response.status(400).json({ error: 'Thiếu dữ liệu báo cáo.' })
+  // `leaderId` chỉ còn để ghi vết ai bấm; KHÔNG dùng làm điều kiện chặn nữa —
+  // xem ghi chú ở `verifyClosedShiftAndSnapshot`.
   const shiftSequence = Number(input.shiftSequence)
   const requiredKinds: ReportKind[] = shiftSequence === 1 ? ['shift-1'] : shiftSequence === 2 ? ['shift-2', 'day'] : []
   const report = input.report
@@ -203,7 +221,16 @@ export default async function handler(request: any, response: any) {
   const completion = await n8nCompletedIngestion(webhookResponse, jobKey)
   if (!completion.ok) return response.status(502).json({ code: completion.code, error: completion.error })
 
-  const job = { queued: true, jobKey, sendAt, sendNow, rowNumber: completion.rowNumber, queuedAt: new Date().toISOString() }
+  // Ghi vết ai thực sự bấm gửi — nay có thể là người khác với người đóng ca.
+  const job = {
+    queued: true,
+    jobKey,
+    sendAt,
+    sendNow,
+    rowNumber: completion.rowNumber,
+    queuedAt: new Date().toISOString(),
+    queuedBy: operator.id,
+  }
   const delivery = {
     ...previousDelivery,
     queued: requiredKinds.every((item) => item === kind ? true : previousDelivery.jobs?.[item]?.queued === true),
@@ -223,7 +250,7 @@ async function authenticatedOperator(authorization: string | undefined) {
   const authResponse = await fetch(`${url}/auth/v1/user`, { headers: { apikey: anonKey, Authorization: `Bearer ${token}` } })
   if (!authResponse.ok) return null
   const authUser = await authResponse.json()
-  const profileResponse = await fetch(`${url}/rest/v1/profiles?id=eq.${encodeURIComponent(authUser.id)}&select=id,role,active`, {
+  const profileResponse = await fetch(`${url}/rest/v1/profiles?id=eq.${encodeURIComponent(authUser.id)}&select=id,role,active,branch_id`, {
     headers: { apikey: anonKey, Authorization: `Bearer ${token}`, Accept: 'application/json' },
   })
   if (!profileResponse.ok) return null
@@ -235,20 +262,27 @@ async function verifyClosedShiftAndSnapshot(operator: any, input: any, shiftSequ
   if (!input.shiftId || !input.branchId || !input.businessDate) {
     return { ok: false, status: 400, error: 'Thiếu mã ca, chi nhánh hoặc ngày báo cáo.' }
   }
+  // Người vận hành phải thuộc đúng chi nhánh của báo cáo. Quản lý/Admin không
+  // gắn chi nhánh cố định nên được đi qua.
+  const branchFree = operator.role === 'admin' || operator.role === 'manager'
+  if (!branchFree && operator.branch_id && operator.branch_id !== input.branchId) {
+    return { ok: false, status: 403, error: 'Bạn không thuộc chi nhánh của báo cáo này.' }
+  }
   const headers = { apikey: operator.anonKey, Authorization: `Bearer ${operator.accessToken}`, Accept: 'application/json' }
+  // KHÔNG lọc `leader_id`: báo cáo là việc của CHI NHÁNH, không phải tài sản
+  // riêng của người đóng ca. Xem ghi chú ở `OPERATOR_ROLES`.
   const params = new URLSearchParams({
     id: `eq.${input.shiftId}`,
     branch_id: `eq.${input.branchId}`,
     business_date: `eq.${input.businessDate}`,
     sequence: `eq.${shiftSequence}`,
-    leader_id: `eq.${operator.id}`,
     status: 'eq.closed',
     select: 'id',
   })
   const shiftResponse = await fetch(`${operator.supabaseUrl}/rest/v1/bag_shift_sessions?${params}`, { headers })
   if (!shiftResponse.ok) return { ok: false, status: 502, error: 'Không kiểm tra được trạng thái ca trên Supabase.' }
   if (!(await shiftResponse.json())?.length) {
-    return { ok: false, status: 409, error: 'Chỉ được xếp lịch sau khi chính ca trưởng đã đóng ca.' }
+    return { ok: false, status: 409, error: 'Ca chưa được đóng nên chưa thể xếp lịch gửi báo cáo.' }
   }
   if (shiftSequence === 2) {
     const openParams = new URLSearchParams({ branch_id: `eq.${input.branchId}`, business_date: `eq.${input.businessDate}`, status: 'eq.open', select: 'id' })

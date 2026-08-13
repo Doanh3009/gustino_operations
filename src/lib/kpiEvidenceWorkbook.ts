@@ -1,3 +1,5 @@
+import { importChunk } from './lazyRoute'
+
 export interface KpiEvidenceSummaryRow {
   employeeKey: string
   employeeName: string
@@ -62,7 +64,7 @@ export interface KpiEvidenceWorkbookInput {
  * chính xác khi hai nhân viên trùng tên.
  */
 export async function buildKpiEvidenceWorkbook(input: KpiEvidenceWorkbookInput) {
-  const ExcelJS = await import('exceljs')
+  const ExcelJS = await importChunk(() => import('exceljs'))
   const Workbook = ExcelJS.Workbook || (ExcelJS as unknown as { default: typeof ExcelJS }).default.Workbook
   const workbook = new Workbook()
   workbook.creator = 'Gustino Operations'

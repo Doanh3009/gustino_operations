@@ -1,5 +1,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 @import './sidebar.css';
+/* Design system mới (tiền tố `gt-`) cho khu vực quản trị — xem src/ui.css. */
+@import './ui.css';
 
 :root {
   font-family: 'Inter', system-ui, sans-serif;
@@ -7930,6 +7932,15 @@ img, svg, video, canvas { max-width: 100%; }
 .inventory-loss-panel li b { overflow-wrap: anywhere; color: #5f4a25; font-size: 9px; }
 .inventory-loss-panel li small { margin-top: 2px; color: #9a8358; font-size: 8px; font-weight: 750; }
 .inventory-loss-panel li > strong { flex: 0 0 auto; color: #a6301f; font-size: 9px; }
+.inventory-loss-detail-list li { align-items: flex-start; }
+.inventory-loss-detail-list li b { font-size: 11px; line-height: 1.35; }
+.inventory-loss-detail-list li small { font-size: 9px; line-height: 1.35; }
+.inventory-loss-detail-list li > strong {
+  padding-top: 1px;
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: right;
+}
 .inventory-loss-panel p { margin: 14px 0 0; color: #806d4b; font-size: 10px; font-weight: 750; }
 .inventory-daily-outbound {
   margin-top: 18px;
@@ -13066,6 +13077,115 @@ img, svg, video, canvas { max-width: 100%; }
   font-size: 18px;
   font-weight: 950;
 }
+/* 13/08/2026 — `.competition-leader-separation-note` đã gỡ cùng dải tổng đầu
+   màn Thi đua theo yêu cầu chủ hệ thống ("bỏ luôn chữ mô tả"). */
+.sales-capacity-poster {
+  width: 1080px;
+  padding: 34px;
+  border: 1px solid #dce6c4;
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 94% 3%, rgba(217,244,125,.58), transparent 31%),
+    linear-gradient(145deg, #f8fbf2 0%, #eef5e2 100%);
+  color: var(--navy);
+}
+.sales-capacity-poster header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid rgba(15,31,51,.13);
+}
+.sales-capacity-poster header span,
+.sales-capacity-poster-kpis span {
+  color: #5b7b0e;
+  font-size: 11px;
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.sales-capacity-poster h3 {
+  margin: 7px 0 8px;
+  font-size: 42px;
+  line-height: 1;
+}
+.sales-capacity-poster header p {
+  margin: 0;
+  color: #607083;
+  font-size: 15px;
+  font-weight: 800;
+}
+.sales-capacity-poster header > strong {
+  min-width: 132px;
+  padding: 12px 15px;
+  border-radius: 8px;
+  background: #102238;
+  color: #d9f47d;
+  text-align: center;
+  font-size: 17px;
+}
+.sales-capacity-poster-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 18px 0;
+}
+.sales-capacity-poster-kpis article {
+  padding: 15px;
+  border: 1px solid rgba(15,31,51,.1);
+  border-radius: 8px;
+  background: rgba(255,255,255,.8);
+  box-shadow: 0 8px 22px rgba(15,31,51,.06);
+}
+.sales-capacity-poster-kpis b {
+  display: block;
+  margin-top: 6px;
+  font-size: 25px;
+  line-height: 1;
+}
+.sales-capacity-poster-table {
+  overflow: hidden;
+  border: 1px solid rgba(15,31,51,.13);
+  border-radius: 8px;
+  background: rgba(255,255,255,.82);
+}
+.sales-capacity-poster-table > div {
+  display: grid;
+  grid-template-columns: 54px minmax(190px, 1.35fr) minmax(145px, 1fr) 75px 135px 82px 145px;
+  gap: 10px;
+  align-items: center;
+  min-height: 48px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e4eadc;
+  color: #4b5d70;
+  font-size: 12px;
+}
+.sales-capacity-poster-table > div:last-child { border-bottom: 0; }
+.sales-capacity-poster-table > div:nth-child(odd):not(.head) { background: rgba(242,247,233,.7); }
+.sales-capacity-poster-table .head {
+  min-height: 43px;
+  background: #102238;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: .045em;
+}
+.sales-capacity-poster-table span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sales-capacity-poster-table span:nth-child(n + 4) { text-align: right; }
+.sales-capacity-poster-table strong,
+.sales-capacity-poster-table b { color: var(--navy); }
+.sales-capacity-poster footer {
+  margin-top: 14px;
+  color: #657487;
+  font-size: 10.5px;
+  font-weight: 750;
+  line-height: 1.45;
+}
 .business-product-charts {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(260px, .8fr);
@@ -14928,6 +15048,155 @@ body,
   color: var(--green-dark);
   font-size: 10px;
   font-weight: 900;
+}
+.competition-classification-reward > small.pending { color: #9a5a08; }
+
+/* ===== Mức KPI theo chi nhánh (Admin tự chỉnh, không phải sửa code) ===== */
+.kpi-settings-card {
+  margin: 12px 0 0;
+  border: 1px solid #d9e3ec;
+  border-radius: 12px;
+  background: #fbfdff;
+  overflow: hidden;
+}
+.kpi-settings-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+.kpi-settings-head h3 { margin: 2px 0 0; font-size: 15px; }
+.kpi-settings-head p { margin: 3px 0 0; color: #5d7183; font-size: 12px; line-height: 1.45; }
+.kpi-settings-body {
+  display: grid;
+  gap: 12px;
+  padding: 0 14px 14px;
+  border-top: 1px solid #e6edf4;
+}
+.kpi-settings-note {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f1f6fb;
+  color: #48607a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.kpi-settings-branch {
+  border: 1px solid #e3eaf2;
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px;
+}
+.kpi-settings-branch-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.kpi-settings-branch-head strong { display: block; font-size: 14px; }
+.kpi-settings-branch-head small { color: #7b8ea1; font-size: 11px; }
+.kpi-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.kpi-settings-actions button { min-height: 36px; }
+.kpi-settings-table-wrap { overflow-x: auto; }
+.kpi-settings-table { width: 100%; border-collapse: collapse; min-width: 560px; }
+.kpi-settings-table th,
+.kpi-settings-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #eef2f6;
+  text-align: left;
+  vertical-align: middle;
+}
+.kpi-settings-table thead th {
+  font-size: 11px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: #7b8ea1;
+  white-space: nowrap;
+}
+.kpi-settings-table tbody th { width: 168px; }
+.kpi-settings-table tbody th span { display: block; font-size: 13px; font-weight: 800; }
+.kpi-settings-table tbody th small { display: block; color: #8a9bab; font-size: 11px; font-weight: 500; }
+.kpi-settings-table td input {
+  width: 100%;
+  min-width: 92px;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid #d5dfe9;
+  border-radius: 8px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.kpi-settings-table td input:disabled { background: #f4f7fa; color: #7d8d9c; }
+.kpi-settings-table td small {
+  display: block;
+  margin-top: 3px;
+  color: #94a4b4;
+  font-size: 10px;
+  text-align: right;
+}
+.kpi-settings-table tr.changed td input { border-color: var(--green); background: #fbfff2; }
+.kpi-settings-sync { margin: -4px 0 4px; color: #7890a4; font-size: 12px; }
+.kpi-settings-meta {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
+  gap: 10px 14px;
+  margin-top: 10px;
+}
+.kpi-settings-meta label {
+  display: grid;
+  gap: 4px;
+  color: #5d7183;
+  font-size: 12px;
+}
+.kpi-settings-meta input {
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid #d5dfe9;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.kpi-settings-meta input:disabled { background: #f4f7fa; color: #7d8d9c; }
+.kpi-settings-meta small {
+  color: #8a9bab;
+  font-size: 11px;
+  line-height: 1.35;
+}
+.kpi-settings-reason { display: block; margin-top: 10px; font-size: 12px; color: #5d7183; }
+.kpi-settings-reason input {
+  width: 100%;
+  min-height: 36px;
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 1px solid #d5dfe9;
+  border-radius: 8px;
+  font-size: 13px;
+}
+@media (max-width: 720px) {
+  .kpi-settings-table { min-width: 0; }
+  .kpi-settings-table thead { display: none; }
+  .kpi-settings-table tbody tr { display: grid; gap: 6px; padding: 10px 0; border-bottom: 1px solid #eef2f6; }
+  .kpi-settings-table tbody th,
+  .kpi-settings-table tbody td { width: auto; padding: 0; border: 0; }
+  .kpi-settings-table tbody td {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 128px;
+    gap: 4px 10px;
+    align-items: center;
+  }
+  .kpi-settings-table tbody td::before {
+    content: attr(data-label);
+    color: #7b8ea1;
+    font-size: 12px;
+  }
+  .kpi-settings-table tbody td small { grid-column: 2; margin-top: 0; }
+  .kpi-settings-meta { grid-template-columns: 1fr; }
 }
 .competition-ranking-toolbar {
   display: flex;
@@ -17263,6 +17532,23 @@ body { background: #f7f8f5; font-size: 14px; }
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
+/* Nhắc mốc vào sớm 15 phút trên thẻ ca. Xanh khi còn kịp, đỏ khi đã quá mốc —
+   nhân viên phải thấy ngay là bấm bây giờ có bị tính trễ hay không. */
+.attendance-early-hint {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #e8f4ea;
+  color: #1f5130;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.attendance-early-hint.late {
+  background: #fdecec;
+  color: #8a2020;
+  font-weight: 600;
+}
 /* Thông báo trên màn đăng nhập (ví dụ: phiên quá 24 giờ phải đăng nhập lại). */
 .form-notice {
   padding: 10px 12px;
@@ -17999,34 +18285,12 @@ body { background: #f7f8f5; font-size: 14px; }
   color: #fff;
 }
 .capacity-metric-switch button:disabled { opacity: .45; cursor: not-allowed; }
-/* Dải tổng DUY NHẤT của màn Thi đua (07/08/2026). Trước đây cùng một màn có ba
-   dải tổng khác kỳ nhau: 4 thẻ năng suất, 4 thẻ KPI theo ngày và chip đạt KPI ở
-   tiêu đề — mỗi cái lấy một khoảng ngày riêng. ĐỪNG thêm dải tổng thứ hai. */
-.competition-overview {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 10px;
-  margin: 0 0 16px;
-}
-.competition-overview article {
-  display: grid;
-  gap: 3px;
-  padding: 12px 14px;
-  border: 1px solid #e1e8ee;
-  border-radius: 14px;
-  background: #fbfcfd;
-}
-.competition-overview article.total { background: #f2f7ec; border-color: #d8e6c2; }
-.competition-overview article.good { background: #f5fbe9; border-color: #d8e6c2; }
-.competition-overview span {
-  color: #718297;
-  font-size: 10px;
-  font-weight: 900;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-}
-.competition-overview strong { color: var(--navy); font-size: 19px; overflow-wrap: anywhere; }
-.competition-overview small { color: var(--muted); font-size: 11px; font-weight: 700; line-height: 1.4; }
+/* Màn Thi đua KHÔNG có dải tổng ở đầu bảng (13/08/2026, chủ hệ thống: "bỏ các
+   tổng hợp đầu bảng như vậy"). Từ 07/08 màn này đã chỉ còn đúng MỘT dải tổng
+   sau khi gộp ba dải khác kỳ nhau; nay bỏ nốt dải cuối — mọi con số trong đó
+   (doanh thu kỳ, ngày đạt KPI, năng suất TB, thưởng KPI) đều đọc được ngay
+   trong bảng xếp hạng, còn chip "x/y có ngày đạt KPI" vẫn ở tiêu đề section.
+   ĐỪNG dựng lại dải tổng ở đầu màn này. */
 .capacity-chart {
   display: grid;
   gap: 12px;
@@ -18104,7 +18368,6 @@ body { background: #f7f8f5; font-size: 14px; }
 @media (max-width: 560px) {
   .capacity-metric-switch { width: 100%; }
   .capacity-metric-switch button { flex: 1 1 140px; }
-  .competition-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .capacity-chart { padding: 12px; }
   .capacity-average-legend { white-space: normal; }
 }
@@ -18292,4 +18555,437 @@ select:disabled { opacity: .6; cursor: not-allowed; }
     padding: 0 12px;
   }
   .admin-pagination-pages button { min-width: 36px; min-height: 36px; }
+}
+
+/* ================================================================
+   KPI cá nhân trong màn Xem công (#my-timesheet)
+   ================================================================ */
+.tsheet-kpi {
+  padding: 12px 14px;
+  border: 1px solid #d8e6cf;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f7fcef 0%, #ffffff 100%);
+}
+.tsheet-kpi-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.tsheet-kpi-head strong { color: var(--navy); font-size: 15px; }
+.tsheet-kpi-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+.tsheet-kpi-stats article { min-width: 0; }
+.tsheet-kpi-stats small {
+  display: block;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.tsheet-kpi-stats b { display: block; margin-top: 2px; color: var(--navy); font-size: 15px; overflow-wrap: anywhere; }
+.tsheet-kpi-stats article.ok b { color: #1f7a45; }
+.tsheet-kpi-bar,
+.board-me-bar,
+.board-row-bar {
+  margin-top: 10px;
+  height: 8px;
+  border-radius: 999px;
+  background: #e7edf2;
+  overflow: hidden;
+}
+.tsheet-kpi-bar > span,
+.board-me-bar > span,
+.board-row-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--green) 0%, #6fb52f 100%);
+}
+.tsheet-day-kpi {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid #e0e7ed;
+  border-radius: 12px;
+  background: #fbfcfd;
+}
+.tsheet-day-kpi.achieved { border-color: #cbe4bd; background: #f8fdf2; }
+.tsheet-day-kpi small { display: block; color: var(--muted); font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.tsheet-day-kpi b { display: block; margin-top: 2px; color: var(--navy); font-size: 14px; overflow-wrap: anywhere; }
+
+/* ================================================================
+   Bảng thi đua cho nhân viên (#competition)
+   Cố ý KHÔNG có nút xuất Excel/ảnh và không hiện giờ công của người khác.
+   ================================================================ */
+.competition-board-page { display: grid; gap: 12px; }
+.board-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  justify-content: space-between;
+}
+.board-scope { display: inline-flex; padding: 3px; border: 1px solid #dbe3ea; border-radius: 999px; background: #f4f7fa; }
+.board-scope button {
+  min-height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #5d7183;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.board-scope button.active { background: #fff; color: var(--navy); box-shadow: 0 1px 3px rgba(15, 31, 51, .12); }
+.board-month-nav { display: inline-flex; gap: 6px; align-items: center; }
+.board-month-nav span { min-width: 116px; text-align: center; font-size: 13px; font-weight: 800; color: var(--navy); }
+.board-month-nav button {
+  width: 36px;
+  min-height: 36px;
+  border: 1px solid #dbe3ea;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 16px;
+  cursor: pointer;
+}
+.board-month-nav button:disabled { opacity: .45; cursor: not-allowed; }
+.board-me {
+  padding: 14px;
+  border: 1px solid #cfe0f0;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f4f9ff 0%, #ffffff 100%);
+}
+.board-me-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; justify-content: space-between; }
+.board-me-head strong { color: var(--navy); font-size: 16px; }
+.board-me-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 8px; margin-top: 8px; }
+.board-me-stats small { display: block; color: var(--muted); font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.board-me-stats b { display: block; margin-top: 2px; color: var(--navy); font-size: 16px; overflow-wrap: anywhere; }
+.board-me-stats article.ok b { color: #1f7a45; }
+.board-me-gap { margin: 8px 0 0; color: #6b7d8d; font-size: 12px; }
+.board-list { display: grid; gap: 6px; }
+.board-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #e6ecf2;
+  border-radius: 12px;
+  background: #fff;
+}
+.board-row.me { border-color: var(--green); background: #fbfff3; }
+.board-row.achieved .board-row-values b { color: #1f7a45; }
+.board-place {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #eef2f6;
+  color: #5d7183;
+  font-size: 13px;
+  font-weight: 900;
+}
+.board-place.place-1 { background: #fdf0c8; color: #8a6212; }
+.board-place.place-2 { background: #eceff3; color: #5c6b7a; }
+.board-place.place-3 { background: #f7e3d2; color: #8a5a2c; }
+.board-row-main { min-width: 0; }
+.board-row-name { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; }
+.board-row-name strong { color: var(--navy); font-size: 14px; overflow-wrap: anywhere; }
+.board-row-name small { color: var(--muted); font-size: 11px; }
+.board-row-bar { margin-top: 6px; height: 6px; }
+.board-row-values { text-align: right; }
+.board-row-values b { display: block; color: var(--navy); font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.board-row-values small { display: block; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.board-footnote { color: var(--muted); font-size: 12px; line-height: 1.5; }
+@media (max-width: 480px) {
+  .board-row { grid-template-columns: 28px minmax(0, 1fr); }
+  .board-row-values { grid-column: 2; text-align: left; }
+  .board-row-values b, .board-row-values small { display: inline; margin-right: 8px; }
+}
+
+/* ================================================================
+   Đơn xin nghỉ việc (#resignation)
+   ================================================================ */
+.resignation-page { display: grid; gap: 12px; }
+.resignation-form { display: grid; gap: 12px; }
+.resignation-form label { display: block; font-size: 12px; font-weight: 800; color: #5d7183; }
+.resignation-form input,
+.resignation-form textarea {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid #d5dfe9;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--navy);
+}
+.resignation-form input { min-height: 38px; }
+.resignation-form textarea { resize: vertical; line-height: 1.5; }
+.resignation-form label > small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-weight: 500; }
+.resignation-form-actions { display: flex; justify-content: flex-end; }
+.resignation-form-actions button { min-height: 40px; padding: 0 22px; }
+.resignation-filter { display: inline-flex; flex-direction: column; font-size: 11px; color: var(--muted); font-weight: 800; }
+.resignation-filter select { min-height: 36px; margin-top: 2px; }
+.resignation-list { display: grid; gap: 8px; }
+.resignation-item {
+  padding: 12px;
+  border: 1px solid #e6ecf2;
+  border-left: 4px solid #cfd8e0;
+  border-radius: 12px;
+  background: #fff;
+}
+.resignation-item.tone-warn { border-left-color: #e0a53a; }
+.resignation-item.tone-info { border-left-color: #4a86c8; }
+.resignation-item.tone-ok { border-left-color: #4a9c5f; }
+.resignation-item.tone-danger { border-left-color: #c4566a; }
+.resignation-item.tone-muted { border-left-color: #c3ccd4; opacity: .82; }
+.resignation-item > header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.resignation-item > header strong { color: var(--navy); font-size: 14px; overflow-wrap: anywhere; }
+.resignation-item > header small { display: block; color: var(--muted); font-size: 11px; }
+.resignation-status {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #eef2f6;
+  color: #5d7183;
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.resignation-status.tone-warn { background: #fdf3e0; color: #8a6212; }
+.resignation-status.tone-info { background: #e9f1fa; color: #2f5f92; }
+.resignation-status.tone-ok { background: #eaf6ed; color: #1f7a45; }
+.resignation-status.tone-danger { background: #fbecef; color: #a73549; }
+.resignation-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.resignation-facts small { display: block; color: var(--muted); font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.resignation-facts b { display: block; margin-top: 2px; color: var(--navy); font-size: 13px; overflow-wrap: anywhere; }
+.resignation-reason { margin: 10px 0 0; color: var(--navy); font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+.resignation-note { margin: 6px 0 0; color: #5d7183; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.resignation-item > footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.resignation-item > footer small { margin-right: auto; color: var(--muted); font-size: 11px; }
+.resignation-item > footer button { min-height: 36px; }
+
+.competition-reward-rule {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: #f1f6fb;
+  color: #48607a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.competition-reward-rule b { color: var(--navy); }
+
+/* ===== Bảng thi đua: tổng cả điểm bán + lọc nhóm vị trí ===== */
+.board-team {
+  padding: 14px;
+  border: 1px solid #dfe7ee;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fbfcfe 0%, #ffffff 100%);
+}
+.board-team-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; justify-content: space-between; }
+.board-team-head strong { color: var(--navy); font-size: 18px; }
+.board-team-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-top: 8px; }
+.board-team-stats small { display: block; color: var(--muted); font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.board-team-stats b { display: block; margin-top: 2px; color: var(--navy); font-size: 15px; overflow-wrap: anywhere; }
+.board-team-stats article.ok b { color: #1f7a45; }
+.board-group-filter { display: inline-flex; flex-direction: column; font-size: 11px; font-weight: 800; color: var(--muted); }
+.board-group-filter select { min-height: 36px; margin-top: 2px; }
+.board-row-days { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
+
+/* ===== Xem công: quy tắc vắng + khi nhúng trong trang Chấm công ===== */
+.tsheet-body { display: grid; gap: 12px; }
+.tsheet-body .tsheet-head h2 { margin: 2px 0 0; font-size: 17px; }
+.tsheet-embedded { display: block; }
+.tsheet-rule {
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: #f4f7fa;
+  color: #5d7183;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.tsheet-legend .tone-empty::before { background: #eef2f6; border: 1px solid #dbe3ea; }
+.tsheet-month-nav button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ===== Đơn nghỉ việc: thống kê, bộ lọc, dòng thời gian, biểu mẫu quyết định ===== */
+.resignation-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+.resignation-stats article {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #e0e7ed;
+  border-radius: 12px;
+  background: #fbfcfd;
+}
+.resignation-stats article.warn { border-color: #f0d3ab; background: #fffaf1; }
+.resignation-stats small { display: block; color: var(--muted); font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.resignation-stats strong { display: block; margin-top: 3px; color: var(--navy); font-size: 20px; }
+.resignation-stats article.warn strong { color: #a5710f; }
+.resignation-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+.resignation-filters label { display: flex; flex-direction: column; font-size: 11px; font-weight: 800; color: var(--muted); }
+.resignation-filters select,
+.resignation-filters input {
+  min-height: 38px;
+  margin-top: 3px;
+  padding: 6px 10px;
+  border: 1px solid #d5dfe9;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--navy);
+}
+.resignation-form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; align-items: end; }
+.resignation-form select {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 1px solid #d5dfe9;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--navy);
+}
+.resignation-notice {
+  padding: 10px 12px;
+  border: 1px solid #cfe2d5;
+  border-radius: 10px;
+  background: #f3faf5;
+}
+.resignation-notice.short { border-color: #f0d3ab; background: #fffaf1; }
+.resignation-notice small { display: block; color: var(--muted); font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.resignation-notice b { display: block; margin: 2px 0; color: var(--navy); font-size: 17px; }
+.resignation-notice span { display: block; color: #5d7183; font-size: 11.5px; line-height: 1.45; }
+.resignation-handover {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #e3eaf2;
+  border-radius: 12px;
+  background: #fbfcfe;
+}
+.resignation-handover legend { padding: 0 6px; color: var(--navy); font-size: 12px; font-weight: 800; }
+.resignation-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #40566b;
+  line-height: 1.45;
+}
+.resignation-check input { width: 18px; height: 18px; min-height: 0; margin: 1px 0 0; flex: 0 0 auto; }
+.resignation-form-hint { margin-right: auto; color: var(--muted); font-size: 11.5px; }
+.resignation-form-actions { align-items: center; justify-content: space-between; }
+.resignation-role-note {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: #f1f6fb;
+  color: #48607a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.resignation-handover-note {
+  margin: 8px 0 0;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: #f6f8fa;
+  color: #4a5f72;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.resignation-timeline { display: grid; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
+.resignation-timeline li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 8px; align-items: start; }
+.resignation-timeline-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border: 2px solid #cfd8e0;
+  border-radius: 50%;
+  background: #fff;
+}
+.resignation-timeline li.done .resignation-timeline-dot { border-color: var(--green); background: var(--green); }
+.resignation-timeline b { display: block; color: #7b8ea1; font-size: 12.5px; font-weight: 700; }
+.resignation-timeline li.done b { color: var(--navy); font-weight: 800; }
+.resignation-timeline small { display: block; color: var(--muted); font-size: 11px; }
+.resignation-decision-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #cfe0f0;
+  border-radius: 12px;
+  background: #f7fbff;
+}
+.resignation-decision-form > strong { color: var(--navy); font-size: 13px; }
+.resignation-decision-form label { display: block; font-size: 12px; font-weight: 800; color: #5d7183; }
+.resignation-decision-form textarea {
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid #d5dfe9;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--navy);
+  resize: vertical;
+}
+.resignation-decision-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.resignation-decision-actions button { min-height: 38px; }
+
+/* ===== Hồ sơ nhân sự: gợi ý khi chuyển sang Nghỉ việc ===== */
+.admin-crm-lifecycle-hint {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: #fffaf1;
+  color: #7a5a1e;
+  font-size: 12px;
+  line-height: 1.5;
 }

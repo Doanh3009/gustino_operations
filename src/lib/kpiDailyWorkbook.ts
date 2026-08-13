@@ -1,3 +1,5 @@
+import { importChunk } from './lazyRoute'
+
 export interface DailyKpiExportRow {
   date: string
   employeeKey: string
@@ -25,7 +27,7 @@ export interface DailyKpiWorkbookInput {
 
 /** Workbook chi tiết dùng đúng dữ liệu KPI ngày đã tính cho bảng lương. */
 export async function buildDailyKpiWorkbook(input: DailyKpiWorkbookInput) {
-  const ExcelJS = await import('exceljs')
+  const ExcelJS = await importChunk(() => import('exceljs'))
   const Workbook = ExcelJS.Workbook || (ExcelJS as unknown as { default: typeof ExcelJS }).default.Workbook
   const workbook = new Workbook()
   workbook.creator = 'Gustino Operations'

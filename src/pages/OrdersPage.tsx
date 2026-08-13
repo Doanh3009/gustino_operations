@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getProducts } from '../lib/constants'
 import { branchName } from '../lib/branches'
+import { importChunk } from '../lib/lazyRoute'
 import { fetchConfiguredProducts } from '../lib/products'
 import { canvasToBlob, shareOrDownloadBlob } from '../lib/browser'
 import { localDateKey } from '../lib/dates'
@@ -236,7 +237,7 @@ export function OrdersPage({ user }: Props) {
       target.classList.add('order-report-sheet-export')
       if (activeRequests.length > 14) target.classList.add('dense')
       await waitForPaint()
-      const { default: html2canvas } = await import('html2canvas')
+      const { default: html2canvas } = await importChunk(() => import('html2canvas'))
       const canvas = await html2canvas(target, {
         scale: 2,
         backgroundColor: '#fffdf4',

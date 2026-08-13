@@ -20,7 +20,7 @@ import { fetchMovements, fetchReportSnapshots } from '../lib/store'
 import { fetchBagAllocations, fetchBagShiftSessions } from '../lib/shiftLedger'
 import { buildShiftLeaderRevenueRows } from '../lib/shiftCompetition'
 import { buildDailyRevenueRows } from '../lib/revenue'
-import { employeePeriodRevenueTarget, summarizeEmployeeBagSales } from '../lib/commission'
+import { branchTeamPeriodRevenueTarget, employeePeriodRevenueTarget, positionKpiKey, summarizeEmployeeBagSales, usesVungTauNewKpi } from '../lib/commission'
 import { fetchSalesReceiptsRange, type SalesReceipt } from '../lib/salesReceipts'
 import { useLang } from '../lib/i18n'
 import { supabase, uniqueChannelName } from '../lib/supabase'
@@ -223,6 +223,16 @@ export function ManagerDashboardPage({
         employee.branchId === session.branchId
         && (employee.id === session.leaderId || normalizeName(employee.name) === normalizeName(session.leaderName)),
       )
+      if (
+        session.branchId === 'lotte-vt'
+        && usesVungTauNewKpi(session.businessDate)
+        && positionKpiKey(profile?.role || 'shift_leader', profile?.employmentType || 'leader', profile?.positionTitle || 'Ca trưởng') === 'shift_leader'
+      ) {
+        const sessionCount = Math.max(1, bagSessions.filter((item) =>
+          item.branchId === session.branchId && item.businessDate === session.businessDate,
+        ).length)
+        return branchTeamPeriodRevenueTarget(session.branchId, session.businessDate, session.businessDate) / sessionCount
+      }
       return employeePeriodRevenueTarget(
         session.branchId,
         profile?.role || 'shift_leader',

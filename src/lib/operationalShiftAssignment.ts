@@ -1,17 +1,20 @@
 import type { BagShiftSession, ShiftRegistration, WorkShift } from '../types'
 
 /**
- * "Ca phó" KHÔNG phải một role riêng: ca trưởng và ca phó cùng đăng nhập bằng
- * `shift_leader`, chỉ khác `position_title`. Quy tắc vận hành: **chủ ca luôn là
- * ca trưởng** — ca phó vẫn chấm công, nhập kho, chế biến, bán hàng trong ca
- * nhưng không đứng tên phiên ca.
+ * Nhận diện chức danh "Ca phó".
  *
- * Trước đây ai check-in trước thì người đó thành chủ ca, nên 28/07 tại Gold
- * Coast ca phó check-in sớm hơn ca trưởng 67 giây và cả Ca 1 mang tên ca phó
- * (kéo theo chỉ tiêu/KPI của ca cũng tính theo chức danh ca phó).
+ * **13/08/2026 — chủ hệ thống chốt: ca phó và ca trưởng có quyền vận hành NHƯ
+ * NHAU.** Hàm này vì thế KHÔNG còn được dùng để quyết định ai đứng tên phiên ca
+ * (xem `isLeaderRegistration`). Nó chỉ còn phục vụ việc chấm KPI theo chức danh
+ * (`positionKpiKey` trong `commission.ts`) và các nhãn hiển thị.
  *
- * Chức danh RỖNG phải hiểu là ca trưởng: hồ sơ cũ chưa khai vị trí, nếu coi
- * mặc định là ca phó thì cả chi nhánh sẽ không ai mở được ca.
+ * Lịch sử vì sao từng dùng nó để chặn: 28/07 tại Gold Coast ca phó check-in sớm
+ * hơn ca trưởng 67 giây nên cả Ca 1 mang tên ca phó. Cách chữa cũ là cấm ca phó
+ * đứng tên ca — nhưng nó đẻ ra lỗi nặng hơn: 12/08 Nguyễn Thị Yến (ca phó) không
+ * nhận nổi Ca 2, cả chi nhánh đứng hình. Cách chữa mới: **không ai tự động chiếm
+ * ca của ai — người nào vào ca thì bấm nhận ca**, và ca mang đúng tên người bấm.
+ *
+ * Chức danh RỖNG vẫn hiểu là ca trưởng (hồ sơ cũ chưa khai vị trí).
  */
 export function isDeputyShiftLeader(person?: { positionTitle?: string } | null) {
   const title = String(person?.positionTitle || '')
@@ -30,7 +33,11 @@ export function isDeputyShiftLeader(person?: { positionTitle?: string } | null) 
  * đã đăng ký nằm trong nhóm ca dành cho ca trưởng.
  */
 function isLeaderRegistration(registration: ShiftRegistration, workShifts: WorkShift[]) {
-  if (isDeputyShiftLeader(registration)) return false
+  // 13/08/2026: ca phó KHÔNG còn bị loại ở đây. Trước đây dòng
+  // `if (isDeputyShiftLeader(registration)) return false` khiến đăng ký của ca
+  // phó không bao giờ lọt vào `leaderShiftWindowsInOrder` ⇒ không được gán Ca 1
+  // hay Ca 2 ⇒ bị chặn tự mở ca, bị thu hồi ca đã mở, và màn Bàn giao không hiện
+  // nút nào. Đó chính là lỗi ngày 12/08 của Nguyễn Thị Yến.
   if (registration.employmentType === 'leader') return true
   if (registration.employmentType) return false
   return workShifts.some((shift) =>
@@ -131,7 +138,11 @@ export function operationalSequencesFor(
   return index === windows.length - 1 ? [2] : []
 }
 
-/** Ca trưởng (không phải ca phó) được xếp đúng phiên ca này trong ngày. */
+/**
+ * Người được LỊCH xếp đúng phiên ca này trong ngày — ca trưởng hoặc ca phó, hai
+ * vai trò ngang nhau từ 13/08/2026. Chỉ dùng để HIỂN THỊ ("lịch hôm nay xếp
+ * ai"), không còn dùng để chặn ai nhận ca.
+ */
 export function primaryLeadersScheduledFor(
   sequence: number,
   workDate: string,

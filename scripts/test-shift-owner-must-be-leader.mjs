@@ -1,6 +1,18 @@
-// Chủ ca phải là CA TRƯỞNG. Ca phó dùng chung role `shift_leader` nên trước đây
-// ai check-in trước thì thành chủ ca — 28/07 tại Gold Coast ca phó bấm sớm hơn
-// ca trưởng 67 giây và cả Ca 1 mang tên ca phó (KPI ca cũng tính theo ca phó).
+// CHỦ CA = NGƯỜI BẤM NHẬN CA (luật mới 13/08/2026, chủ hệ thống chốt).
+//
+// ⚠️ Tên file giữ nguyên để CODEMAP và lịch sử git còn tra được, nhưng LUẬT ĐÃ
+// ĐẢO. Luật cũ "chủ ca luôn là ca trưởng, ca phó không đứng tên ca" đã bị gỡ.
+//
+// Vì sao đảo: luật cũ chữa được lỗi 28/07 (ca phó check-in sớm 67 giây nên chiếm
+// Ca 1) nhưng đẻ ra lỗi nặng hơn nhiều — ca phó bị loại khỏi `isLeaderRegistration`
+// nên KHÔNG BAO GIỜ được gán phiên ca nào, kéo theo bị chặn tự mở ca, bị thu hồi
+// ca đã mở, và màn Bàn giao không hiện nút nào. Ngày 12/08 Nguyễn Thị Yến (ca phó
+// Lotte 23/10) có lịch 14:15–22:15 đã duyệt, đã chấm công, mà vẫn không nhận nổi
+// Ca 2 — cả chi nhánh đứng hình.
+//
+// Luật mới: ca trưởng và ca phó NGANG QUYỀN vận hành. Ai vào ca thì người đó bấm
+// nhận ca, phiên ca mang đúng tên người bấm, và KHÔNG có cơ chế nào tự chuyển
+// quyền chủ ca sau lưng người đang đứng quầy.
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import ts from 'typescript'
@@ -16,25 +28,28 @@ async function loadTypeScriptModule(path) {
 const assignment = await loadTypeScriptModule('../src/lib/operationalShiftAssignment.ts')
 const autoOpenSource = await readFile(new URL('../src/lib/shiftAutoOpen.ts', import.meta.url), 'utf8')
 const handoverSource = await readFile(new URL('../src/pages/ShiftHandoverPage.tsx', import.meta.url), 'utf8')
+const appSource = await readFile(new URL('../src/App.tsx', import.meta.url), 'utf8')
 const ledgerSource = await readFile(new URL('../src/lib/shiftLedger.ts', import.meta.url), 'utf8')
 
 const { isDeputyShiftLeader, primaryLeadersScheduledFor, nextOperationalSequence } = assignment
 
-// 1. Nhận diện ca phó theo chức danh, không theo role.
+// 1. Vẫn nhận diện được chức danh ca phó — nhưng CHỈ để chấm KPI theo chức danh,
+//    không còn dùng để chặn ai đứng tên ca.
 assert.equal(isDeputyShiftLeader({ positionTitle: 'Ca phó' }), true)
 assert.equal(isDeputyShiftLeader({ positionTitle: 'CA PHÓ' }), true)
 assert.equal(isDeputyShiftLeader({ positionTitle: 'Phó quản lý ca' }), true)
+assert.equal(isDeputyShiftLeader({ positionTitle: 'Ca phó (8h)' }), true, 'Hồ sơ thật của Nguyễn Thị Yến ghi "Ca phó (8h)".')
 assert.equal(isDeputyShiftLeader({ positionTitle: 'Ca trưởng' }), false)
 assert.equal(isDeputyShiftLeader({ positionTitle: 'Full-time' }), false)
 // Chức danh rỗng = ca trưởng, nếu không cả chi nhánh không ai mở được ca.
 assert.equal(isDeputyShiftLeader({ positionTitle: '' }), false)
 assert.equal(isDeputyShiftLeader(undefined), false)
 
-// 2. Đúng tình huống Gold Coast 28/07: hai người cùng đăng ký khung ca leader
-//    07:15-15:15, một ca trưởng và một ca phó.
+// 2. Đúng tình huống Lotte 23/10 ngày 12/08: ca tối có một ca trưởng và một ca
+//    phó cùng khung giờ. Ca phó PHẢI được lịch xếp vào phiên ca như ca trưởng.
 const workShifts = [
-  { id: 'shift-morning', branchId: 'gold-coast', name: 'Ca sáng', startTime: '07:15', endTime: '15:15', graceMinutes: 15, recommendedStaff: 3, employmentTypes: ['leader'], active: true },
-  { id: 'shift-evening', branchId: 'gold-coast', name: 'Ca tối', startTime: '14:15', endTime: '22:15', graceMinutes: 15, recommendedStaff: 3, employmentTypes: ['leader'], active: true },
+  { id: 'shift-morning', branchId: 'lotte-2310', name: 'Ca sáng', startTime: '07:15', endTime: '15:15', graceMinutes: 15, recommendedStaff: 3, employmentTypes: ['leader'], active: true },
+  { id: 'shift-evening', branchId: 'lotte-2310', name: 'Ca tối', startTime: '14:15', endTime: '22:15', graceMinutes: 15, recommendedStaff: 3, employmentTypes: ['leader'], active: true },
 ]
 const registration = (userId, userName, positionTitle, shiftId, startTime, endTime) => ({
   id: `reg-${userId}`,
@@ -42,74 +57,82 @@ const registration = (userId, userName, positionTitle, shiftId, startTime, endTi
   userName,
   positionTitle,
   employmentType: 'leader',
-  branchId: 'gold-coast',
-  workDate: '2026-07-28',
+  branchId: 'lotte-2310',
+  workDate: '2026-08-12',
   startTime,
   endTime,
   shiftId,
   status: 'approved',
   note: '',
-  createdAt: '2026-07-27T00:00:00.000Z',
+  createdAt: '2026-08-11T00:00:00.000Z',
 })
 const registrations = [
-  registration('deputy', 'Minh Thiện', 'Ca phó', 'shift-morning', '07:15', '15:15'),
-  registration('primary', 'Trương Thị Phương', 'Ca trưởng', 'shift-morning', '07:15', '15:15'),
-  registration('evening', 'Trần Minh Lý', 'Ca trưởng', 'shift-evening', '14:15', '22:15'),
+  registration('morning-leader', 'Nguyễn Bình Thảo Nguyên', 'Ca trưởng', 'shift-morning', '07:15', '15:15'),
+  registration('deputy', 'Nguyễn Thị Yến', 'Ca phó (8h)', 'shift-evening', '14:15', '22:15'),
 ]
 
 assert.equal(nextOperationalSequence([]), 1)
 assert.equal(nextOperationalSequence([{ sequence: 1 }]), 2)
 
-const primariesForShiftOne = primaryLeadersScheduledFor(1, '2026-07-28', registrations, workShifts)
-assert.deepEqual(primariesForShiftOne.map((item) => item.userName), ['Trương Thị Phương'])
-
-const primariesForShiftTwo = primaryLeadersScheduledFor(2, '2026-07-28', registrations, workShifts)
-assert.deepEqual(primariesForShiftTwo.map((item) => item.userName), ['Trần Minh Lý'])
-
+// ĐÂY LÀ HỒI QUY CỦA LỖI 12/08: trước bản vá danh sách này RỖNG vì ca phó bị
+// `isLeaderRegistration` loại ra, nên Ca 2 không thuộc về ai.
+const scheduledForShiftTwo = primaryLeadersScheduledFor(2, '2026-08-12', registrations, workShifts)
+assert.deepEqual(
+  scheduledForShiftTwo.map((item) => item.userName),
+  ['Nguyễn Thị Yến'],
+  'Ca phó phải được lịch xếp đứng Ca 2 như ca trưởng.',
+)
+assert.deepEqual(
+  primaryLeadersScheduledFor(1, '2026-08-12', registrations, workShifts).map((item) => item.userName),
+  ['Nguyễn Bình Thảo Nguyên'],
+)
 // Ngày khác không được kéo lịch sang.
-assert.equal(primaryLeadersScheduledFor(1, '2026-07-29', registrations, workShifts).length, 0)
+assert.equal(primaryLeadersScheduledFor(1, '2026-08-13', registrations, workShifts).length, 0)
 
-// Chi nhánh chỉ xếp ca phó cho Ca 1 -> không có ca trưởng nào chặn, ca phó vẫn mở được ca.
-const deputyOnly = [registrations[0]]
-assert.equal(primaryLeadersScheduledFor(1, '2026-07-28', deputyOnly, workShifts).length, 0)
+// Cả ngày chỉ có mình ca phó ⇒ ca phó ôm cả hai phiên ca, y như một ca trưởng.
+const deputyOnly = [registrations[1]]
+assert.deepEqual(
+  primaryLeadersScheduledFor(1, '2026-08-12', deputyOnly, workShifts).map((item) => item.userName),
+  ['Nguyễn Thị Yến'],
+)
+assert.deepEqual(
+  primaryLeadersScheduledFor(2, '2026-08-12', deputyOnly, workShifts).map((item) => item.userName),
+  ['Nguyễn Thị Yến'],
+)
 
-// 3. Bộ dò ca chặn ca phó tự đứng tên và trả quyền chủ ca cho ca trưởng.
-assert.match(autoOpenSource, /deputy-not-owner/)
-assert.match(autoOpenSource, /blockedAsDeputy\(user, sequence, today, registrations, workShifts\)/)
-assert.match(autoOpenSource, /reclaimShiftForPrimaryLeader/)
-// 07/08/2026 — chỉ bỏ qua khi người giữ ca ĐÚNG là chủ ca của phiên ca đó.
-// Gold Coast 07/08: Ca 2 mở dưới tên ca trưởng CA 1; vì người giữ cũng là "ca trưởng"
-// nên bản cũ bỏ qua ⇒ ca trưởng Ca 2 vĩnh viễn "Chưa nhận ca", không chốt được ca.
-// Ca 1 chưa bàn giao vẫn không bị chiếm: người giữ có lịch đúng sequence 1.
+// 3. Bộ dò ca: không còn tầng chặn ca phó, không còn tự giật ca.
+assert.doesNotMatch(autoOpenSource, /blockedAsDeputy/, 'Tầng chặn ca phó đã gỡ.')
+assert.doesNotMatch(autoOpenSource, /reclaimShiftForPrimaryLeader/, 'Cơ chế tự giật quyền chủ ca đã gỡ.')
+assert.doesNotMatch(autoOpenSource, /\[CA PHÓ ĐỨNG THAY\]/, 'Không còn khái niệm "ca phó đứng thay".')
 assert.match(
   autoOpenSource,
-  /const holderOwnsThisSequence = Boolean\(holder\)\s*\n\s*&& !isDeputyShiftLeader\(holder\)\s*\n\s*&& operationalSequencesFor\(holder!, registrations, workShifts\)\.includes\(session\.sequence\)/,
-  'Phải xét người giữ ca có lịch đúng phiên ca này hay không, không chỉ xét ca phó.',
+  /if \(sessions\.some\(\(item\) => item\.status === 'open'\)\) return skip\('shift-already-open'\)/,
+  'Ca đang mở thì bộ dò ca phải để yên, không đụng vào quyền chủ ca.',
 )
-assert.match(autoOpenSource, /if \(holderOwnsThisSequence\) return skip\('shift-already-open'\)/)
-assert.doesNotMatch(
+assert.match(
   autoOpenSource,
-  /if \(!holder \|\| !isDeputyShiftLeader\(holder\)\) return skip\('shift-already-open'\)/,
-  'Luật cũ chỉ giành lại từ ca phó — đã thay.',
+  /user\.role !== 'shift_leader' && user\.role !== 'shift_deputy'/,
+  'Bộ dò ca phải phục vụ cả ca phó.',
 )
+assert.match(
+  autoOpenSource,
+  /!\['shift_leader', 'shift_deputy'\]\.includes\(user\.role\)/,
+  'Cửa nhận ca thủ công phải cho cả Ca trưởng và Ca phó bấm nhận ca.',
+)
+// Chuyển quyền chủ ca vẫn còn ở tầng thư viện để quản trị dùng khi cần, chỉ là
+// không còn ai gọi tự động.
 assert.match(ledgerSource, /export async function transferBagShiftLeadership/)
 
-// 4. Màn Bàn giao: ca phó không tự nhận ca, nhưng vẫn mở thay được khi ca trưởng vắng.
+// 4. App.tsx phải cho ca phó chạy bộ dò ca (một trong các tầng từng chặn Yến).
 assert.match(
-  handoverSource,
-  /const canAutoStartScheduledShift = Boolean\(startableRegistration\) && !deputyMustWaitForPrimary/,
+  appSource,
+  /user\.role !== 'shift_leader' && user\.role !== 'shift_deputy'/,
+  'Vòng dò ca trong App.tsx phải nhận cả ca phó.',
 )
-assert.match(handoverSource, /canStandInForPrimary/)
-// Nút "mở ca thay" chỉ cần ca phó ĐANG TRONG CA. Ràng buộc cũ (`startableRegistration`)
-// không bao giờ đúng với ca phó — đăng ký của ca phó không đứng tên phiên ca nào — nên
-// nút chưa từng hiện ra và ca phó kẹt y như khi chưa có nút.
-assert.doesNotMatch(
-  handoverSource,
-  /const canStandInForPrimary = Boolean\(\s*\n\s*deputyMustWaitForPrimary\s*\n\s*&& startableRegistration/,
-  'Điều kiện mở ca thay không được bám vào đăng ký đứng tên phiên ca của ca phó.',
-)
-// Dấu vết "ca phó mở thay" nằm ở cửa nhận ca dùng chung (`claimOperationalShift`),
-// nên trang Bàn giao lẫn trang Hôm nay đều ghi sổ ca giống nhau.
-assert.match(autoOpenSource, /\[CA PHÓ ĐỨNG THAY\]/)
 
-console.log('OK — chủ ca luôn là ca trưởng, ca phó vẫn làm việc trong ca.')
+// 5. Màn Bàn giao: MỘT nút nhận ca chung, không còn đường "mở ca thay".
+assert.match(handoverSource, /Nhận ca ngay/)
+assert.match(handoverSource, /const deputyMustWaitForPrimary = false/, 'Ca phó không còn phải chờ ca trưởng.')
+assert.doesNotMatch(handoverSource, /Xác nhận mở .* thay ca trưởng/, 'Nút "mở ca thay" đã gỡ.')
+
+console.log('OK — ca trưởng và ca phó ngang quyền; ai bấm nhận ca thì ca mang tên người đó.')

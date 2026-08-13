@@ -44,7 +44,7 @@ export type ShiftAutoOpenSkip =
   | 'day-closed'
   | 'not-checked-in'
   | 'not-scheduled'
-  /** Ca phó: ca trưởng được xếp ca này mới là chủ ca. */
+  /** Ca phó: ca trưởng được xếp ca này mới là chủ ca tự động. */
   | 'deputy-not-owner'
 
 function skip(reason: ShiftAutoOpenSkip): ShiftAutoOpenResult {
@@ -72,13 +72,17 @@ async function buildOpeningBalances(user: AppUser) {
  * sequence kế tiếp VÀ đang check-in cho chính đăng ký đó.
  */
 export async function reconcileOperationalShift(user: AppUser): Promise<ShiftAutoOpenResult> {
-  if (user.role !== 'shift_leader') return skip('not-leader')
+  // Ca phó vận hành ngang ca trưởng (13/08/2026) nên cũng được bộ dò ca phục vụ.
+  if (user.role !== 'shift_leader' && user.role !== 'shift_deputy') return skip('not-leader')
   const today = localDateKey()
 
   // Các phép kiểm tra rẻ tiền trước, để vòng lặp định kỳ hầu như không tốn gì.
   const sessions = await fetchBagShiftSessions(user, { branchId: user.branchId, date: today })
-  const openSession = sessions.find((item) => item.status === 'open')
-  if (openSession) return reclaimShiftForPrimaryLeader(user, openSession, today)
+  // Ca đang mở thì THÔI — không ai bị giật ca khỏi tay nữa. Ai vào ca thì người
+  // đó bấm nhận ca, và ca mang đúng tên người bấm. Nếu ca đang đứng nhầm tên,
+  // xử lý bằng cách chốt & bàn giao (hoặc quản lý chỉnh), không bằng cách để
+  // máy tự chuyển quyền sau lưng người đang đứng quầy.
+  if (sessions.some((item) => item.status === 'open')) return skip('shift-already-open')
   if (sessions.length >= 2) return skip('day-complete')
 
   const day = await getOperationDay(user.branchId, today, user).catch(() => null)
@@ -101,86 +105,9 @@ export async function reconcileOperationalShift(user: AppUser): Promise<ShiftAut
   )
   if (!registration) return skip('not-scheduled')
 
-  // Ca phó không bao giờ TỰ ĐỘNG thành chủ ca khi đã có ca trưởng được xếp
-  // phiên ca này — kể cả khi check-in trước. Muốn mở thay (ca trưởng vắng) thì
-  // phải bấm tay ở màn Bàn giao, có xác nhận và ghi rõ vào ghi chú ca.
-  const sequence = nextOperationalSequence(sessions)
-  if (blockedAsDeputy(user, sequence, today, registrations, workShifts)) return skip('deputy-not-owner')
-
   await ensureOperationDay(user, today)
   const session = await startBagShift(user, today, await buildOpeningBalances(user))
   return { status: 'opened', sequence: session.sequence }
-}
-
-/** Có ca trưởng khác được xếp phiên ca này, còn người đang đăng nhập là ca phó. */
-function blockedAsDeputy(
-  user: AppUser,
-  sequence: number,
-  workDate: string,
-  registrations: ShiftRegistration[],
-  workShifts: WorkShift[],
-) {
-  if (!isDeputyShiftLeader(user)) return false
-  return primaryLeadersScheduledFor(sequence, workDate, registrations, workShifts)
-    .some((item) => item.userId !== user.id)
-}
-
-/**
- * Ca đang mở nhưng người giữ ca KHÔNG phải chủ ca của chính phiên ca đó: trả quyền
- * về ca trưởng được xếp đúng phiên ca và đang trong ca. Chạy được từ vòng dò ca lẫn
- * từ check-in, nên ca trưởng check-in muộn vài giây vẫn nhận lại đúng ca của mình.
- *
- * 07/08/2026 — mở rộng khỏi "chỉ giành lại từ ca phó". Gold Coast 07/08: Ca 2 bị mở
- * dưới tên Trần Minh Lý (ca trưởng CA 1, lịch chỉ có sequence 1) lúc 15:19. Trương
- * Thị Phương mới là ca trưởng được xếp Ca 2, nhưng vì người giữ ca cũng là "ca
- * trưởng" nên bản cũ bỏ qua ⇒ chị Phương KHÔNG bao giờ nhận được ca: màn Bàn giao
- * báo "Chưa nhận ca" và không hiện nút chốt, ca treo tới nửa đêm.
- *
- * Luật mới: chỉ bỏ qua khi người giữ ca thực sự được xếp ĐÚNG phiên ca này. Ca 1
- * chưa bàn giao vẫn tuyệt đối không bị chiếm — người giữ có lịch sequence 1 nên
- * đúng chủ ca. Người giữ không có lịch hôm nay cũng là giữ nhầm.
- */
-async function reclaimShiftForPrimaryLeader(
-  user: AppUser,
-  session: BagShiftSession,
-  workDate: string,
-): Promise<ShiftAutoOpenResult> {
-  if (ownsBagShiftSession(session, user)) return skip('shift-already-open')
-  if (isDeputyShiftLeader(user)) return skip('deputy-not-owner')
-
-  const [registrations, attendance, workShifts] = await Promise.all([
-    fetchShiftRegistrations(user, { branchId: user.branchId, from: workDate, to: workDate }),
-    fetchAttendanceRecords(user, { branchId: user.branchId, userId: user.id, from: workDate, to: workDate }),
-    fetchWorkShifts(user),
-  ])
-  // Chỉ bỏ qua khi người đang giữ ca ĐÚNG là chủ ca của phiên ca này: ca trưởng
-  // (không phải ca phó) và có lịch đúng sequence đó. Mọi trường hợp còn lại —
-  // ca phó mở hộ, ca trưởng ca khác giữ nhầm, người không có lịch hôm nay — đều
-  // là giữ nhầm và phải trả về đúng người.
-  const holder = registrations.find((item) => item.userId === session.leaderId && item.workDate === workDate)
-  const holderOwnsThisSequence = Boolean(holder)
-    && !isDeputyShiftLeader(holder)
-    && operationalSequencesFor(holder!, registrations, workShifts).includes(session.sequence)
-  if (holderOwnsThisSequence) return skip('shift-already-open')
-
-  const openAttendances = attendance.filter((record) => !record.checkOutTime)
-  const registration = registrations.find((item) =>
-    item.userId === user.id
-    && item.workDate === workDate
-    && item.status === 'approved'
-    && openAttendances.some((record) => record.shiftRegistrationId === item.id)
-    && operationalSequencesFor(item, registrations, workShifts).includes(session.sequence),
-  )
-  if (!registration) return skip('shift-already-open')
-
-  const stamp = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
-  const holderRole = holder && isDeputyShiftLeader(holder) ? 'ca phó' : 'không có lịch ca này'
-  await transferBagShiftLeadership(
-    user,
-    session,
-    `${session.leaderName} (${holderRole}) mở ca; ${user.name} (ca trưởng được xếp Ca ${session.sequence}) nhận quyền chủ ca lúc ${stamp}.`,
-  )
-  return { status: 'reassigned', sequence: session.sequence }
 }
 
 /**
@@ -194,13 +121,9 @@ export async function openShiftAfterLeaderCheckIn(
   const sessions = await fetchBagShiftSessions(user, { branchId: user.branchId, date: registration.workDate })
   const openSession = sessions.find((item) => item.status === 'open')
   if (openSession) {
-    // Ca phó check-in sớm hơn ca trưởng vài giây là chuyện thường ngày. Ca
-    // trưởng vừa check-in thì nhận lại quyền chủ ca ngay, không phải chờ vòng dò.
-    const result = await reclaimShiftForPrimaryLeader(user, openSession, registration.workDate)
-      .catch(() => skip('shift-already-open'))
-    return result.status === 'reassigned'
-      ? ` Ca ${result.sequence} đang do ca phó mở; bạn là ca trưởng của ca này nên đã nhận lại quyền chủ ca.`
-      : ' Ca vận hành đang mở.'
+    return ownsBagShiftSession(openSession, user)
+      ? ' Ca vận hành của bạn đang mở.'
+      : ` Ca ${openSession.sequence} đang do ${openSession.leaderName} phụ trách.`
   }
   if (sessions.length >= 2) return ' Hôm nay đã đủ 2 ca vận hành.'
   // Phải có CẢ danh sách đăng ký của ngày: phiên ca được xếp theo thứ tự vào ca của
@@ -218,17 +141,6 @@ export async function openShiftAfterLeaderCheckIn(
     return nextSequence === 2
       ? ' Đã check-in Ca 1, nhưng chỉ ca trưởng có lịch Ca 2 mới được tự nhận Ca 2.'
       : ' Đã check-in, đang chờ ca trưởng được xếp Ca 1 tự mở ca vận hành.'
-  }
-  const sequence = nextOperationalSequence(sessions)
-  if (isDeputyShiftLeader(user)) {
-    const primaryLeaders = primaryLeadersScheduledFor(sequence, registration.workDate, registrations, workShifts)
-      .filter((item) => item.userId !== user.id)
-    if (primaryLeaders.length) {
-      const names = primaryLeaders.map((item) => item.userName).join(', ')
-      return ` Bạn là ca phó nên không đứng tên chủ ca; ${names} (ca trưởng) sẽ mở Ca ${sequence}.`
-        + ' Bạn vẫn nhập kho, chế biến và bán hàng bình thường.'
-        + ' Nếu ca trưởng vắng, vào mục Bàn giao để mở ca thay.'
-    }
   }
   await ensureOperationDay(user, registration.workDate)
   try {
@@ -269,14 +181,16 @@ export interface ShiftClaimResult {
  * Hàm này cho người ĐANG TRONG CA nhận ca kể cả khi lịch không xếp họ, nhưng không phải
  * cửa sau: vẫn bắt buộc có ca đã duyệt hôm nay + đang check-in (chưa check-out), vẫn
  * chặn khi chi nhánh còn ca chưa bàn giao / đã đủ 2 ca / ngày đã chốt, và mọi lần nhận
- * ngoài lịch đều ghi dấu vào sổ ca cho quản lý rà soát. Khi ca trưởng đúng lịch vào app,
- * `reclaimShiftForPrimaryLeader` tự trả quyền chủ ca về đúng người.
+ * ngoài lịch đều ghi dấu vào sổ ca cho quản lý rà soát.
+ *
+ * 13/08/2026: ca mang tên NGƯỜI BẤM và giữ nguyên như vậy. Không còn cơ chế nào
+ * tự trả quyền chủ ca cho người khác — ca trưởng và ca phó ngang quyền.
  */
 export async function claimOperationalShift(
   user: AppUser,
   options: ShiftClaimOptions = {},
 ): Promise<ShiftClaimResult> {
-  if (user.role !== 'shift_leader') {
+  if (!['shift_leader', 'shift_deputy'].includes(user.role)) {
     throw new Error('Chỉ ca trưởng hoặc ca phó mới nhận được ca vận hành.')
   }
   const today = localDateKey()
@@ -325,12 +239,14 @@ export async function claimOperationalShift(
   const scheduledLeaderNames = primaryLeadersScheduledFor(sequence, today, registrations, workShifts)
     .filter((item) => item.userId !== user.id)
     .map((item) => item.userName)
-  const standIn = !scheduled && isDeputyShiftLeader(user) && scheduledLeaderNames.length > 0
+  // Không còn khái niệm "ca phó đứng thay": hai vai trò ngang nhau, ai bấm thì
+  // ca mang tên người đó. Giữ trường này để các màn cũ không phải đổi kiểu.
+  const standIn = false
 
   await ensureOperationDay(user, today)
   const openingBalances = options.openingBalances || await buildOpeningBalances(user)
   let session = await startBagShift(user, today, openingBalances, {
-    note: scheduled ? undefined : offScheduleClaimNote(user, sequence, standIn, scheduledLeaderNames),
+    note: scheduled ? undefined : offScheduleClaimNote(user, sequence, scheduledLeaderNames),
   })
   if (options.openingPhoto && !session.openingPhotoUrl) {
     session = await uploadBagShiftPhoto(user, session, 'opening', options.openingPhoto).catch(() => session)
@@ -339,18 +255,10 @@ export async function claimOperationalShift(
 }
 
 /** Mọi lần nhận ca ngoài lịch đều phải đọc được trong sổ ca, không im lặng. */
-function offScheduleClaimNote(
-  user: AppUser,
-  sequence: number,
-  standIn: boolean,
-  scheduledLeaderNames: string[],
-) {
+function offScheduleClaimNote(user: AppUser, sequence: number, scheduledLeaderNames: string[]) {
   const stamp = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
   const names = scheduledLeaderNames.join(', ')
-  if (standIn) {
-    return `[CA PHÓ ĐỨNG THAY] ${user.name} (ca phó) mở Ca ${sequence} lúc ${stamp} vì ${names} chưa mở ca.`
-  }
-  return `[NHẬN CA THỦ CÔNG] ${user.name} tự nhận Ca ${sequence} lúc ${stamp} `
+  return `[NHẬN CA THỦ CÔNG] ${user.name} nhận Ca ${sequence} lúc ${stamp} `
     + (names ? `(lịch hôm nay xếp ${names}).` : '(lịch hôm nay không xếp ai cho ca này).')
 }
 
