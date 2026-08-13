@@ -41,6 +41,19 @@
   --gt-info: #1668c4;
   --gt-info-soft: #e9f1fb;
 
+  /* Pastel (§63, 13/08/2026). Dùng để NHUỘM ĐẦU CARD và viền, không tô vùng dữ
+     liệu — nền trắng dưới số liệu là thứ giữ được độ tương phản. Bốn sắc bám
+     đúng bảng màu sẵn có: mint = lime thương hiệu, rose = cảnh báo/hao hụt,
+     sky = thông tin, sand = chú ý. */
+  --gt-mint: #f3f9e6;
+  --gt-mint-line: #e1eec6;
+  --gt-rose: #fdf0f0;
+  --gt-rose-line: #f6dad9;
+  --gt-sky: #eef4fc;
+  --gt-sky-line: #d9e6f6;
+  --gt-sand: #fdf6e8;
+  --gt-sand-line: #f3e4c4;
+
   --gt-radius: 12px;
   --gt-radius-sm: 10px;
   --gt-radius-lg: 14px;
@@ -72,6 +85,52 @@
 }
 .gt-surface > * + * { border-top: 1px solid var(--gt-line-soft); }
 .gt-pad { padding: var(--gt-4) var(--gt-5); }
+
+/* Card pastel: viền + đầu card đổi sắc, vùng dữ liệu vẫn trắng.
+   Đầu card có thể là `gt-section-head` HOẶC `summary` của khối gấp — cả hai
+   đóng cùng vai trò nên nhuộm cùng kiểu. Đường kẻ dưới chỉ vẽ khi khối đang
+   MỞ; khối đóng mà có kẻ dưới thì nó nằm đè lên chính viền card. */
+.gt-surface--mint { border-color: var(--gt-mint-line); }
+.gt-surface--mint > .gt-section-head,
+.gt-surface--mint > .gt-fold > summary { background: var(--gt-mint); }
+.gt-surface--mint > .gt-section-head,
+.gt-surface--mint > .gt-fold[open] > summary { border-bottom: 1px solid var(--gt-mint-line); }
+.gt-surface--mint > .gt-fold > summary:hover { background: #ecf5d8; }
+
+.gt-surface--rose { border-color: var(--gt-rose-line); }
+.gt-surface--rose > .gt-section-head,
+.gt-surface--rose > .gt-fold > summary { background: var(--gt-rose); }
+.gt-surface--rose > .gt-section-head,
+.gt-surface--rose > .gt-fold[open] > summary { border-bottom: 1px solid var(--gt-rose-line); }
+.gt-surface--rose > .gt-fold > summary:hover { background: #fbe5e5; }
+
+.gt-surface--sky { border-color: var(--gt-sky-line); }
+.gt-surface--sky > .gt-section-head,
+.gt-surface--sky > .gt-fold > summary { background: var(--gt-sky); }
+.gt-surface--sky > .gt-section-head,
+.gt-surface--sky > .gt-fold[open] > summary { border-bottom: 1px solid var(--gt-sky-line); }
+.gt-surface--sky > .gt-fold > summary:hover { background: #e3edfa; }
+
+.gt-surface--sand { border-color: var(--gt-sand-line); }
+.gt-surface--sand > .gt-section-head,
+.gt-surface--sand > .gt-fold > summary { background: var(--gt-sand); }
+.gt-surface--sand > .gt-section-head,
+.gt-surface--sand > .gt-fold[open] > summary { border-bottom: 1px solid var(--gt-sand-line); }
+.gt-surface--sand > .gt-fold > summary:hover { background: #fbefd9; }
+
+/* HAI CARD NGANG NHAU — tiết kiệm chiều dọc mà KHÔNG gộp hai bảng làm một.
+   `align-items: start` để card ngắn không bị kéo cao bằng card dài. */
+.gt-split-2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--gt-5);
+  align-items: start;
+}
+/* Trong nửa bề ngang thì khối đối chiếu 2 cột phải xếp dọc, nếu không chữ vỡ. */
+.gt-split-2 .gt-inline-detail__grid { grid-template-columns: minmax(0, 1fr); gap: var(--gt-4); }
+@media (max-width: 1180px) {
+  .gt-split-2 { grid-template-columns: minmax(0, 1fr); gap: var(--gt-4); }
+}
 
 /* ── PageHeader (§13, §22, §32, §61) ─────────────────────────────────────── */
 

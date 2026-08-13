@@ -80,6 +80,7 @@ import {
   SearchInput,
   SectionHeader,
   SkeletonRows,
+  SplitPair,
   StatusBadge,
   SummaryLine,
   Surface,
@@ -1736,19 +1737,21 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
   /** Lưới cột của bảng tồn — dùng CHUNG cho hàng tiêu đề và từng dòng, nếu
    *  không hai bên lệch nhau khi ẩn cột Chi nhánh.
    *
-   *  13/08/2026 — chủ hệ thống: "các cột để gần gần xíu cho dễ nhìn". Trước đây
-   *  mọi cột đều là `fr` nên trên màn rộng chúng bị kéo giãn hết chiều ngang:
-   *  tên hàng ở mép trái, trạng thái ở mép phải, mắt phải quét cả 1.300px mới
-   *  đọc xong MỘT dòng. Nay chặn TRẦN px cho các cột có nghĩa và để cột cuối
-   *  nuốt phần thừa ⇒ bốn cột đứng sát nhau ở bên trái, khoảng trống dồn về
-   *  cuối dòng.
+   *  13/08/2026 — hai lượt sửa, ghi lại cả hai để đừng lặp lại vòng cũ:
+   *  (1) Bản gốc để MỌI cột là `fr` trên card rộng cả trang ⇒ cột bị kéo giãn ra
+   *      hai mép, đọc một dòng phải quét mắt cả 1.300px.
+   *  (2) Chặn trần px + cột cuối nuốt phần thừa thì cột sát nhau nhưng bỏ trống
+   *      nửa phải của card — chủ hệ thống: "dồn cột lại vậy thì xấu quá".
+   *  Cách giải đúng KHÔNG nằm ở lưới cột mà ở BỀ NGANG CARD: bảng tồn giờ đứng
+   *  cạnh bảng Hao hụt trong `SplitPair` (~nửa trang), nên `fr` chia đều là vừa
+   *  khít — cột sát nhau tự nhiên, không khoảng trống thừa.
    *
    *  Trả về CHUỖI cho custom property `--gt-cols`, KHÔNG set thẳng
    *  `gridTemplateColumns` inline: style inline thắng cả media query, nên bản
    *  cũ vô hiệu hóa luôn bố cục dọc ở ≤900px của `.gt-list__row`. */
   const inventoryStockCols = branchId
-    ? 'minmax(0, 400px) 132px minmax(120px, 1fr)'
-    : 'minmax(0, 340px) minmax(0, 220px) 132px minmax(120px, 1fr)'
+    ? 'minmax(0, 1.7fr) minmax(0, 1fr) auto'
+    : 'minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, .9fr) auto'
 
   /* ── HAO HỤT theo ngày / tháng / năm ──────────────────────────────────────
    * Đọc TOÀN BỘ sổ kho của chi nhánh đang chọn, không giới hạn theo kỳ ở đầu
@@ -3868,10 +3871,21 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                 }
               />
 
-              <Surface>
+              {/* ── TỒN KHO ↔ HAO HỤT: HAI CARD NGANG NHAU ───────────────────
+                  13/08/2026 — chủ hệ thống: "cho 2 cái bảng này ngang nhau,
+                  kiểu hai card ngang nhau để tiết kiệm chiều dọc, CHỨ KHÔNG
+                  PHẢI GỘP VÔ". Hai bảng vẫn là hai bảng độc lập, mỗi bảng giữ
+                  nguyên bộ lọc/biểu đồ của nó; chỉ đứng cạnh nhau. ≤1180px thì
+                  tự xếp dọc lại. */}
+              <SplitPair>
+              <Surface tone="mint">
+                <SectionHeader
+                  title="Tồn kho"
+                  description={inventoryDate === todayKey ? 'Tồn hiện tại theo từng mặt hàng.' : `Tồn chốt cuối ngày ${formatDate(inventoryDate)}.`}
+                  count={`${inventoryDaySummary.total} mặt hàng`}
+                />
                 <div className="gt-pad">
                   <SummaryLine items={[
-                    { text: `${inventoryDaySummary.total} mặt hàng` },
                     { text: `${inventoryDaySummary.low} sắp hết`, tone: inventoryDaySummary.low ? 'warn' : undefined },
                     { text: `${inventoryDaySummary.out} hết hàng`, tone: inventoryDaySummary.out ? 'bad' : undefined },
                     { text: `${inventoryDaySummary.negative} âm kho`, tone: inventoryDaySummary.negative ? 'bad' : undefined },
@@ -4002,10 +4016,10 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   Cột biểu đồ chỉ cộng phần tính bằng KG — các đơn vị khác (cái,
                   túi) đếm riêng ở dòng tóm tắt, vì cộng lẫn đơn vị là con số vô
                   nghĩa. */}
-              <Surface>
+              <Surface tone="rose">
                 <SectionHeader
                   title="Hao hụt"
-                  description="Cột biểu đồ tính theo kg. Mặt hàng đơn vị khác được đếm riêng bên dưới."
+                  description="Cột biểu đồ tính theo kg. Đơn vị khác đếm riêng bên dưới."
                   count={`${inventoryWasteAll.length} dòng`}
                   aside={
                     <FilterChips
@@ -4023,7 +4037,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     { text: `${inventoryWasteTotals.processing} lượt hao hụt chế biến` },
                   ]} />
                 </div>
-                <div className="gt-pad" style={{ height: 240 }}>
+                <div className="gt-pad" style={{ height: 200 }}>
                   {inventoryWasteSeries.some((row) => row.kg > 0) ? (
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={inventoryWasteSeries} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -4037,18 +4051,20 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                             ? [`${formatInventoryDecimal(Number(value) || 0, 3)} kg`, 'Hao hụt']
                             : [`${Number(value) || 0} lượt`, 'Số lượt']}
                         />
-                        {/* Một series một màu ⇒ không cần chú giải; tiêu đề đã nói rõ. */}
-                        <Bar dataKey="kg" fill="#c8322f" radius={[4, 4, 0, 0]} maxBarSize={28} />
+                        {/* Một series một màu ⇒ không cần chú giải; tiêu đề đã nói rõ.
+                            Đỏ pastel thay cho #c8322f gắt: cột hao hụt là số để đọc,
+                            không phải báo động — mức cảnh báo đã nằm ở chữ đỏ đậm. */}
+                        <Bar dataKey="kg" fill="#e8908d" radius={[4, 4, 0, 0]} maxBarSize={26} />
                       </BarChart>
                     </ResponsiveContainer>
                   ) : <EmptyState title="Không có hao hụt" description="Chưa ghi nhận hao hụt nào trong phạm vi đang xem." />}
                 </div>
 
-                <DataList columns="minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr) auto">
+                <DataList columns="minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, .6fr) auto">
                   <DataHead>
                     <span>Kỳ</span>
-                    <span>Chi nhánh nhiều nhất</span>
-                    <span className="gt-cell--num">Số lượt</span>
+                    <span>Chi nhánh</span>
+                    <span className="gt-cell--num">Lượt</span>
                     <span className="gt-cell--num">Hao hụt</span>
                   </DataHead>
                   {inventoryWasteSeries.slice().reverse().map((row) => (
@@ -4096,10 +4112,11 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   </DataList>
                 </details>
               </Surface>
+              </SplitPair>
 
               {/* Đối soát ca + sổ phát sinh: nằm THẲNG trên trang, thu gọn sẵn
                   để không chiếm chỗ — không giấu sau menu như bản trước. */}
-              <Surface>
+              <Surface tone="sky">
                 <details className="gt-fold">
                   <summary>
                     <strong>Đối soát theo ca</strong>
@@ -4135,7 +4152,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               </Surface>
 
               {canOpenAdminConsole(user.role) && (
-                <Surface>
+                <Surface tone="sand">
                   <details className="gt-fold">
                     <summary>
                       <strong>Sổ phát sinh kho</strong>

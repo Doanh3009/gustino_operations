@@ -156,8 +156,23 @@ export function SummaryLine({ items }: { items: Array<{ text: string; tone?: 'wa
 
 /* ── Surface / Section ──────────────────────────────────────────────────── */
 
-export function Surface({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <section className={`gt-surface ${className}`.trim()}>{children}</section>
+/**
+ * Sắc pastel của card. CHỈ nhuộm phần đầu card (`gt-section-head`) và viền —
+ * vùng dữ liệu giữ nền trắng, vì tô cả card thì số liệu mất tương phản.
+ */
+export type SurfaceTone = 'mint' | 'rose' | 'sky' | 'sand'
+
+export function Surface({ children, className = '', tone }: {
+  children: ReactNode
+  className?: string
+  tone?: SurfaceTone
+}) {
+  return <section className={`gt-surface${tone ? ` gt-surface--${tone}` : ''} ${className}`.trim()}>{children}</section>
+}
+
+/** Hai card NGANG NHAU để tiết kiệm chiều dọc — KHÔNG gộp hai bảng làm một. */
+export function SplitPair({ children }: { children: ReactNode }) {
+  return <div className="gt-split-2">{children}</div>
 }
 
 export function SectionHeader({ title, description, count, aside }: {
