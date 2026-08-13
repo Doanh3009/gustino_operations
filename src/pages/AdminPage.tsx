@@ -1748,10 +1748,14 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
    *
    *  Trả về CHUỖI cho custom property `--gt-cols`, KHÔNG set thẳng
    *  `gridTemplateColumns` inline: style inline thắng cả media query, nên bản
-   *  cũ vô hiệu hóa luôn bố cục dọc ở ≤900px của `.gt-list__row`. */
+   *  cũ vô hiệu hóa luôn bố cục dọc ở ≤900px của `.gt-list__row`.
+   *
+   *  ⚠️ Cột cuối là 104px CỐ ĐỊNH, tuyệt đối không `auto` — xem §63 trong
+   *  CODEMAP: mỗi dòng là một grid RIÊNG nên track `auto` co theo nội dung của
+   *  chính dòng đó, làm mọi cột phía trước lệch nhau giữa các dòng. */
   const inventoryStockCols = branchId
-    ? 'minmax(0, 1.7fr) minmax(0, 1fr) auto'
-    : 'minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, .9fr) auto'
+    ? 'minmax(0, 1.7fr) minmax(0, 1fr) 104px'
+    : 'minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, .9fr) 104px'
 
   /* ── HAO HỤT theo ngày / tháng / năm ──────────────────────────────────────
    * Đọc TOÀN BỘ sổ kho của chi nhánh đang chọn, không giới hạn theo kỳ ở đầu
@@ -4060,18 +4064,18 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   ) : <EmptyState title="Không có hao hụt" description="Chưa ghi nhận hao hụt nào trong phạm vi đang xem." />}
                 </div>
 
-                <DataList columns="minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, .6fr) auto">
+                {/* Cột "Lượt" đã bỏ (13/08/2026) — số lượt vẫn còn trong tooltip
+                    biểu đồ ngay trên và trong danh sách chi tiết bên dưới. */}
+                <DataList columns="minmax(0, 1.5fr) minmax(0, 1fr) 92px">
                   <DataHead>
                     <span>Kỳ</span>
                     <span>Chi nhánh</span>
-                    <span className="gt-cell--num">Lượt</span>
                     <span className="gt-cell--num">Hao hụt</span>
                   </DataHead>
                   {inventoryWasteSeries.slice().reverse().map((row) => (
                     <DataRow key={row.key}>
                       <span data-gt-primary><strong>{row.label}</strong><small>{row.topProduct || '—'}</small></span>
                       <span data-gt-label="Chi nhánh">{row.topBranch || '—'}</span>
-                      <span className="gt-cell--num" data-gt-label="Số lượt">{row.count}</span>
                       <span className="gt-cell--num" data-gt-trailing>
                         <b className="gt-delta-out">{row.summary}</b>
                       </span>
@@ -4089,7 +4093,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     <strong>Chi tiết từng dòng</strong>
                     <small>{inventoryWasteDetailRows.length} dòng trong kỳ {formatDate(from)}{from === to ? '' : ` → ${formatDate(to)}`}</small>
                   </summary>
-                  <DataList columns="minmax(0, 1.8fr) minmax(0, 1fr) auto">
+                  <DataList columns="minmax(0, 1.8fr) minmax(0, 1fr) 92px">
                     {inventoryWasteDetailRows.map((row) => (
                       <DataRow key={row.id}>
                         <span data-gt-primary>
@@ -4130,7 +4134,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                     ]} />
                     <p className="gt-metric__hint">Out chính thức = Tồn đầu + Nhập thêm − Tồn bàn giao − Hao hụt. POS chỉ để đối chiếu, không trừ kho lần hai.</p>
                   </div>
-                  <DataList columns="minmax(0, 1.6fr) minmax(0, 1fr) auto">
+                  <DataList columns="minmax(0, 1.6fr) 112px 104px">
                     {inventoryShiftVisibleRows.map((row) => (
                       <DataRow key={row.sessionId}>
                         <span data-gt-primary>
@@ -4183,7 +4187,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                           ))}
                       </div>
                     </Toolbar>
-                    <DataList columns="minmax(0, 1.6fr) minmax(0, 1fr) auto">
+                    <DataList columns="minmax(0, 1.6fr) minmax(0, 1fr) 104px">
                       {inventoryLedgerByDay.map(([date, rows]) => (
                         <Fragment key={date}>
                           <DataHead><span>{formatDate(date)}</span><span>{rows.length} phát sinh</span><span /></DataHead>
@@ -4754,7 +4758,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         subtitle={`${overviewBillRows.length} hóa đơn · ${formatDate(from)}${from === to ? '' : ` → ${formatDate(to)}`}`}
         wide
       >
-        <DataList columns="minmax(0, 1fr) auto">
+        <DataList columns="minmax(0, 1fr) 132px">
           {revenueTransactionsRows.map((receipt) => (
             <DataRow key={receipt.id}>
               <span data-gt-primary>
@@ -4788,7 +4792,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
         subtitle={`${periodRevenueRows.length} ngày có doanh thu`}
         wide
       >
-        <DataList columns="minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) auto">
+        <DataList columns="minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 1fr) 100px">
           <DataHead>
             <span>Ngày / chi nhánh</span>
             <span className="gt-cell--num">Sản phẩm</span>

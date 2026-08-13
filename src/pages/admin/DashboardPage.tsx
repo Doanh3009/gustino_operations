@@ -21,6 +21,7 @@ import {
   PageHeader,
   RankBar,
   SectionHeader,
+  SplitPair,
   StatusBadge,
   Surface,
   type AttentionItem,
@@ -309,7 +310,11 @@ export function DashboardPage(props: Props) {
         />
       </MetricRow>
 
-      <Surface>
+      {/* Hai card NGANG NHAU (13/08/2026) — cùng lý do với cặp Tồn kho ↔ Hao hụt
+          ở màn Kho: hai bảng ngắn xếp dọc thì phải cuộn thêm một màn mà không
+          đọc thêm được gì. Vẫn là hai card độc lập, không gộp. */}
+      <SplitPair>
+      <Surface tone="sand">
         <SectionHeader
           title="Cần xử lý"
           description="Việc phải làm ngay, kèm nơi phát sinh và mức độ."
@@ -318,9 +323,11 @@ export function DashboardPage(props: Props) {
         <AttentionList items={attention} />
       </Surface>
 
-      <Surface>
+      <Surface tone="sky">
         <SectionHeader title="Tình hình chi nhánh" count={`${branchRows.length} điểm bán`} />
-        <DataList columns="minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1fr) auto">
+        {/* Cột cuối CỐ ĐỊNH 116px, không `auto`: mỗi dòng là một grid riêng nên
+            track `auto` co theo nội dung của chính dòng đó ⇒ các dòng lệch cột. */}
+        <DataList columns="minmax(0, 1.4fr) minmax(0, .8fr) minmax(0, 1fr) 116px">
           {branchRows.map((row) => (
             <DataRow key={row.id}>
               <span data-gt-primary>
@@ -349,6 +356,7 @@ export function DashboardPage(props: Props) {
           {!branchRows.length && <EmptyState title="Chưa có chi nhánh" description="Không có chi nhánh nào trong phạm vi quản lý." />}
         </DataList>
       </Surface>
+      </SplitPair>
 
       <div className="gt-overview-split">
         <Surface>
@@ -376,7 +384,7 @@ export function DashboardPage(props: Props) {
             title="Hoạt động gần đây"
             aside={<button type="button" className="gt-btn gt-btn--ghost gt-btn--sm" onClick={() => onOpenSection('revenue')}>Xem tất cả giao dịch →</button>}
           />
-          <DataList columns="52px minmax(0, 1fr) auto">
+          <DataList columns="52px minmax(0, 1fr) 116px">
             {recentBills.map((receipt) => (
               <DataRow key={receipt.id}>
                 <time className="gt-section-count">{formatTime(receipt.createdAt)}</time>

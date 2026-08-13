@@ -1,5 +1,8 @@
 /**
- * KHO HÀNG (Quản trị): TỒN KHO ↔ HAO HỤT ĐỨNG CẠNH NHAU, KHÔNG GỘP (13/08/2026).
+ * CONSOLE QUẢN TRỊ: CÁC CẶP BẢNG NGẮN ĐỨNG CẠNH NHAU, KHÔNG GỘP (13/08/2026).
+ *
+ *   Kho      · Tồn kho    ↔ Hao hụt
+ *   Tổng quan· Cần xử lý  ↔ Tình hình chi nhánh
  *
  * Vòng sửa trước đó đi sai hai lần, test này khoá lại cả hai đầu:
  *
@@ -17,8 +20,9 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
-const [admin, ui, uiCss] = await Promise.all([
+const [admin, dashboard, ui, uiCss] = await Promise.all([
   readFile(new URL('../src/pages/AdminPage.tsx', import.meta.url), 'utf8'),
+  readFile(new URL('../src/pages/admin/DashboardPage.tsx', import.meta.url), 'utf8'),
   readFile(new URL('../src/components/ui/index.tsx', import.meta.url), 'utf8'),
   readFile(new URL('../src/ui.css', import.meta.url), 'utf8'),
 ])
@@ -57,9 +61,15 @@ assert.match(
 const cols = /const inventoryStockCols = branchId\s*\?\s*'([^']+)'\s*:\s*'([^']+)'/.exec(admin)
 assert.ok(cols, 'Không tìm thấy khai báo lưới cột bảng tồn.')
 for (const template of [cols[1], cols[2]]) {
-  assert.doesNotMatch(template, /\d+px\)?\s*(minmax|$)/,
-    `Lưới cột bảng tồn không được chặn trần px nữa (đang là: ${template}) — nó tạo khoảng trống ở nửa phải card.`)
+  // Cấm TRẦN px trên cột nội dung: đó là thứ tạo ra khoảng trống ở nửa phải card.
+  assert.doesNotMatch(template, /minmax\(\s*0\s*,\s*\d+px\s*\)/,
+    `Cột nội dung không được chặn trần px (đang là: ${template}) — nó tạo khoảng trống ở nửa phải card.`)
+  // Cấm cột "spacer" cuối dòng nuốt phần thừa.
+  assert.doesNotMatch(template, /minmax\(\s*\d+px\s*,\s*[\d.]*fr\s*\)\s*$/,
+    `Cột cuối không được là spacer nuốt phần thừa (đang là: ${template}).`)
   assert.match(template, /fr\)/, `Lưới cột bảng tồn phải chia theo fr để lấp đúng bề ngang card: ${template}`)
+  // Nhưng cột TRẠNG THÁI thì phải cố định — xem test-gt-list-no-auto-column.
+  assert.match(template, /\s\d+px$/, `Cột trạng thái phải cố định bề rộng để các dòng thẳng cột: ${template}`)
 }
 
 // ── 4. Lưới cột đặt qua `--gt-cols`, KHÔNG style inline. ───────────────────
@@ -84,7 +94,19 @@ for (const tone of ['mint', 'rose', 'sky', 'sand']) {
 assert.doesNotMatch(uiCss, /\.gt-surface--(mint|rose|sky|sand) \{[^}]*background:/,
   'Pastel không được tô nền toàn card, chỉ đổi viền + đầu card.')
 
-console.log('INVENTORY_ADMIN_SPLIT_CARDS_OK')
+// ── 6. Tổng quan: Cần xử lý ↔ Tình hình chi nhánh cũng đứng cạnh nhau. ─────
+const overviewSplit = sourceBetween(dashboard, '<SplitPair>', '</SplitPair>')
+assert.ok(overviewSplit, 'Cần xử lý và Tình hình chi nhánh phải nằm chung một <SplitPair>.')
+assert.equal(
+  (overviewSplit.match(/<Surface\b/g) || []).length, 2,
+  'Cặp card Tổng quan phải có ĐÚNG hai <Surface> — không gộp hai bảng làm một.',
+)
+assert.match(overviewSplit, /title="Cần xử lý"/, 'Card trái phải là Cần xử lý.')
+assert.match(overviewSplit, /title="Tình hình chi nhánh"/, 'Card phải phải là Tình hình chi nhánh.')
+assert.match(overviewSplit, /<Surface tone="sand">/, 'Card Cần xử lý chưa nhuộm pastel.')
+assert.match(overviewSplit, /<Surface tone="sky">/, 'Card Tình hình chi nhánh chưa nhuộm pastel.')
+
+console.log('ADMIN_SPLIT_CARDS_OK')
 
 function sourceBetween(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker)

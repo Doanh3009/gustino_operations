@@ -153,7 +153,7 @@ export function PromotionsPanel({ user, branches }: Props) {
         ]} />
       </div>
 
-      <DataList columns="minmax(0, 1.8fr) minmax(0, 1fr) minmax(0, 1.2fr) auto auto">
+      <DataList columns="minmax(0, 1.8fr) minmax(0, 1fr) minmax(0, 1.2fr) 108px 132px">
         <DataHead>
           <span>Sản phẩm</span>
           <span className="gt-cell--num">Giá KM</span>
