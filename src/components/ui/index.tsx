@@ -505,7 +505,12 @@ export function DataRow({ children, onClick, selected, label }: {
   selected?: boolean
   label?: string
 }) {
-  if (!onClick) return <div className="gt-list__row" role="row">{children}</div>
+  // Dòng KHÔNG bấm được vẫn phải tô sáng được: khối "Cần xử lý" dẫn thẳng tới
+  // một dòng cụ thể (ca chưa bàn giao), tới nơi mà không đánh dấu thì người dùng
+  // lại phải tự dò trong danh sách (§64).
+  if (!onClick) {
+    return <div className={`gt-list__row${selected ? ' is-selected' : ''}`} role="row" aria-label={label}>{children}</div>
+  }
   return (
     <button
       type="button"

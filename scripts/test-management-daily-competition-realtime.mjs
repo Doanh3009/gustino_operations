@@ -24,7 +24,12 @@ assert.match(admin, /value="leaders">Ca trưởng theo tháng</, 'Thiếu phân 
 assert.match(admin, /className=\{`competition-classification-table\$\{showReward \? ' with-reward' : ''\}`\}/, 'Thiếu bảng thi đua dùng chung cho các phân loại và biến thể cột thưởng.')
 assert.match(admin, /window\.addEventListener\('focus', refreshWhenActive\)/, 'Trang quản lý chưa làm mới khi quay lại tab.')
 assert.match(admin, /document\.addEventListener\('visibilitychange', refreshWhenVisible\)/, 'Trang quản lý chưa làm mới khi tab hiện lại.')
-assert.match(admin, /window\.setInterval\(refreshWhenActive, 30000\)/, 'Trang quản lý thiếu nhịp kiểm tra dự phòng khi realtime gián đoạn.')
+// 14/08/2026 — nhịp nền vẫn PHẢI có (realtime rớt thì đây là lưới an toàn duy
+// nhất), nhưng hạ từ 30 giây xuống 2 phút: mỗi nhịp cũ đọc lại đủ 13 nguồn, có
+// cả sổ kho toàn lịch sử ×3 chi nhánh — chính là phần "load hơi lâu". Chi tiết
+// ở §64 CODEMAP.
+assert.match(admin, /window\.setInterval\(refreshWhenActive, MANAGEMENT_POLL_INTERVAL_MS\)/, 'Trang quản lý thiếu nhịp kiểm tra dự phòng khi realtime gián đoạn.')
+assert.match(admin, /MANAGEMENT_POLL_INTERVAL_MS = 120000/, 'Nhịp nền của trang quản lý phải là 2 phút.')
 assert.match(styles, /\.competition-classification-table/, 'Thiếu CSS bảng phân loại thi đua.')
 assert.match(styles, /\.competition-ranking-controls/, 'Thiếu CSS bộ lọc thi đua responsive.')
 

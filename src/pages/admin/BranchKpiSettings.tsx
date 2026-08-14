@@ -12,11 +12,16 @@ import {
 import { VUNG_TAU_NEW_KPI_FROM, VUNG_TAU_NEW_KPI_TO, type KpiPositionKey } from '../../lib/commission'
 
 /**
- * Bảng "Mức KPI theo chi nhánh" trong Quản trị → Thi đua nhân viên.
+ * Bảng "Mức KPI theo chi nhánh" — Cấu hình hệ thống → tab **Mức KPI**.
  *
  * Mục đích: Admin đổi chỉ tiêu doanh thu ngay trên giao diện, không phải sửa
  * `POSITION_KPI_FORMULAS` rồi build/deploy nữa. Ô nào chưa chỉnh thì hiện đúng
- * mức mặc định đang chạy, nên mở bảng ra là thấy hệ thống đang tính bằng gì.
+ * mức mặc định đang chạy, nên vào tab là thấy hệ thống đang tính bằng gì.
+ *
+ * 14/08/2026 — **KHÔNG còn nút gấp/mở bảng**. Chủ hệ thống: *"bảng chỉnh
+ * kpi bấm vào rồi vẫn mất thêm 1 thao tác bấm mở bảng nữa"*. Bấm vào tab Mức KPI
+ * ĐÃ LÀ chủ đích mở bảng rồi; một lớp gấp nữa chỉ là thao tác thừa. Đây cũng là
+ * lý do bảng bị gỡ khỏi màn Thi đua: mỗi thứ chỉ có MỘT chỗ chỉnh.
  */
 
 interface Props {
@@ -118,8 +123,7 @@ export function BranchKpiSettings({ user, branches, readOnly, onChanged }: Props
     () => branches.slice().sort((a, b) => a.name.localeCompare(b.name, 'vi')),
     [branches],
   )
-  const [open, setOpen] = useState(false)
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [error, setError] = useState('')
@@ -151,9 +155,8 @@ export function BranchKpiSettings({ user, branches, readOnly, onChanged }: Props
   }, [user])
 
   useEffect(() => {
-    if (!open) return
     void load()
-  }, [open, load])
+  }, [load])
 
   const savedByKey = useMemo(
     () => new Map(saved.map((row) => [draftKey(row.branchId, row.position), row])),
@@ -255,19 +258,16 @@ export function BranchKpiSettings({ user, branches, readOnly, onChanged }: Props
           <h3>Mức KPI theo chi nhánh</h3>
           <p>Đổi chỉ tiêu doanh thu ngay tại đây — không cần sửa mã nguồn và deploy lại.</p>
         </div>
-        <button type="button" className="secondary-button" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
-          {open ? 'Thu gọn' : 'Mở bảng chỉnh KPI'}
-        </button>
+        <span className="gt-section-count">{scopedBranches.length} chi nhánh</span>
       </header>
 
-      {open && (
-        <div className="kpi-settings-body">
+      <div className="kpi-settings-body">
           {error && <div className="feedback-bar error">{error}<button type="button" onClick={() => setError('')}>×</button></div>}
           {feedback && <div className="feedback-bar">{feedback}<button type="button" onClick={() => setFeedback('')}>×</button></div>}
 
           <p className="kpi-settings-note" role="note">
-            Bảng này liệt kê <b>đủ {scopedBranches.length} chi nhánh</b>, không theo bộ lọc chi nhánh ở đầu trang — đặt chỉ tiêu
-            thì phải nhìn được cả chuỗi để so. Mỗi chi nhánh lưu riêng bằng nút của chính nó.
+            Bảng này liệt kê <b>đủ {scopedBranches.length} chi nhánh</b> — đặt chỉ tiêu thì phải nhìn được cả chuỗi để so.
+            Mỗi chi nhánh lưu riêng bằng nút của chính nó. <b>Đây là chỗ duy nhất chỉnh mức KPI</b>; màn Thi đua chỉ chấm theo mức đặt ở đây.
             Ô nào chưa chỉnh sẽ hiện đúng mức mặc định hệ thống đang chạy. <b>Số người</b> chỉ dùng để cộng ra KPI team
             của chi nhánh (Ca trưởng chạy theo KPI team thì để chỉ tiêu cá nhân bằng 0).
             Riêng kỳ Vũng Tàu {VUNG_TAU_NEW_KPI_FROM.split('-').reverse().join('/')}–{VUNG_TAU_NEW_KPI_TO.split('-').reverse().join('/')} đã
@@ -390,8 +390,7 @@ export function BranchKpiSettings({ user, branches, readOnly, onChanged }: Props
               )}
             </article>
           ))}
-        </div>
-      )}
+      </div>
     </section>
   )
 }

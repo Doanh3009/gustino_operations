@@ -145,12 +145,37 @@ check(/data-label=/.test(settingsUi), 'Bang thieu nhan cot cho bo cuc dien thoai
 check(/type="date"/.test(settingsUi), 'Man chinh KPI chua co o chon ngay ap dung.')
 check(/effectiveFrom/.test(settingsUi), 'Man chinh KPI chua gan ngay ap dung vao draft luu.')
 check(/showInitialLoading/.test(settingsUi), 'Man KPI chua tach loading lan dau de tranh chop/trong bang.')
+// 14/08/2026 — chu he thong: "bang chinh kpi bam vao roi van mat them 1 thao tac
+// bam mo bang nua". Vao tab Muc KPI DA LA chu dich mo bang; khong duoc co them
+// mot lop gap nao nua.
+check(
+  !/Mở bảng chỉnh KPI/.test(settingsUi),
+  'Bang chinh KPI khong duoc co nut "Mo bang chinh KPI" — vao tab la thay bang luon.',
+)
+check(
+  !/\{open && \(/.test(settingsUi),
+  'Bang chinh KPI van con lop gap: noi dung phai hien thang, khong cho bam mo.',
+)
 check(/load\(false, true\)/.test(settingsUi), 'Sau khi luu KPI phai tai lai khong chan man hinh va chi reset draft co chu dich.')
 check(/dirtyDraftRef/.test(settingsUi), 'Man chinh KPI chua co guard chan dong bo nen de len o dang nhap.')
 check(/kpi-settings-sync/.test(settingsUi), 'Thieu trang thai dong bo nhe khi tai lai KPI.')
 
+// 14/08/2026 — MOT chuc nang chi co MOT cho chinh. Chu he thong: "co cho chinh
+// roi thi xoa cho chinh truc tiep o bang di". Muc KPI dat o Cau hinh he thong →
+// tab Muc KPI; man Thi dua chi CHAM theo muc do, khong nhung bang chinh vao nua.
+const controlCenter = await read('src/pages/ControlCenterPage.tsx')
+check(/<BranchKpiSettings/.test(controlCenter), 'Cau hinh he thong phai la noi dat bang chinh muc KPI.')
+check(/tab === 'kpi'/.test(controlCenter), 'Thieu tab Muc KPI trong Cau hinh he thong.')
+
 const adminPage = await read('src/pages/AdminPage.tsx')
-check(/<BranchKpiSettings/.test(adminPage), 'Chua gan bang chinh KPI vao trang Quan tri.')
+check(
+  !/<BranchKpiSettings/.test(adminPage),
+  'Man Thi dua khong duoc nhung bang chinh KPI nua — da co cho chinh o Cau hinh he thong.',
+)
+check(
+  /Chỉnh mức KPI \(Cấu hình hệ thống\)/.test(adminPage),
+  'Man Thi dua phai con loi dan sang cho chinh muc KPI, khong bo lung nguoi dung.',
+)
 check(
   !/competition-kpi-policy/.test(adminPage),
   'Khoi ghi chu KPI cung cu van con — phai bo vi da co bang chinh truc tiep.',
@@ -173,8 +198,8 @@ check(
   'Bang chinh KPI phai liet ke toan bo chi nhanh, xep theo ten.',
 )
 check(
-  /branches=\{visibleBranches\}/.test(adminPage),
-  'Trang quan tri phai truyen TOAN BO chi nhanh trong quyen, khong phai selectedBranches.',
+  /<BranchKpiSettings[\s\S]{0,200}branches=\{activeBranches\}/.test(controlCenter),
+  'Cau hinh he thong phai truyen TOAN BO chi nhanh dang hoat dong cho bang chinh KPI.',
 )
 
 assert.deepEqual(failures, [], `\n${failures.join('\n')}`)

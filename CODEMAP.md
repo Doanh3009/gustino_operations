@@ -1,5 +1,23 @@
 # CODEMAP — Bản đồ kỹ thuật & nghiệp vụ Gustino
 
+## 64. "Cần xử lý" bấm ra đúng chỗ · hao hụt xem cả ngày · một chỗ chỉnh KPI · gỡ nghẽn tải (2026-08-14) — CHƯA DEPLOY
+
+Bốn phản hồi của chủ hệ thống, bốn thay đổi. Không đổi schema, không đổi phân quyền.
+
+- **"Phần cần xử lý bấm vào cũng có xử lý được đâu"** — mỗi dòng cảnh báo nay mang theo **toạ độ của chính nó** (`OverviewFocus` trong `admin/DashboardPage.tsx`): chi nhánh, ngày, và thứ cần mở sẵn (SKU / phiên ca / kỳ hao hụt / nhân viên). `AdminPage.openSectionWithFocus` nhận toạ độ đó rồi **ép bộ lọc chi nhánh, kéo kỳ về đúng ngày nếu ngày đó nằm ngoài kỳ đang lọc, bung sẵn đúng khối, cuộn tới nơi**. Trước đây chỉ `setActiveSection('inventory')` nên sang tới màn Kho vẫn phải tự đi tìm lại đúng dòng vừa bấm — nhất là khi đang xem "Tất cả chi nhánh".
+  - Khối **"Đối soát theo ca"** đổi thành `<details>` **CÓ ĐIỀU KHIỂN** (`inventoryShiftFoldOpen`); không controlled thì không mở sẵn từ ngoài được. Dòng ca bấm được để tô sáng (`inventoryShiftFocus`).
+  - Neo cuộn: `#admin-inventory-shift-recon`, `#admin-inventory-waste`, `#attendance-detail-list`. Cuộn sau **hai** nhịp `requestAnimationFrame` — nhịp đầu React mới đổi section, khối đích chưa có trong DOM.
+- **Bảng Hao hụt: một kỳ = DANH SÁCH ĐẦY ĐỦ.** Chủ hệ thống: *"đang cho coi 1 loại 1 ngày hao hụt à, không coi được 1 danh sách tổng của ngày đó"*. Mỗi bucket của `inventoryWasteSeries` nay giữ `lines` gộp theo **chi nhánh × mặt hàng** (kèm số lượt, số lượt chế biến); bấm một kỳ là bung ngay tại dòng, giống hệt cách bấm SKU ở bảng Tồn kho. Cột "Chi nhánh" hiện `N chi nhánh` khi kỳ đó có nhiều nơi. Hai trường `topProduct`/`topBranch` cũ chỉ giữ lại `topBranch` cho trường hợp một chi nhánh.
+- **Mức KPI: MỘT chỗ chỉnh.** `BranchKpiSettings` **bỏ hẳn nút "Mở bảng chỉnh KPI"** (vào tab Mức KPI đã là chủ đích mở bảng) và **bị gỡ khỏi màn Thi đua** — *"có chỗ chỉnh rồi thì xóa chỗ chỉnh trực tiếp ở bảng đi"*. Nơi duy nhất: **Cấu hình hệ thống → tab Mức KPI**. Màn Thi đua chỉ CHẤM theo mức đó, còn một lối dẫn trong menu `•••` cho Admin.
+- **Header màn Thi đua hết "tùm lum"**: bốn nút xuất (Excel ngày&tháng, Excel KPI theo ngày, ảnh thi đua, ảnh trung bình bán) nằm thẳng trên thanh tiêu đề cao 44px (`.erp-workspace-panel > .section-title`) nên tràn ra ngoài thanh và đè lên chip đếm. Cả bốn chuyển vào **`OverflowMenu` (`•••`)** theo đúng §59 — chúng là việc phụ (xuất file mang đi).
+- **"Load hơi lâu" — ba nguyên nhân, ba bản vá trong `refresh()`:**
+  1. **Đổi section đọc lại tất cả.** Nay mỗi nguồn có **chữ ký**: nguồn theo kỳ ký `user|from|to`, nguồn đọc trọn lịch sử (sổ kho, nhân sự, ca, túi, đơn hàng) ký `user|all`. `refresh(true, { reuseLoaded: true })` bỏ qua nguồn chữ ký không đổi ⇒ đổi section thường **không gọi mạng lượt nào**, và `if (!pending.length) return` nên không bật cả màn loading.
+  2. **Realtime kéo lại cả section.** `MANAGEMENT_TABLE_DATA_KEYS` ánh xạ bảng → nguồn; sự kiện gom trong `REALTIME_REFRESH_DEBOUNCE_MS = 3000` rồi `refresh(false, { only })`. Giờ cao điểm, một hóa đơn POS chỉ đọc lại hóa đơn thay vì kéo lại sổ kho toàn lịch sử ×3 chi nhánh. Lượt bị dồn vì đang có lượt khác chạy thì **hợp phạm vi lại**, không tự nâng thành đọc đủ.
+  3. **Nhịp nền 30 giây** → `MANAGEMENT_POLL_INTERVAL_MS = 120000`. Nó chỉ là lưới an toàn khi realtime rớt (cùng lý do với `FULL_MOVEMENT_REFRESH_TICKS` ở §58).
+  - ⚠️ **Chỉ `set` thứ vừa đọc.** Bản cũ luôn gọi đủ 13 setter, nguồn không đọc thì set lại bằng giá trị trong closure của lần render cũ — với lượt đọc một phần đó là **ghi đè bằng dữ liệu cũ**. Nay `results.forEach(([key, value]) => apply[key](value))`.
+  - `fetchInventoryReports` thêm `filters.from/to` (lọc `report_date`) và `fetchReportSnapshots` được truyền kỳ. Hai bảng này có cột JSON to (`lines`, `payload`) mà màn Quản trị **chỉ đọc trong kỳ đang xem** — kéo trọn lịch sử về rồi lọc ở client là phần băng thông phí lớn nhất.
+- Test: mới `test-admin-attention-and-waste-drilldown` (khoá cả 3 nhóm hợp đồng trên). Cập nhật theo hợp đồng mới: `test-branch-kpi-settings` (đảo sang "AdminPage KHÔNG được nhúng bảng chỉnh KPI", thêm chốt cấm lớp gấp), `test-management-daily-competition-realtime` (nhịp nền 2 phút). Bộ offline: **104/125 PASS**; 21 đỏ đều đỏ sẵn từ trước. `tsc -b` + `npm run build` xanh.
+
 ## 63. Vá bộ `gt-`: ô nhập tràn viền, thanh lọc, cột bảng, bỏ dải tổng Thi đua (2026-08-13) — CHƯA DEPLOY
 
 **Nguyên nhân gốc của "ô tìm kiếm tràn viền" và "thanh bộ lọc quá xấu" là MỘT:**

@@ -637,15 +637,32 @@ export async function saveInventoryReport(report: InventoryReport, user?: AppUse
   if (error) throw error
 }
 
-export async function fetchInventoryReports(branchId: string, user?: AppUser): Promise<InventoryReport[]> {
+/**
+ * `filters.from/to` cắt theo `report_date` ngay ở lượt đọc (14/08/2026).
+ *
+ * Cột `lines` là JSON của cả phiếu kiểm kê, nên kéo trọn lịch sử về rồi mới lọc
+ * theo kỳ ở client là phần băng thông phí lớn nhất của màn Quản trị › Kho.
+ * Không truyền bộ lọc thì hành vi y như cũ — các màn khác không phải đổi.
+ */
+export async function fetchInventoryReports(
+  branchId: string,
+  user?: AppUser,
+  filters: { from?: string; to?: string } = {},
+): Promise<InventoryReport[]> {
   if (shouldUseLanApi(user)) {
-    return lanApi<InventoryReport[]>(`/inventory-reports?branchId=${encodeURIComponent(branchId)}`)
+    const query = new URLSearchParams({ branchId })
+    if (filters.from) query.set('from', filters.from)
+    if (filters.to) query.set('to', filters.to)
+    return lanApi<InventoryReport[]>(`/inventory-reports?${query}`)
   }
-  const { data, error } = await supabase!
+  let request = supabase!
     .from('inventory_reports')
     .select('*')
     .eq('branch_id', branchId)
     .order('created_at', { ascending: false })
+  if (filters.from) request = request.gte('report_date', filters.from)
+  if (filters.to) request = request.lte('report_date', filters.to)
+  const { data, error } = await request
   if (error) throw error
   return (data ?? []).map((item) => ({
     id: item.id,

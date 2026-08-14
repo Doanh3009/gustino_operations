@@ -61,6 +61,29 @@ export interface OverviewWasteRow {
   unit: string
 }
 
+/**
+ * Chỗ cần soi khi bấm một dòng "Cần xử lý" (§17, 14/08/2026).
+ *
+ * Chủ hệ thống: *"phần cần xử lý bấm vào cũng có xử lý được đâu"*. Bản cũ chỉ gọi
+ * `onOpenSection('inventory')` — sang tới màn Kho thì bộ lọc vẫn là chi nhánh và
+ * ngày đang xem dở, người dùng phải TỰ tìm lại đúng SKU / đúng ca vừa bấm. Nay
+ * mỗi dòng mang theo toạ độ của chính nó: chi nhánh, ngày, và thứ cần mở sẵn.
+ */
+export interface OverviewFocus {
+  /** Ép bộ lọc chi nhánh đầu trang về đúng nơi phát sinh. `''` = tất cả. */
+  branchId?: string
+  /** Ngày cần soi. Kho dùng làm `inventoryDate`, Chấm công dùng làm ngày xem. */
+  date?: string
+  /** SKU cần bung sẵn khối đối chiếu trong bảng Tồn kho. */
+  sku?: { branchId: string; productId: string }
+  /** Có giá trị = mở sẵn khối "Đối soát theo ca" để thấy ca chưa bàn giao. */
+  shiftSessionId?: string
+  /** Kỳ hao hụt cần bung sẵn danh sách đầy đủ (khoá theo ngày). */
+  wasteKey?: string
+  /** Nhân viên cần soi ở màn Chấm công. */
+  employeeName?: string
+}
+
 interface Props {
   from: string
   to: string
@@ -79,7 +102,10 @@ interface Props {
   activeUsers: ActiveUserSession[]
   showActiveUsers: boolean
   branchName: (branchId: string) => string
-  onOpenSection: (section: 'revenue' | 'inventory' | 'attendance' | 'requests' | 'commission') => void
+  onOpenSection: (
+    section: 'revenue' | 'inventory' | 'attendance' | 'requests' | 'commission',
+    focus?: OverviewFocus,
+  ) => void
 }
 
 export function DashboardPage(props: Props) {
@@ -161,7 +187,12 @@ export function DashboardPage(props: Props) {
         kind: `Âm kho ${formatStockAmount(Math.abs(line.expected), line.product.unit)}`,
         where: `${line.product.name} · ${branchName(line.branchId)}`,
         actionLabel: 'Kiểm tra',
-        onAction: () => onOpenSection('inventory'),
+        // Tồn âm là con số HIỆN TẠI (cộng dồn cả sổ), nên soi ở ngày hôm nay.
+        onAction: () => onOpenSection('inventory', {
+          branchId: line.branchId,
+          date: todayKey,
+          sku: { branchId: line.branchId, productId: line.product.id },
+        }),
       }))
     stockLines
       .filter((line) => line.expected >= -0.0001 && line.expected <= 0.0001)
@@ -172,15 +203,23 @@ export function DashboardPage(props: Props) {
         kind: 'Hết hàng',
         where: `${line.product.name} · ${branchName(line.branchId)}`,
         actionLabel: 'Xem',
-        onAction: () => onOpenSection('inventory'),
+        onAction: () => onOpenSection('inventory', {
+          branchId: line.branchId,
+          date: todayKey,
+          sku: { branchId: line.branchId, productId: line.product.id },
+        }),
       }))
     openShifts.slice(0, 4).forEach((shift) => items.push({
       id: `shift-${shift.sessionId}`,
       severity: 'warn',
       kind: `Ca ${shift.sequence} chưa bàn giao`,
       where: `${branchName(shift.branchId)} · ${formatDate(shift.businessDate)}`,
-      actionLabel: 'Xử lý',
-      onAction: () => onOpenSection('inventory'),
+      actionLabel: 'Xem đối soát',
+      onAction: () => onOpenSection('inventory', {
+        branchId: shift.branchId,
+        date: shift.businessDate,
+        shiftSessionId: shift.sessionId,
+      }),
     }))
     attendanceIssues.slice(0, 4).forEach((issue) => items.push({
       id: `att-${issue.key}`,
@@ -188,7 +227,11 @@ export function DashboardPage(props: Props) {
       kind: 'Chấm công tự đóng · cần rà soát',
       where: `${issue.employeeName} · ${branchName(issue.branchId)} · ${formatDate(issue.workDate)}`,
       actionLabel: 'Xử lý',
-      onAction: () => onOpenSection('attendance'),
+      onAction: () => onOpenSection('attendance', {
+        branchId: issue.branchId,
+        date: issue.workDate,
+        employeeName: issue.employeeName,
+      }),
     }))
     wasteRows
       .slice()
@@ -200,7 +243,13 @@ export function DashboardPage(props: Props) {
         kind: `Hao hụt ${formatQuantity(row.quantity)} ${row.unit}`,
         where: `${row.productName} · ${branchName(row.branchId)} · ${row.count} lượt ghi nhận`,
         actionLabel: 'Xem',
-        onAction: () => onOpenSection('inventory'),
+        // Số hao hụt này gộp cả kỳ đang xem. Chỉ bung sẵn được ĐÚNG một kỳ khi
+        // đang xem một ngày; kỳ nhiều ngày thì chỉ đưa về đúng chi nhánh.
+        onAction: () => onOpenSection('inventory', {
+          branchId: row.branchId,
+          date: singleDay ? to : undefined,
+          wasteKey: singleDay ? to : undefined,
+        }),
       }))
     if (pendingRequestCount > 0) items.push({
       id: 'requests-pending',
@@ -211,7 +260,7 @@ export function DashboardPage(props: Props) {
       onAction: () => onOpenSection('requests'),
     })
     return items
-  }, [stockLines, openShifts, attendanceIssues, wasteRows, pendingRequestCount, branchName, onOpenSection])
+  }, [stockLines, openShifts, attendanceIssues, wasteRows, pendingRequestCount, branchName, onOpenSection, todayKey, singleDay, to])
 
   /* ── Thi đua (§18): top 5 thật, không phải banner rỗng ─────────────────── */
 
