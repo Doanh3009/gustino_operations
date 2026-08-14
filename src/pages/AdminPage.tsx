@@ -5727,6 +5727,10 @@ function EmployeeCompetitionPoster({
   const topRows = rankedRows.slice(0, 3)
   const totalRevenue = rows.reduce((sum, row) => sum + row.revenue, 0)
   const totalSold = rows.reduce((sum, row) => sum + row.soldQuantity, 0)
+  // Tiền thưởng in luôn trên ảnh: bảng gửi Zalo mà chỉ có doanh thu thì nhân viên
+  // vẫn phải hỏi lại "vậy được bao nhiêu tiền". Lấy ĐÚNG `commission` — phần thưởng
+  // KPI đã chốt của cột "Thưởng KPI" trên màn hình, không cộng khoản chờ xác nhận.
+  const totalReward = rows.reduce((sum, row) => sum + row.commission, 0)
   const achievedCount = rows.filter((row) => row.achievedDays > 0).length
   return (
     <div className="competition-poster-wrap" aria-hidden={!rankedRows.length}>
@@ -5743,6 +5747,7 @@ function EmployeeCompetitionPoster({
           <div><span>Doanh thu</span><b>{formatMoney(totalRevenue)}</b></div>
           <div><span>Sản phẩm bán</span><b>{formatNumber(totalSold)}</b></div>
           <div><span>Nhân viên</span><b>{formatNumber(rows.length)}</b></div>
+          <div className="reward"><span>Tổng thưởng KPI</span><b>{formatMoney(totalReward)}</b></div>
         </section>
         <section className="competition-podium">
           {topRows.map((row, index) => (
@@ -5752,6 +5757,7 @@ function EmployeeCompetitionPoster({
               <span>{branchName(row.branchId)}</span>
               <b>{formatMoney(row.revenue)}</b>
               <em>{row.rank ? `${formatNumber(row.progress)}% KPI · ${row.rank}` : 'Chưa chấm KPI'}</em>
+              <i>{row.commission > 0 ? `Thưởng ${formatMoney(row.commission)}` : 'Chưa có thưởng'}</i>
             </article>
           ))}
         </section>
@@ -5767,6 +5773,10 @@ function EmployeeCompetitionPoster({
                 <small>{branchName(row.branchId)} · {formatNumber(row.soldQuantity)} sản phẩm</small>
               </div>
               <b>{formatMoney(row.revenue)}</b>
+              <u className={row.commission > 0 ? '' : 'empty'}>
+                <span>Thưởng KPI</span>
+                {row.commission > 0 ? formatMoney(row.commission) : '0 đ'}
+              </u>
             </article>
           ))}
           {!rankedRows.length && <p>Chưa có dữ liệu thi đua trong bộ lọc này.</p>}

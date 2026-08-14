@@ -12941,9 +12941,17 @@ img, svg, video, canvas { max-width: 100%; }
 }
 .competition-poster-kpis {
   display: grid;
-  grid-template-columns: 1.5fr 1fr 1fr;
+  grid-template-columns: 1.35fr .85fr .7fr 1.2fr;
   gap: 12px;
   margin: 20px 0;
+}
+/* Ô tổng thưởng nổi lên bằng nền cốm: người xem ảnh tìm số tiền trước tiên. */
+.competition-poster-kpis .reward {
+  background: #edf5d2;
+  border-color: rgba(91,123,14,.28);
+}
+.competition-poster-kpis .reward b {
+  color: #3f5c05;
 }
 .competition-poster-kpis div,
 .competition-podium article {
@@ -12987,9 +12995,23 @@ img, svg, video, canvas { max-width: 100%; }
 .competition-podium strong,
 .competition-podium span,
 .competition-podium b,
-.competition-podium em {
+.competition-podium em,
+.competition-podium i {
   display: block;
   font-style: normal;
+}
+.competition-podium i {
+  margin-top: 2px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #edf5d2;
+  color: #3f5c05;
+  font-size: 15px;
+  font-weight: 950;
+}
+.competition-podium .place-1 i {
+  background: rgba(217,244,125,.16);
+  color: #d9f47d;
 }
 .competition-podium strong {
   font-size: 23px;
@@ -13010,7 +13032,7 @@ img, svg, video, canvas { max-width: 100%; }
 }
 .competition-poster-list article {
   display: grid;
-  grid-template-columns: 38px 44px minmax(320px, 1fr) minmax(126px, auto);
+  grid-template-columns: 38px 44px minmax(240px, 1fr) minmax(126px, auto) minmax(128px, auto);
   align-items: center;
   gap: 14px;
   min-height: 72px;
@@ -13076,6 +13098,36 @@ img, svg, video, canvas { max-width: 100%; }
   color: var(--navy);
   font-size: 18px;
   font-weight: 950;
+}
+/* Cột tiền thưởng của từng người — tách hẳn khỏi cột doanh thu để không ai đọc
+   nhầm hai con số vào nhau khi xem ảnh trên điện thoại. */
+.competition-poster-list u {
+  display: grid;
+  justify-self: end;
+  justify-items: end;
+  gap: 1px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: #edf5d2;
+  color: #3f5c05;
+  text-decoration: none;
+  white-space: nowrap;
+  font-size: 17px;
+  font-weight: 950;
+}
+.competition-poster-list u span {
+  color: #5b7b0e;
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.competition-poster-list u.empty {
+  background: rgba(15,31,51,.05);
+  color: #7d8898;
+}
+.competition-poster-list u.empty span {
+  color: #96a0ae;
 }
 /* 13/08/2026 — `.competition-leader-separation-note` đã gỡ cùng dải tổng đầu
    màn Thi đua theo yêu cầu chủ hệ thống ("bỏ luôn chữ mô tả"). */
@@ -14313,7 +14365,7 @@ body,
   .competition-poster header strong { min-width: 0; padding: 8px 12px; font-size: 13px; }
   .competition-poster h3 { font-size: 24px; margin: 6px 0; }
   .competition-poster p { font-size: 12px; }
-  .competition-poster-kpis { gap: 8px; margin: 14px 0; }
+  .competition-poster-kpis { grid-template-columns: 1fr 1fr; gap: 8px; margin: 14px 0; }
   .competition-poster-kpis div { padding: 10px; min-width: 0; }
   .competition-poster-kpis b { font-size: 17px; }
   .competition-podium { grid-template-columns: 1fr; gap: 10px; margin-bottom: 16px; }
@@ -14321,6 +14373,7 @@ body,
   .competition-podium strong { font-size: 16px; }
   .competition-podium b { font-size: 17px; }
   .competition-poster-list article { grid-template-columns: 26px 34px minmax(0, 1fr) 92px; gap: 8px; padding: 8px 10px; }
+  .competition-poster-list u { grid-column: 3 / -1; justify-self: stretch; grid-auto-flow: column; justify-items: start; justify-content: space-between; align-items: center; padding: 5px 10px; font-size: 14px; }
   .competition-poster-list .competition-list-avatar { width: 34px; height: 34px; font-size: 13px; }
 }
 
