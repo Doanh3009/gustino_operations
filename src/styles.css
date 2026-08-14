@@ -15103,7 +15103,7 @@ body,
 .kpi-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .kpi-settings-actions button { min-height: 36px; }
 .kpi-settings-table-wrap { overflow-x: auto; }
-.kpi-settings-table { width: 100%; border-collapse: collapse; min-width: 560px; }
+.kpi-settings-table { width: 100%; border-collapse: collapse; min-width: 820px; }
 .kpi-settings-table th,
 .kpi-settings-table td {
   padding: 8px 10px;
@@ -15141,6 +15141,10 @@ body,
   text-align: right;
 }
 .kpi-settings-table tr.changed td input { border-color: var(--green); background: #fbfff2; }
+/* Hai cột tiền thưởng đứng cạnh ba cột chỉ tiêu — cùng là số tiền, nên tách nền
+   để mắt không gõ nhầm chỉ tiêu vào ô thưởng. */
+.kpi-settings-table .kpi-settings-bonus-col { background: #fffcf2; }
+.kpi-settings-table thead th.kpi-settings-bonus-col { color: #96762e; }
 .kpi-settings-sync { margin: -4px 0 4px; color: #7890a4; font-size: 12px; }
 .kpi-settings-meta {
   display: grid;
@@ -15196,6 +15200,8 @@ body,
     font-size: 12px;
   }
   .kpi-settings-table tbody td small { grid-column: 2; margin-top: 0; }
+  /* Bố cục điện thoại đã xếp thành từng dòng có nhãn nên không cần nền phân nhóm. */
+  .kpi-settings-table .kpi-settings-bonus-col { background: transparent; }
   .kpi-settings-meta { grid-template-columns: 1fr; }
 }
 .competition-ranking-toolbar {

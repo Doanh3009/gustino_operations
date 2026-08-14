@@ -9,7 +9,7 @@ import {
   saveBranchKpiFormulas,
   type BranchKpiFormulaRow,
 } from '../../lib/branchKpiFormulas'
-import { VUNG_TAU_NEW_KPI_FROM, VUNG_TAU_NEW_KPI_TO, type KpiPositionKey } from '../../lib/commission'
+import { VUNG_TAU_NEW_KPI_FROM, VUNG_TAU_NEW_KPI_TO, defaultDailyKpiBonus, type KpiPositionKey } from '../../lib/commission'
 
 /**
  * Bảng "Mức KPI theo chi nhánh" — Cấu hình hệ thống → tab **Mức KPI**.
@@ -35,6 +35,36 @@ interface Props {
 }
 
 type DraftMap = Record<string, BranchKpiFormulaRow>
+
+const TARGET_FIELDS = [
+  { field: 'weekdayTarget', header: 'Ngày thường', spoken: 'ngày thường' },
+  { field: 'weekendTarget', header: 'Cuối tuần', spoken: 'cuối tuần' },
+  { field: 'monthlyTarget', header: 'Cả tháng', spoken: 'cả tháng' },
+] as const
+
+/**
+ * Tiền thưởng ngày, chỉnh ngay cạnh chỉ tiêu sinh ra nó.
+ *
+ * 14/08/2026 — chủ hệ thống: *"chưa có cho chỉnh số tiền thưởng"*. Trước bản này
+ * mức thưởng nằm cứng trong `commission.ts`, đổi một con số là phải build + deploy,
+ * trong khi chỉ tiêu ngay bên trái đã chỉnh được từ lâu. Tiền thưởng KPI chỉ có
+ * MỘT nguồn duy nhất là thưởng ngày (không thưởng tuần, không thưởng tháng), nên
+ * hai ô này là toàn bộ tiền KPI của một vị trí.
+ */
+const BONUS_FIELDS = [
+  { field: 'dailyBonus100', header: 'Thưởng đạt 100%', spoken: 'thưởng khi đạt 100%', hint: '/ca' },
+  { field: 'dailyBonus110', header: 'Thưởng từ 110%', spoken: 'thưởng khi đạt từ 110%', hint: '/ca' },
+] as const
+
+type BonusField = (typeof BONUS_FIELDS)[number]['field']
+
+/** Dòng lưu trước bản này chưa có hai cột thưởng ⇒ hiện mức mặc định đang chạy, không phải 0đ. */
+function bonusOf(row: BranchKpiFormulaRow, field: BonusField) {
+  const value = row[field]
+  if (typeof value === 'number') return value
+  const fallback = defaultDailyKpiBonus(row.position)
+  return field === 'dailyBonus100' ? fallback.at100 : fallback.at110
+}
 
 function draftKey(branchId: string, position: KpiPositionKey) {
   return `${branchId}|${position}`
@@ -180,9 +210,8 @@ export function BranchKpiSettings({ user, branches, readOnly, onChanged }: Props
     return KPI_POSITIONS.some(({ key }) => {
       const draft = rowOf(branchId, key)
       const base = savedByKey.get(draftKey(branchId, key)) || defaultBranchKpiRow(branchId, key)
-      return draft.weekdayTarget !== base.weekdayTarget
-        || draft.weekendTarget !== base.weekendTarget
-        || draft.monthlyTarget !== base.monthlyTarget
+      return TARGET_FIELDS.some(({ field }) => draft[field] !== base[field])
+        || BONUS_FIELDS.some(({ field }) => bonusOf(draft, field) !== bonusOf(base, field))
         || draft.headcount !== base.headcount
         || (draft.effectiveFrom || '') !== (base.effectiveFrom || '')
         || (draft.note || '') !== (base.note || '')
@@ -270,6 +299,9 @@ export function BranchKpiSettings({ user, branches, readOnly, onChanged }: Props
             Mỗi chi nhánh lưu riêng bằng nút của chính nó. <b>Đây là chỗ duy nhất chỉnh mức KPI</b>; màn Thi đua chỉ chấm theo mức đặt ở đây.
             Ô nào chưa chỉnh sẽ hiện đúng mức mặc định hệ thống đang chạy. <b>Số người</b> chỉ dùng để cộng ra KPI team
             của chi nhánh (Ca trưởng chạy theo KPI team thì để chỉ tiêu cá nhân bằng 0).
+            Hai cột <b>tiền thưởng</b> là toàn bộ tiền KPI: thưởng tính <b>theo từng ca</b> ngay khi đạt chỉ tiêu của ngày đó —
+            không có thưởng tuần và không có thưởng tháng. Đạt 100–109% ăn mức cột đầu, từ 110% ăn mức cột sau;
+            vị trí nào chỉ có một mốc “đạt KPI” thì để hai ô bằng nhau.
             Riêng kỳ Vũng Tàu {VUNG_TAU_NEW_KPI_FROM.split('-').reverse().join('/')}–{VUNG_TAU_NEW_KPI_TO.split('-').reverse().join('/')} đã
             chốt số đối soát nên giữ nguyên, không nhận mức chỉnh mới.
           </p>
@@ -314,6 +346,8 @@ export function BranchKpiSettings({ user, branches, readOnly, onChanged }: Props
                       <th scope="col">Ngày thường</th>
                       <th scope="col">Cuối tuần</th>
                       <th scope="col">Cả tháng</th>
+                      <th scope="col" className="kpi-settings-bonus-col">Thưởng đạt 100%</th>
+                      <th scope="col" className="kpi-settings-bonus-col">Thưởng từ 110%</th>
                       <th scope="col">Số người</th>
                     </tr>
                   </thead>
@@ -321,9 +355,8 @@ export function BranchKpiSettings({ user, branches, readOnly, onChanged }: Props
                     {KPI_POSITIONS.map(({ key, label, hint }) => {
                       const row = rowOf(branch.id, key)
                       const base = defaultBranchKpiRow(branch.id, key)
-                      const changed = row.weekdayTarget !== base.weekdayTarget
-                        || row.weekendTarget !== base.weekendTarget
-                        || row.monthlyTarget !== base.monthlyTarget
+                      const changed = TARGET_FIELDS.some(({ field }) => row[field] !== base[field])
+                        || BONUS_FIELDS.some(({ field }) => bonusOf(row, field) !== bonusOf(base, field))
                         || row.headcount !== base.headcount
                       return (
                         <tr key={key} className={changed ? 'changed' : ''}>
@@ -331,15 +364,26 @@ export function BranchKpiSettings({ user, branches, readOnly, onChanged }: Props
                             <span>{label}</span>
                             <small>{hint}</small>
                           </th>
-                          {(['weekdayTarget', 'weekendTarget', 'monthlyTarget'] as const).map((field) => (
-                            <td key={field} data-label={field === 'weekdayTarget' ? 'Ngày thường' : field === 'weekendTarget' ? 'Cuối tuần' : 'Cả tháng'}>
+                          {TARGET_FIELDS.map(({ field, header, spoken }) => (
+                            <td key={field} data-label={header}>
                               <AmountInput
-                                label={`${label} · ${field === 'weekdayTarget' ? 'ngày thường' : field === 'weekendTarget' ? 'cuối tuần' : 'cả tháng'} · ${branch.name}`}
+                                label={`${label} · ${spoken} · ${branch.name}`}
                                 disabled={!editable || busy}
                                 value={row[field]}
                                 onChange={(next) => patch(branch.id, key, { [field]: next })}
                               />
                               <small>{formatMoney(row[field])}</small>
+                            </td>
+                          ))}
+                          {BONUS_FIELDS.map(({ field, header, spoken, hint }) => (
+                            <td key={field} data-label={header} className="kpi-settings-bonus-col">
+                              <AmountInput
+                                label={`${label} · ${spoken} · ${branch.name}`}
+                                disabled={!editable || busy}
+                                value={bonusOf(row, field)}
+                                onChange={(next) => patch(branch.id, key, { [field]: next })}
+                              />
+                              <small>{formatMoney(bonusOf(row, field))} {hint}</small>
                             </td>
                           ))}
                           <td data-label="Số người">

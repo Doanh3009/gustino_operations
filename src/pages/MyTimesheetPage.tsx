@@ -247,7 +247,7 @@ export function MyTimesheetContent({ user }: Props) {
       target,
       progress,
       rank: kpiRank(progress),
-      bonus: dailyKpiBonus(progress, user.role, user.employmentType, user.positionTitle || ''),
+      bonus: dailyKpiBonus(progress, user.role, user.employmentType, user.positionTitle || '', user.branchId, selectedDate),
     }
   }, [user.branchId, user.role, user.employmentType, user.positionTitle, selectedDate, month, revenueByDate])
 

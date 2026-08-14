@@ -1,5 +1,20 @@
 # CODEMAP — Bản đồ kỹ thuật & nghiệp vụ Gustino
 
+## 65. Tiền thưởng KPI chỉnh được trong bảng Mức KPI (2026-08-14) — CHƯA DEPLOY
+
+Chủ hệ thống: *"chưa có cho chỉnh số tiền thưởng, giờ là chỉ tính kpi theo cái tôi chỉnh thôi, không có theo tháng hay theo tuần nữa"*. Chỉ tiêu đã chỉnh được từ §57; **số tiền** thì vẫn nằm cứng trong `dailyKpiBonus`, đổi một con số là phải sửa mã nguồn + build + deploy — đúng cái bất tiện mà `branch_kpi_formulas` sinh ra để chấm dứt.
+
+- **Hai cột mới trong bảng Mức KPI** (Cấu hình hệ thống → tab Mức KPI): **Thưởng đạt 100%** và **Thưởng từ 110%**, đơn vị đ/ca, đứng ngay cạnh ba cột chỉ tiêu sinh ra chúng. Nền hơi ngả vàng (`.kpi-settings-bonus-col`) để tách khỏi nhóm chỉ tiêu — năm ô tiền liền nhau rất dễ gõ nhầm. Bảng lên 7 cột nên `min-width` 560 → 820px; điện thoại vẫn chạy bố cục `data-label` sẵn có.
+- **`dailyKpiBonus(progress, role, employmentType, positionTitle, branchId?, date?)`** — thêm hai tham số cuối. Bậc so sánh giữ nguyên (≥110% → mức 110, ≥100% → mức 100, dưới đó 0đ), chỉ có SỐ TIỀN là tra ra từ `resolvedDailyKpiBonus`: kỳ đã chốt → override của Admin → `DEFAULT_DAILY_KPI_BONUS`.
+  - **Không truyền `branchId` ⇒ mức mặc định**, cố ý: một lời gọi quên truyền phải chạy y như trước, không được âm thầm trả 0 đồng vào bảng lương.
+  - Mức mặc định giữ nguyên chính sách đang chạy (PG 20.000/40.000, Ca trưởng & Ca phó 30.000/30.000) nên **apply bản này không đổi một đồng nào** đang có. Ca trưởng/Ca phó cố ý có at100 = at110 vì chính sách chỉ có một mốc "đạt KPI".
+  - **Kỳ Vũng Tàu 01–15/07/2026 đóng băng cả TIỀN**, không riêng chỉ tiêu (`isFrozenVungTauWindow` dùng chung) — bảng lương đã ký không được đổi theo một lần chỉnh hôm nay.
+  - 5 lời gọi đã nối chi nhánh + ngày: `AdminPage` (dòng KPI ngày, `applyDailyResult`), `ReportPage` (vòng allocation, vòng hóa đơn), `MyTimesheetPage`.
+- **Migration `20260814_branch_kpi_daily_bonus.sql`**: `daily_bonus_100` / `daily_bonus_110` numeric(14,0), **nullable có chủ đích**. NULL = chưa đặt riêng ⇒ chạy mức mặc định; nếu để `not null default 0` thì mọi dòng override đã có sẽ thành "thưởng 0đ" ngay lúc apply. `rowFromDb` cũng đổi NULL thành mức mặc định để bảng không hiện 0đ cho chi nhánh vẫn đang được trả thưởng thật.
+- `isMissingColumn(error, column)` bám **tên cột trong lời báo lỗi** trước, chỉ khi lỗi không nêu tên cột nào mới bám mã 42703 — có vậy thông báo mới chỉ đúng migration còn thiếu thay vì đổ cho cái mới nhất. Đọc tụt dần ba bậc cột (đủ → thiếu thưởng → thiếu cả `effective_from`) nên môi trường chưa apply vẫn chạy bằng mức mặc định.
+- **Thưởng tuần/tháng: không có gì để gỡ.** Từ §56 tiền KPI đã là `kpiBonus = dailyBonus`; `monthlyKpiBonus` / `weeklyKpiBonus` / `monthlySpecialBonus` còn trong `commission.ts` nhưng **không còn lời gọi nào trong `src/`** — giữ lại vì 4 test đang khoá chúng ở trạng thái "không được cộng vào tiền".
+- Test: `test-branch-kpi-settings` thêm nhóm 3b (mặc định · override · không lây chi nhánh · dòng cũ không tụt về 0 · đóng băng kỳ Vũng Tàu · quên truyền chi nhánh) và chốt hai cột trong UI + migration nullable. `test-kpi-reward-reverse-audit` và `test-kpi-ranking-reward-clarity` đổi từ khoá ba dòng số cứng sang khoá **bảng mặc định + bậc so sánh**. Bộ offline: **104/125 PASS**; 21 đỏ đều đỏ sẵn từ trước. `tsc -b` + `npm run build` xanh.
+
 ## 64. "Cần xử lý" bấm ra đúng chỗ · hao hụt xem cả ngày · một chỗ chỉnh KPI · gỡ nghẽn tải (2026-08-14) — CHƯA DEPLOY
 
 Bốn phản hồi của chủ hệ thống, bốn thay đổi. Không đổi schema, không đổi phân quyền.

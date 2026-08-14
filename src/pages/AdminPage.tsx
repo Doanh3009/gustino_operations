@@ -5973,7 +5973,7 @@ function buildDailyEmployeeKpiRows(
     row.progress = row.targetRevenue > 0 ? Math.min(200, row.revenue / row.targetRevenue * 100) : 0
     row.rank = kpiRank(row.progress)
     row.dailyBonus = row.targetRevenue > 0
-      ? dailyKpiBonus(row.progress, row.role, row.employmentType, row.positionTitle)
+      ? dailyKpiBonus(row.progress, row.role, row.employmentType, row.positionTitle, row.branchId, row.date)
       : 0
   })
 
@@ -6731,7 +6731,7 @@ function buildCommissionRows(
     const row = rows.get(rowKey)
     if (!row || dayTarget <= 0) return
     const dayProgress = revenue / Math.max(1, dayTarget) * 100
-    row.dailyBonus += dailyKpiBonus(dayProgress, employee.role, employee.employmentType, employee.positionTitle) * bonusMultiplier
+    row.dailyBonus += dailyKpiBonus(dayProgress, employee.role, employee.employmentType, employee.positionTitle, row.branchId, date) * bonusMultiplier
     row.achieved = row.achieved || dayProgress >= 100
     row.achievedDays += dayProgress >= 100 ? 1 : 0
     row.maxDailySold = Math.max(row.maxDailySold, soldQuantity)

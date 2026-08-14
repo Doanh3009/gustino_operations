@@ -73,6 +73,13 @@ const BRANCH_KPI_STAFFING: Record<string, Partial<Record<KpiPositionKey, number>
 export interface BranchKpiOverride extends PositionKpiFormula {
   headcount: number
   effectiveFrom?: string
+  /**
+   * Tiền thưởng ngày (đ/ca) do Admin đặt: mức khi đạt 100–109% và mức khi đạt từ
+   * 110%. Bỏ trống ⇒ chạy đúng mức mặc định trong `DEFAULT_DAILY_KPI_BONUS`, nên
+   * dòng override cũ (lưu trước khi có hai cột này) không bị tụt thưởng về 0.
+   */
+  dailyBonus100?: number
+  dailyBonus110?: number
 }
 
 let branchKpiOverrides = new Map<string, BranchKpiOverride>()
@@ -299,16 +306,61 @@ export function kpiRank(progress: number) {
   return 'D'
 }
 
+/**
+ * Mức thưởng ngày mặc định trong mã nguồn (đ/ca) — đúng chính sách đang chạy:
+ * PG đạt 100–109% → 20.000, từ 110% → 40.000; Ca trưởng/Ca phó đạt KPI → 30.000.
+ *
+ * Đây chỉ còn là GIÁ TRỊ KHỞI TẠO: từ 14/08/2026 Admin đặt số tiền ngay trong
+ * bảng "Mức KPI theo chi nhánh" (cột Thưởng đạt 100% / Thưởng từ 110%), nên đổi
+ * mức thưởng không phải sửa file này rồi build lại nữa.
+ *
+ * Ca trưởng/Ca phó cố ý có at100 = at110: chính sách chỉ có MỘT mốc "đạt KPI".
+ * Muốn thưởng thêm khi họ vượt 110% thì nâng riêng ô 110% của vị trí đó.
+ */
+export const DEFAULT_DAILY_KPI_BONUS: Record<KpiPositionKey, { at100: number; at110: number }> = {
+  pg_part_time: { at100: 20000, at110: 40000 },
+  pg_full_time: { at100: 20000, at110: 40000 },
+  shift_deputy: { at100: 30000, at110: 30000 },
+  shift_leader: { at100: 30000, at110: 30000 },
+}
+
+export function defaultDailyKpiBonus(position: KpiPositionKey) {
+  return DEFAULT_DAILY_KPI_BONUS[position] || { at100: 0, at110: 0 }
+}
+
+/**
+ * Nguồn sự thật cho tiền thưởng một (chi nhánh, vị trí, ngày).
+ *
+ * Không truyền `branchId` ⇒ mức mặc định, y hệt hành vi trước khi thưởng chỉnh
+ * được — để một lời gọi quên truyền cũng không âm thầm trả về 0 đồng.
+ */
+function resolvedDailyKpiBonus(position: KpiPositionKey, branchId?: string, date?: string) {
+  const fallback = defaultDailyKpiBonus(position)
+  // Kỳ Vũng Tàu 01–15/07/2026 đã chốt số đối soát: đóng băng cả tiền thưởng,
+  // không chỉ chỉ tiêu — nếu không thì bảng lương đã ký sẽ đổi theo mà không ai biết.
+  if (!branchId || isFrozenVungTauWindow(branchId, date)) return fallback
+  const override = activeBranchKpiOverrideFor(branchId, position, date)
+  if (!override) return fallback
+  const amount = (value?: number, backup = 0) =>
+    typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : backup
+  return {
+    at100: amount(override.dailyBonus100, fallback.at100),
+    at110: amount(override.dailyBonus110, fallback.at110),
+  }
+}
+
 export function dailyKpiBonus(
   progress: number,
   role?: Role,
   employmentType?: EmploymentType,
   positionTitle = '',
+  branchId?: string,
+  date?: string,
 ) {
   const position = positionKpiKey(role, employmentType, positionTitle)
-  if (position === 'shift_leader' || position === 'shift_deputy') return progress >= 100 ? 30000 : 0
-  if (progress >= 110) return 40000
-  if (progress >= 100) return 20000
+  const bonus = resolvedDailyKpiBonus(position, branchId, date)
+  if (progress >= 110) return bonus.at110
+  if (progress >= 100) return bonus.at100
   return 0
 }
 

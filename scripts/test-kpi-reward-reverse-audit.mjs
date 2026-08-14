@@ -6,10 +6,16 @@ const [admin, commission] = await Promise.all([
 ])
 
 const failures = []
+// 14/08/2026 — số tiền thưởng chuyển thành cấu hình Admin đặt trong bảng Mức KPI.
+// Cái phải khoá giờ là MỨC MẶC ĐỊNH (không được lệch khỏi chính sách đang chạy)
+// và bậc so sánh 110% → 100%, chứ không còn là ba con số nằm cứng trong hàm.
 for (const formula of [
-  "if (position === 'shift_leader' || position === 'shift_deputy') return progress >= 100 ? 30000 : 0",
-  'if (progress >= 110) return 40000',
-  'if (progress >= 100) return 20000',
+  'pg_part_time: { at100: 20000, at110: 40000 }',
+  'pg_full_time: { at100: 20000, at110: 40000 }',
+  'shift_deputy: { at100: 30000, at110: 30000 }',
+  'shift_leader: { at100: 30000, at110: 30000 }',
+  'if (progress >= 110) return bonus.at110',
+  'if (progress >= 100) return bonus.at100',
 ]) {
   if (!commission.includes(formula)) failures.push(`Công thức thưởng hiện tại bị thay đổi ngoài kiểm soát: ${formula}`)
 }

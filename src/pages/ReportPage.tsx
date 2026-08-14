@@ -1509,6 +1509,8 @@ const key = `${branchId}|${employeeKey}`
       registration?.employmentType === 'leader' ? 'shift_leader' : 'staff',
       registration?.employmentType,
       registration?.positionTitle,
+      allocation.branchId,
+      registration?.workDate || businessDate,
     ) : 0
     current.achievedCommission = current.targetRevenue > 0 && current.revenue >= current.targetRevenue
     const product = productById(allocation.productId)
@@ -1564,6 +1566,8 @@ const productRow = current.productMap.get(allocation.productId) || {
       registration?.employmentType === 'leader' ? 'shift_leader' : 'staff',
       registration?.employmentType,
       registration?.positionTitle,
+      receipt.branchId,
+      receipt.businessDate,
     ) : 0
     directLines.forEach((line) => {
       const product = productById(line.productId)

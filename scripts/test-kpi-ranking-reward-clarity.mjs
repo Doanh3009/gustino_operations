@@ -20,10 +20,14 @@ assert.match(admin, /formatMoney\(row\.commission\)/)
 assert.match(admin, /Chưa đạt ngưỡng thưởng trong kỳ/)
 assert.match(styles, /\.competition-classification-reward/)
 
+// 14/08/2026 — số tiền thưởng do Admin đặt trong bảng Mức KPI, nên cái phải khoá
+// là MỨC MẶC ĐỊNH và bậc so sánh, không còn là con số nằm cứng trong hàm.
 for (const formula of [
-  "if (position === 'shift_leader' || position === 'shift_deputy') return progress >= 100 ? 30000 : 0",
-  'if (progress >= 110) return 40000',
-  'if (progress >= 100) return 20000',
+  'pg_part_time: { at100: 20000, at110: 40000 }',
+  'shift_deputy: { at100: 30000, at110: 30000 }',
+  'shift_leader: { at100: 30000, at110: 30000 }',
+  'if (progress >= 110) return bonus.at110',
+  'if (progress >= 100) return bonus.at100',
 ]) assert.ok(commission.includes(formula), `Không được đổi công thức KPI: ${formula}`)
 
 // Tiền KPI = thưởng ngày, không có thưởng tuần/tháng. `dailyBonus` bị ép về 0 cho

@@ -22,7 +22,7 @@ assert.ok(start >= 0 && end > start, 'Khong tim thay khoi cong thuc KPI thuan tr
 
 const pure = commissionSource.slice(start, end).replace(/\bexport\s+/g, '')
 const compiled = ts.transpileModule(
-  `${pure}\nexport { setBranchKpiOverrides, listBranchKpiOverrides, defaultPositionKpiFormula, defaultBranchKpiHeadcount, positionKpiFormula, employeePeriodRevenueTarget, branchTeamPeriodRevenueTarget, employeeCompetitionPeriodRevenueTarget };\n`,
+  `${pure}\nexport { setBranchKpiOverrides, listBranchKpiOverrides, defaultPositionKpiFormula, defaultBranchKpiHeadcount, positionKpiFormula, employeePeriodRevenueTarget, branchTeamPeriodRevenueTarget, employeeCompetitionPeriodRevenueTarget, dailyKpiBonus, defaultDailyKpiBonus };\n`,
   { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } },
 ).outputText
 const kpi = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
@@ -111,6 +111,43 @@ check(
 )
 kpi.setBranchKpiOverrides([])
 
+// ---- 3b. Tiền thưởng ngày cũng phải chỉnh được, không nằm cứng trong code ---
+// Chủ hệ thống 14/08/2026: "chưa có cho chỉnh số tiền thưởng". Thưởng KPI chỉ có
+// một nguồn là thưởng NGÀY, nên hai mức này là toàn bộ tiền KPI của một vị trí.
+kpi.setBranchKpiOverrides([])
+const pgPartTime = ['staff', 'part_time', '']
+const leader = ['shift_leader', 'leader', 'Ca trưởng']
+check(kpi.dailyKpiBonus(99, ...pgPartTime, 'gold-coast', '2026-09-07') === 0, 'Chua dat KPI ngay ma van co thuong.')
+check(kpi.dailyKpiBonus(105, ...pgPartTime, 'gold-coast', '2026-09-07') === 20000, 'Muc mac dinh PG dat 100-109% phai la 20.000d/ca.')
+check(kpi.dailyKpiBonus(115, ...pgPartTime, 'gold-coast', '2026-09-07') === 40000, 'Muc mac dinh PG dat tu 110% phai la 40.000d/ca.')
+check(kpi.dailyKpiBonus(105, ...leader, 'gold-coast', '2026-09-07') === 30000, 'Muc mac dinh Ca truong dat KPI phai la 30.000d/ca.')
+check(kpi.dailyKpiBonus(115, ...leader, 'gold-coast', '2026-09-07') === 30000, 'Ca truong chi co MOT moc dat KPI, vuot 110% khong duoc nhay muc khac.')
+// Quên truyền chi nhánh KHÔNG được âm thầm trả 0 đồng — phải rơi về mức mặc định.
+check(kpi.dailyKpiBonus(105, ...pgPartTime) === 20000, 'Loi goi khong truyen chi nhanh phai chay muc thuong mac dinh.')
+
+kpi.setBranchKpiOverrides([
+  { branchId: 'gold-coast', position: 'pg_part_time', weekdayTarget: 500000, weekendTarget: 650000, monthlyTarget: 13900000, headcount: 4, dailyBonus100: 25000, dailyBonus110: 55000 },
+])
+check(kpi.dailyKpiBonus(105, ...pgPartTime, 'gold-coast', '2026-09-07') === 25000, 'Muc thuong 100% Admin dat chua duoc ap dung.')
+check(kpi.dailyKpiBonus(115, ...pgPartTime, 'gold-coast', '2026-09-07') === 55000, 'Muc thuong 110% Admin dat chua duoc ap dung.')
+check(kpi.dailyKpiBonus(105, ...pgPartTime, 'lotte-2310', '2026-09-07') === 20000, 'Muc thuong cua Gold Coast khong duoc lay sang chi nhanh khac.')
+// Vị trí không chỉnh thưởng vẫn giữ mức mặc định của chính nó.
+check(kpi.dailyKpiBonus(105, ...leader, 'gold-coast', '2026-09-07') === 30000, 'Vi tri chua chinh thuong phai giu muc mac dinh.')
+
+// Dòng override cũ (lưu trước khi có hai cột thưởng) không được tụt thưởng về 0.
+kpi.setBranchKpiOverrides([
+  { branchId: 'gold-coast', position: 'pg_part_time', weekdayTarget: 500000, weekendTarget: 650000, monthlyTarget: 13900000, headcount: 4 },
+])
+check(kpi.dailyKpiBonus(105, ...pgPartTime, 'gold-coast', '2026-09-07') === 20000, 'Override cu khong co cot thuong phai chay muc mac dinh, khong duoc thanh 0d.')
+
+// Kỳ Vũng Tàu đã chốt số thì đóng băng cả TIỀN, không chỉ chỉ tiêu.
+kpi.setBranchKpiOverrides([
+  { branchId: 'lotte-vt', position: 'pg_part_time', weekdayTarget: 550000, weekendTarget: 650000, monthlyTarget: 14900000, headcount: 4, dailyBonus100: 1, dailyBonus110: 2 },
+])
+check(kpi.dailyKpiBonus(105, ...pgPartTime, 'lotte-vt', '2026-07-06') === 20000, 'Ky Vung Tau da chot so nhung override lam doi tien thuong.')
+check(kpi.dailyKpiBonus(105, ...pgPartTime, 'lotte-vt', '2026-09-07') === 1, 'Ngoai ky da chot, muc thuong Admin dat phai co hieu luc.')
+kpi.setBranchKpiOverrides([])
+
 // ---- 4. Lớp lib + RLS phải chặn người không phải Admin ----------------------
 const lib = await read('src/lib/branchKpiFormulas.ts')
 check(/user\.role !== 'admin'/.test(lib), 'Lib chua chan vai tro khac Admin khi luu muc KPI.')
@@ -118,6 +155,8 @@ check(/resetBranchKpiFormulas/.test(lib), 'Thieu duong khoi phuc muc KPI mac din
 check(/isMissingTable\(error\)/.test(lib), 'Thieu nhanh chay tiep khi chua apply migration.')
 check(/effective_from/.test(lib), 'Lib chua doc/ghi cot ngay ap dung effective_from.')
 check(/isMissingEffectiveFromColumn/.test(lib), 'Lib chua co fallback khi Supabase chua apply cot effective_from.')
+check(/daily_bonus_100[\s\S]{0,200}daily_bonus_110/.test(lib), 'Lib chua doc/ghi hai cot tien thuong ngay.')
+check(/isMissingDailyBonusColumn/.test(lib), 'Lib chua co fallback khi Supabase chua apply cot tien thuong.')
 
 const migration = await read('supabase/migrations/20260810_branch_kpi_formulas.sql')
 check(/enable row level security/i.test(migration), 'Bang branch_kpi_formulas chua bat RLS.')
@@ -135,12 +174,31 @@ check(
 )
 const effectiveMigration = await read('supabase/migrations/20260812_branch_kpi_effective_from.sql')
 check(/effective_from date/i.test(effectiveMigration), 'Migration ngay ap dung KPI chua them cot effective_from date.')
+const bonusMigration = await read('supabase/migrations/20260814_branch_kpi_daily_bonus.sql')
+check(
+  /add column if not exists daily_bonus_100[\s\S]{0,300}add column if not exists daily_bonus_110/i.test(bonusMigration),
+  'Migration tien thuong chua them du hai cot daily_bonus_100 / daily_bonus_110.',
+)
+// Để NULL = chưa đặt riêng ⇒ chạy mức mặc định. Có NOT NULL DEFAULT 0 là mọi dòng
+// override cũ bị ghi đè thành "thưởng 0đ" ngay lúc apply.
+check(
+  !/daily_bonus_1\d0 numeric\(14,0\) not null/i.test(bonusMigration),
+  'Cot tien thuong khong duoc NOT NULL: dong override cu se bi tut thuong ve 0.',
+)
 
 // ---- 5. Giao diện Quản trị -------------------------------------------------
 const settingsUi = await read('src/pages/admin/BranchKpiSettings.tsx')
 check(/Mức KPI theo chi nhánh/.test(settingsUi), 'Thieu tieu de bang chinh muc KPI.')
 check(/Khôi phục mặc định/.test(settingsUi), 'Thieu nut khoi phuc muc mac dinh.')
 check(/Ngày thường[\s\S]{0,400}Cuối tuần[\s\S]{0,400}Cả tháng/.test(settingsUi), 'Bang chua du 3 cot muc KPI.')
+check(
+  /Thưởng đạt 100%[\s\S]{0,400}Thưởng từ 110%/.test(settingsUi),
+  'Bang chinh KPI chua co cot quy dinh tien thuong — muc thuong lai phai sua ma nguon roi deploy.',
+)
+check(
+  /dailyBonus100[\s\S]{0,400}dailyBonus110/.test(settingsUi),
+  'Hai o tien thuong chua duoc gan vao draft luu xuong branch_kpi_formulas.',
+)
 check(/data-label=/.test(settingsUi), 'Bang thieu nhan cot cho bo cuc dien thoai.')
 check(/type="date"/.test(settingsUi), 'Man chinh KPI chua co o chon ngay ap dung.')
 check(/effectiveFrom/.test(settingsUi), 'Man chinh KPI chua gan ngay ap dung vao draft luu.')
