@@ -40,6 +40,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   const saleProducts = useMemo(() => getSaleProducts(), [productTick])
   const [receipts, setReceipts] = useState<SalesReceipt[]>([])
   const [lastReceipt, setLastReceipt] = useState<SalesReceipt | null>(null)
+  const [sellerEvidenceUrls, setSellerEvidenceUrls] = useState<{ checkIn?: string; checkOut?: string }>({})
   const [loading, setLoading] = useState(true)
   const [checkoutBusy, setCheckoutBusy] = useState(false)
   // Id hóa đơn được giữ ổn định cho MỘT lần bấm thanh toán (kể cả khi retry sau
@@ -194,6 +195,23 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
     employeeId: user.id,
     employeeName: user.name,
   }
+  const selectedSellerRecords = attendanceRecords
+    .filter((record) => record.userId === selectedSeller.employeeId && record.branchId === user.branchId)
+    .sort((a, b) => b.checkInTime.localeCompare(a.checkInTime))
+  const selectedSellerRecord = selectedSellerRecords[0]
+
+  useEffect(() => {
+    let cancelled = false
+    setSellerEvidenceUrls({})
+    if (!selectedSellerRecord) return () => { cancelled = true }
+    void Promise.all([
+      resolveSalesSelfieUrl(selectedSellerRecord.selfieUrl),
+      resolveSalesSelfieUrl(selectedSellerRecord.checkOutSelfieUrl),
+    ]).then(([checkIn, checkOut]) => {
+      if (!cancelled) setSellerEvidenceUrls({ checkIn, checkOut })
+    })
+    return () => { cancelled = true }
+  }, [selectedSellerRecord?.id, selectedSellerRecord?.selfieUrl, selectedSellerRecord?.checkOutSelfieUrl])
   const sellerMenuProducts = useMemo(() => saleProducts.map((product) => ({
     product,
     inCart: cart[product.id] || 0,
@@ -430,6 +448,27 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
               })}
             </div>
           )}
+
+          <div className="seller-attendance-evidence" aria-label="Ảnh chấm công của nhân viên bán">
+            <div className="seller-attendance-evidence-head">
+              <div><span className="eyebrow dark">BẰNG CHỨNG CA</span><strong>{selectedSeller.employeeName}</strong></div>
+              <small>{selectedSellerRecord ? 'Hôm nay' : 'Chưa có lượt chấm công'}</small>
+            </div>
+            <div className="seller-attendance-evidence-grid">
+              <figure>
+                {sellerEvidenceUrls.checkIn
+                  ? <img src={sellerEvidenceUrls.checkIn} alt={`Ảnh đầu ca của ${selectedSeller.employeeName}`} />
+                  : <div className="seller-attendance-evidence-empty">Chưa có ảnh</div>}
+                <figcaption>Ảnh đầu ca</figcaption>
+              </figure>
+              <figure>
+                {sellerEvidenceUrls.checkOut
+                  ? <img src={sellerEvidenceUrls.checkOut} alt={`Ảnh cuối ca của ${selectedSeller.employeeName}`} />
+                  : <div className="seller-attendance-evidence-empty">Chưa check-out</div>}
+                <figcaption>Ảnh cuối ca</figcaption>
+              </figure>
+            </div>
+          </div>
 
           <div className="pos-panel-head">
             <div>
@@ -694,4 +733,21 @@ function printPosReceipt() {
 
 function normalizeName(value: string) {
   return value.trim().toLocaleLowerCase('vi').normalize('NFD').replace(/\p{Diacritic}/gu, '')
+}
+
+async function resolveSalesSelfieUrl(value?: string) {
+  if (!value) return ''
+  if (/^https?:\/\//i.test(value) || value.startsWith('/')) return value
+  if (!supabase) return value
+  const marker = '/attendance-selfies/'
+  let storagePath = value
+  try {
+    const parsed = new URL(value, window.location.origin)
+    const markerIndex = parsed.pathname.indexOf(marker)
+    if (markerIndex >= 0) storagePath = parsed.pathname.slice(markerIndex + marker.length)
+  } catch {
+    storagePath = value.replace(/^attendance-selfies\//, '')
+  }
+  const signed = await supabase.storage.from('attendance-selfies').createSignedUrl(storagePath, 60 * 60 * 24)
+  return signed.data?.signedUrl || supabase.storage.from('attendance-selfies').getPublicUrl(storagePath).data.publicUrl || value
 }

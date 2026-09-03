@@ -9504,6 +9504,58 @@ img, svg, video, canvas { max-width: 100%; }
   font-size: 11px;
   font-weight: 900;
 }
+.seller-attendance-evidence {
+  margin: 0 0 16px;
+  padding: 11px;
+  border: 1px solid #dce7c4;
+  border-radius: 14px;
+  background: #fbfdf6;
+}
+.seller-attendance-evidence-head,
+.seller-attendance-evidence-head > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.seller-attendance-evidence-head > div { justify-content: flex-start; min-width: 0; }
+.seller-attendance-evidence-head strong {
+  overflow: hidden;
+  color: var(--navy);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.seller-attendance-evidence-head small { color: var(--muted); font-size: 9px; white-space: nowrap; }
+.seller-attendance-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-top: 9px;
+}
+.seller-attendance-evidence-grid figure { min-width: 0; margin: 0; }
+.seller-attendance-evidence-grid img,
+.seller-attendance-evidence-empty {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #eef2f4;
+  color: var(--muted);
+  object-fit: cover;
+  font-size: 9px;
+  font-weight: 800;
+}
+.seller-attendance-evidence-grid figcaption {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 900;
+  text-align: center;
+}
 .pos-panel-head,
 .bill-head,
 .receipt-history-head {
@@ -10332,6 +10384,31 @@ img, svg, video, canvas { max-width: 100%; }
   font-weight: 750;
   text-align: right;
 }
+.shift-photo-quick-previews {
+  flex-basis: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 3px;
+}
+.shift-photo-quick-previews figure { min-width: 0; margin: 0; }
+.shift-photo-quick-previews img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  display: block;
+  overflow: hidden;
+  border: 1px solid rgba(137, 169, 107, .42);
+  border-radius: 10px;
+  background: #edf2e8;
+  object-fit: cover;
+}
+.shift-photo-quick-previews figcaption {
+  margin-top: 3px;
+  color: #536579;
+  font-size: 9px;
+  font-weight: 850;
+  text-align: center;
+}
 @media (max-width: 640px) {
   .shift-photo-quick-actions {
     display: grid;
@@ -10350,6 +10427,7 @@ img, svg, video, canvas { max-width: 100%; }
     grid-column: 1 / -1;
     text-align: left;
   }
+  .shift-photo-quick-previews { grid-column: 1 / -1; }
 }
 .today-revenue-main,
 .today-top-sellers {

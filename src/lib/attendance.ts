@@ -1109,8 +1109,8 @@ const ATTENDANCE_PHOTO_DEADLINE_MS = 20000
 // Filter nhẹ, cố định cho ảnh chấm công: cân sáng/màu rồi phủ lớp làm mịn mờ
 // rất thấp; không thay đổi hình học khuôn mặt. Reset trước khi đóng dấu để chữ/GPS luôn sắc nét.
 const ATTENDANCE_PHOTO_ENHANCEMENT_FILTER = 'brightness(1.07) contrast(1.03) saturate(1.08)'
-const ATTENDANCE_PHOTO_SMOOTHING_SCALE = 0.2
-const ATTENDANCE_PHOTO_SMOOTHING_OPACITY = 0.34
+const ATTENDANCE_PHOTO_SMOOTHING_SCALE = 0.14
+const ATTENDANCE_PHOTO_SMOOTHING_OPACITY = 0.58
 export const ATTENDANCE_PHOTO_FILTER_OPTIONS = [
   { id: 'natural', label: 'Tự nhiên', description: 'Giữ màu ảnh gốc', canvasFilter: 'none', previewFilter: 'none', smoothingOpacity: 0 },
   { id: 'smooth', label: 'Mịn da', description: 'Da baby, sáng và mịn rõ hơn', canvasFilter: ATTENDANCE_PHOTO_ENHANCEMENT_FILTER, previewFilter: 'brightness(1.09) contrast(1.02) saturate(1.08) blur(.7px)', smoothingOpacity: ATTENDANCE_PHOTO_SMOOTHING_OPACITY },

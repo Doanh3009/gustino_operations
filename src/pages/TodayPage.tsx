@@ -396,6 +396,22 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
             {!openingBusy && !closingBusy && (openingFeedback || closingFeedback) && (
               <small className="shift-photo-quick-feedback">{openingFeedback || closingFeedback}</small>
             )}
+            {(photoSession?.openingPhotoUrl || photoSession?.closingPhotoUrl) && (
+              <div className="shift-photo-quick-previews" aria-label="Ảnh đã upload của ca">
+                {photoSession.openingPhotoUrl && (
+                  <figure>
+                    <img src={photoSession.openingPhotoUrl} alt="Ảnh quầy đầu ca đã upload" />
+                    <figcaption>Đầu ca</figcaption>
+                  </figure>
+                )}
+                {photoSession.closingPhotoUrl && (
+                  <figure>
+                    <img src={photoSession.closingPhotoUrl} alt="Ảnh quầy cuối ca đã upload" />
+                    <figcaption>Cuối ca</figcaption>
+                  </figure>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </section>
