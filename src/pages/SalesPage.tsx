@@ -664,16 +664,7 @@ function dedupeReceipts(receipts: SalesReceipt[]) {
 }
 
 function shortProductName(value: string) {
-  const displayName = value
-    .replace(/^Hạt dẻ\s*/i, '')
-    .replace(/^Hat de\s*/i, '')
-    .replace(/^Khoai lang mật\s*/i, 'Khoai ')
-    .replace(/^Khoai lang mat\s*/i, 'Khoai ')
-    .replace(/^Bánh hạt dẻ\s*/i, 'Bánh ')
-    .replace(/^Banh hat de\s*/i, 'Bánh ')
-    .trim()
-  if (!displayName) return displayName
-  return `${displayName[0].toLocaleUpperCase('vi')}${displayName.slice(1)}`
+  return value.trim()
 }
 
 function productFamily(value: string): Exclude<ProductFilter, 'all'> {
