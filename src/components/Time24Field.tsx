@@ -7,20 +7,24 @@ interface Time24FieldProps {
   onChange: (value: string) => void
   disabled?: boolean
   className?: string
+  allowEmpty?: boolean
+  required?: boolean
 }
 
 /** Bộ chọn 24h độc lập locale/thiết lập AM-PM của máy tính. */
-export function Time24Field({ label, value, onChange, disabled, className = '' }: Time24FieldProps) {
-  const [hour, minute] = splitTime(value)
+export function Time24Field({ label, value, onChange, disabled, className = '', allowEmpty = false, required = false }: Time24FieldProps) {
+  const [hour, minute] = value || !allowEmpty ? splitTime(value) : ['', '']
   return (
     <div className={`time-24-field ${className}`.trim()}>
       <div className="time-24-label"><span>{label}</span><small>24H · 00–23</small></div>
       <div className="time-24-controls">
-        <select aria-label={`${label} · giờ (24h)`} value={hour} disabled={disabled} onChange={(event) => onChange(`${event.target.value}:${minute}`)}>
+        <select aria-label={`${label} · giờ (24h)`} value={hour} disabled={disabled} required={required} onChange={(event) => onChange(event.target.value ? `${event.target.value}:${minute || '00'}` : '')}>
+          {allowEmpty && <option value="">Giờ</option>}
           {HOURS_24.map((item) => <option key={item} value={item}>{item}</option>)}
         </select>
         <b aria-hidden="true">:</b>
-        <select aria-label={`${label} · phút`} value={minute} disabled={disabled} onChange={(event) => onChange(`${hour}:${event.target.value}`)}>
+        <select aria-label={`${label} · phút`} value={minute} disabled={disabled || !hour} required={required} onChange={(event) => onChange(hour ? `${hour}:${event.target.value}` : '')}>
+          {allowEmpty && <option value="">Phút</option>}
           {MINUTES_60.map((item) => <option key={item} value={item}>{item}</option>)}
         </select>
       </div>

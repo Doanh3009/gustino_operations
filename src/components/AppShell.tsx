@@ -73,6 +73,7 @@ const ADMIN_NAV: NavItem[] = [
   { id: 'management', section: 'inventory', label: 'Kho hàng', icon: <IconBox />, canShow: () => true },
   { id: 'management', section: 'accounts', label: 'Nhân sự', icon: <IconUsers />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'management', section: 'attendance', label: 'Chấm công', icon: <IconClock />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'attendance', label: 'Lịch đăng ký ca', icon: <IconClock />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'management', section: 'commission', label: 'Thi đua nhân viên', icon: <IconChart />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'report-archive', label: 'Báo cáo', icon: <IconReport />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'control', label: 'Cài đặt', icon: <IconSettings />, canShow: (user) => canUseAdmin(user.role) },

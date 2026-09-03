@@ -55,6 +55,7 @@ import { emailToUsername, validateUsername } from '../lib/authIdentity'
 import { fetchSupplyRequests, formatSupplyRequestDelivery, type SupplyRequest, type SupplyRequestStatus } from '../lib/supplyRequests'
 import { fetchActiveUsers } from '../lib/activeUsers'
 import { AttendanceAdjustmentArchive } from '../components/AttendanceAdjustmentArchive'
+import { AttendancePage } from './AttendancePage'
 import { Pagination } from '../components/admin/Pagination'
 import { DateTime24Field } from '../components/Time24Field'
 import { fetchAttendanceAdjustments } from '../lib/attendanceAdjustments'
@@ -81,6 +82,7 @@ import type {
   StockMovement,
   WorkShift,
 } from '../types'
+import type { Page } from '../components/AppShell'
 
 export type AdminSection = 'overview' | 'attendance' | 'commission' | 'inventory' | 'requests' | 'accounts' | 'revenue'
 type EmployeeProfileRoute = 'overview' | 'attendance' | 'sales' | 'account'
@@ -366,7 +368,7 @@ function managementRealtimeTables(section: AdminSection, focused: boolean) {
   return bySection[section]
 }
 
-export function ManagementPage({ user, initialSection, focused = false }: { user: AppUser; initialSection?: AdminSection; focused?: boolean }) {
+export function ManagementPage({ user, initialSection, focused = false, onNavigate }: { user: AppUser; initialSection?: AdminSection; focused?: boolean; onNavigate?: (page: Page) => void }) {
   const lang = useLang()
   const text = lang === 'en' ? ADMIN_TEXT_EN : ADMIN_TEXT.vi
   // SUP MT xem đúng bộ dữ liệu của admin nhưng KHÔNG có nút ghi nào. Cờ này chỉ ẩn
@@ -494,6 +496,7 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
     reason: string
   } | null>(null)
   const [attendanceDeleteSaving, setAttendanceDeleteSaving] = useState(false)
+  const [showScheduleManagement, setShowScheduleManagement] = useState(false)
   const managementRefreshInFlightRef = useRef<Promise<void> | null>(null)
   const managementRefreshQueuedRef = useRef(false)
   const managementRefreshContextRef = useRef({ activeSection, focused, from, to, rankingMonthFrom, rankingMonthTo })
@@ -2479,17 +2482,22 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
                   <h2>Chấm công theo ngày, tháng</h2>
                   <p>File Excel xuất theo đúng bộ lọc chi nhánh và khoảng ngày đang chọn — muốn đủ mọi chi nhánh, chọn "Tất cả chi nhánh" trước khi xuất.</p>
                 </div>
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => void runExport(
-                    'attendance',
-                    attendanceRows.length ? '' : 'Chưa có dữ liệu chấm công trong bộ lọc hiện tại để xuất Excel.',
-                    exportAttendance,
-                    'Đã xuất Excel bảng chấm công.',
-                  )}
-                  disabled={exportBusy === 'attendance'}
-                >{exportBusy === 'attendance' ? 'Đang xuất…' : 'Xuất Excel'}</button>
+                <div className="section-title-actions">
+                  <button type="button" className="secondary-button" onClick={() => setShowScheduleManagement((value) => !value)}>
+                    {showScheduleManagement ? 'Đóng lịch đăng ký ca' : 'Xem và sửa lịch đăng ký ca'}
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void runExport(
+                      'attendance',
+                      attendanceRows.length ? '' : 'Chưa có dữ liệu chấm công trong bộ lọc hiện tại để xuất Excel.',
+                      exportAttendance,
+                      'Đã xuất Excel bảng chấm công.',
+                    )}
+                    disabled={exportBusy === 'attendance'}
+                  >{exportBusy === 'attendance' ? 'Đang xuất…' : 'Xuất Excel'}</button>
+                </div>
               </div>
               <div className="table-scroll">
                 <table className="data-table attendance-data-table">
@@ -2523,6 +2531,12 @@ export function ManagementPage({ user, initialSection, focused = false }: { user
               </div>
               {!attendanceRows.length && <p className="empty-copy">Không có dữ liệu chấm công trong khoảng đã chọn.</p>}
             </section>
+
+            {showScheduleManagement && (
+              <section className="admin-embedded-schedule">
+                <AttendancePage user={user} movements={[]} onNavigate={onNavigate || (() => undefined)} />
+              </section>
+            )}
 
             <section className="erp-workspace-panel attendance-error-section">
               <div className="section-title">

@@ -510,13 +510,13 @@ function App() {
         )}
         {page === 'orders' && <OrdersPage user={user} movements={movements} />}
         {page === 'attendance' && <AttendancePage user={user} movements={movements} onNavigate={navigate} />}
-        {page === 'management' && canOpenAdminConsole(user.role) && <ManagementPage user={user} initialSection={mgmtSection} />}
-        {page === 'manager-revenue' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="revenue" focused />}
-        {page === 'manager-business' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="commission" focused />}
-        {page === 'manager-inventory' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="inventory" focused />}
-        {page === 'manager-attendance' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="attendance" focused />}
-        {page === 'manager-requests' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="requests" focused />}
-        {page === 'admin-accounts' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="accounts" focused />}
+        {page === 'management' && canOpenAdminConsole(user.role) && <ManagementPage user={user} initialSection={mgmtSection} onNavigate={navigate} />}
+        {page === 'manager-revenue' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="revenue" focused onNavigate={navigate} />}
+        {page === 'manager-business' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="commission" focused onNavigate={navigate} />}
+        {page === 'manager-inventory' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="inventory" focused onNavigate={navigate} />}
+        {page === 'manager-attendance' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="attendance" focused onNavigate={navigate} />}
+        {page === 'manager-requests' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="requests" focused onNavigate={navigate} />}
+        {page === 'admin-accounts' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="accounts" focused onNavigate={navigate} />}
         {page === 'control' && canUseAdmin(user.role) && <ControlCenterPage user={user} />}
         {page === 'kitchen' && canUseKitchen(user.role) && <KitchenPage user={user} />}
             <RouteLoadSettled />

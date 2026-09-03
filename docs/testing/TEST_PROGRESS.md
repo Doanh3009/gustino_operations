@@ -1,5 +1,58 @@
 # Test Progress
 
+## 2026-08-27 — POS chuẩn hóa ký hiệu tiền Việt Nam
+
+- `formatMoney` đổi hậu tố từ `d` sang ` đ`, áp dụng đồng nhất cho giá menu, hóa đơn đang tạo, tổng cộng, lịch sử và bản in hóa đơn.
+- Chỉ thay đổi presentation; giá trị số, doanh thu, phép tính, dữ liệu và logic bán hàng không đổi. Verification Passed: mobile POS regression, TypeScript, diff check và production build 727 modules (`SalesPage-D2RLDOGk.js`, bundle guard `index-DbR1we8x.js` + `revenue-ZtgMwcPm.js`).
+
+## 2026-08-27 — POS viết hoa chữ cái đầu tên mặt hàng
+
+- `shortProductName` nay viết hoa ký tự đầu tiên theo locale `vi`, nên tên trong menu, hóa đơn đang tạo, nhãn thao tác và chi tiết hóa đơn cùng hiển thị nhất quán.
+- Chỉ thay đổi presentation; catalog, tìm kiếm, phân loại, sắp xếp, dữ liệu hóa đơn và logic bán hàng không đổi. Verification Passed: mobile POS regression, TypeScript, diff check và production build 727 modules (`SalesPage-DITwA_n-.js`, bundle guard `index-Dem2QX3M.js` + `revenue-D-8NMnA4.js`).
+
+## 2026-08-27 — MOD-06 bộ chọn filter ảnh chấm công
+
+- Nhân viên chọn được `Tự nhiên`, `Mịn da`, `Sáng`, `Ấm` hoặc `Tươi` cho cả check-in/check-out; mặc định `Mịn da`. Bộ chọn dùng nút lớn, tự xuống dòng trên điện thoại, chọn trước/sau khi chụp và preview đổi tức thì.
+- Có camera selfie live mặc định camera trước, hiển thị filter trực tiếp, đổi được trước/sau và chuyển camera; camera native vẫn hiện làm fallback khi HTTP/192.168 hoặc thiết bị không cấp quyền. Preset được truyền vào đúng bước tạo ảnh bằng chứng. `Mịn da` dùng lớp downscale `0.2` opacity `0.34`, không phụ thuộc canvas blur nên tương thích Safari/iPhone tốt hơn; các preset khác không đổi. `globalAlpha` và filter reset trước panel thời gian/địa chỉ/GPS. Không đổi GPS, timestamp, upload, record, outbox hoặc luồng nghiệp vụ.
+- Verification Passed after front-camera/Safari refinement: selectable photo-filter/order contract, front/native camera-location contract, idempotent write, TypeScript, diff check và production build 727 modules (`AttendancePage-DpHb_yf2.js`, CSS `index-NBTzGi1f.css`, bundle guard `index-mvhMW5P-.js` + `revenue-C__TVl8Q.js`). Outbox regression for the selectable-filter batch had already Passed and its path was not changed.
+
+## 2026-08-27 — Gỡ self-service cập nhật ảnh đại diện
+
+- Theo yêu cầu owner, đã gỡ mục `Cập nhật ảnh đại diện` khỏi menu tài khoản, khôi phục header desktop và menu mobile về hành vi trước đó.
+- Đã xóa helper xử lý ảnh, RPC migration `20260826_self_service_avatar.sql`, CSS và test riêng. Chức năng Admin cập nhật avatar nhân viên hiện có không bị thay đổi.
+- Verification Passed: không còn tham chiếu self-service avatar/RPC, critical-load visibility, TypeScript, diff check và production build 727 modules (`index-51oz6Wja.js`, CSS `index-BljT9b9r.css`, bundle guard green). Không có migration avatar nào được deploy.
+
+## 2026-08-26 — MOD-06 Ca đã hoàn tất hiển thị thời lượng thực làm
+
+- Dòng ca hoàn tất trên `AttendancePage` nay hiển thị `Đã làm X giờ Y phút` ngay sau check-in/check-out, tính từ đúng hai timestamp đang hiển thị bằng helper chung `formatWorkDurationBetween`.
+- Không đổi dữ liệu, cách đóng ca, công thức công/lương hoặc xử lý tăng ca; ca tăng ca cũng dùng cùng nhãn thời lượng rõ ràng, không lặp chữ.
+- Verification Passed: attendance duration/search, schedule-registration sync, late-checkout, TypeScript, diff check và build 727 modules (`AttendancePage-Ll2Nz0uG.js`, `PRODUCTION_SUPABASE_BUNDLE_OK`).
+
+## 2026-08-26 — MOD-06 Xem công: drill-down Đi trễ
+
+- Ô `Đi trễ` trên `MyTimesheetPage` nay là nút mở danh sách các lượt trễ trong tháng: ngày, giờ ca, giờ check-in và `lateMinutes`.
+- Business preservation: danh sách chỉ lọc từ chính `AttendanceDetailRow` đã dùng cho KPI (`attendanceRecordId && lateMinutes > 0`); không tính lại grace period, không ghi dữ liệu, không đổi API/schema/phân quyền.
+- Verification Passed: `test-my-timesheet-late-details`, daily-report employee attendance flow, schedule/attendance registration sync, TypeScript, diff check và production build 727 modules (`MyTimesheetPage-D6Zhaa_G.js`, CSS `index-BljT9b9r.css`, `PRODUCTION_SUPABASE_BUNDLE_OK`).
+
+## 2026-08-26 — MOD-09 POS mobile ba màn (BUG-137)
+
+- Owner cung cấp mockup ba điện thoại và xác nhận phần nằm ngoài ba giao diện chỉ là mô tả cách dùng/chi tiết nút. Scope triển khai chỉ gồm Trang bán hàng, Hóa đơn mới và Lịch sử hóa đơn ở ≤640px.
+- `SalesPage` có điều hướng mobile nội bộ, tìm kiếm/lọc sản phẩm hoạt động bằng dữ liệu thật, giỏ cố định thao tác một tay, bill editor với nút chạm lớn, tìm kiếm lịch sử và receipt bottom sheet. Theo refinement trực tiếp của owner, thẻ món không có hình, nút nhanh hay mô tả phụ: chỉ tên + giá; chạm thẻ gọi `addProductToCart(product.id, 1)`.
+- Verification Passed: mobile contract (có negative asserts hình/`+1/+2/+3`/“Bán không giới hạn”), cashier contract, critical-load visibility, stock/sync performance, TypeScript, diff check và final production build 727 modules (`SalesPage-D9gmPuu5.js`, CSS `index-myx9pIAJ.css`, bundle guard green). Core-business guard cũ đỏ bốn assertion Kho/Lương không liên quan và không được sửa để che baseline.
+- Browser skill được dùng theo yêu cầu responsive nhưng bootstrap bị môi trường chặn ở bước tạo kernel assets; không dùng browser backend khác. Signed-in 360/390px visual/click QA và deployment còn pending.
+- Follow-up tối ưu phone Passed: CSS specificity contract, menu điều hướng, mobile POS, cashier, critical-load visibility, TypeScript và build 727 modules (`SalesPage-BtXxWqiM.js`, CSS `index-8LsDzhsh.css`, `PRODUCTION_SUPABASE_BUNDLE_OK`). Browser bootstrap vẫn bị cùng lỗi môi trường nên chưa tuyên bố visual screenshot QA.
+- Bill-row compact follow-up Passed: số thứ tự không còn bị selector tổng tiền ghi đè, không có cột ảnh/khoảng trống giả, danh sách co theo số món. Mobile POS, cashier, TypeScript, diff check và build 727 modules Passed (`SalesPage-CcJOaZkh.js`, CSS `index-BIEAC-Dc.css`, bundle guard green).
+- Duplicate-summary cleanup Passed: contract xác nhận desktop topbar/summary bị ẩn bằng final scoped `!important` ở cả ba mobile view; POS/cashier/TypeScript/diff/build 727 modules green (`SalesPage-DE0KIe-U.js`, CSS `index-CD8OxaZw.css`, bundle guard green).
+- Menu-toggle regression Passed: contract yêu cầu chặn bubble trước khi gọi AppShell toggle, POS/cashier/TypeScript/diff/build 727 modules green (`SalesPage-Q4rJ3jb1.js`, CSS không đổi `index-CD8OxaZw.css`, bundle guard green).
+
+## 2026-08-25 — MOD-06 tách ca đăng ký khỏi giờ bổ sung công thực tế (BUG-136)
+
+- Reproduction từ source xác nhận một cặp `startTime/endTime` đang được dùng cho cả `shift_registrations` lẫn `attendance_records`, tạo đúng hiện tượng giờ ca trở thành giờ check-in/check-out.
+- UI đã thêm mục `Ca làm đã đăng ký`, tải theo đúng nhân viên/ngày, luôn có lựa chọn `Tự nhập ca bổ sung`, và tự chọn nhánh này khi danh sách trống. Nhánh tự nhập hiện cặp `Ca bắt đầu/Ca kết thúc`; cặp `Check-in thực tế/Check-out thực tế` vẫn riêng, bắt đầu rỗng và bắt buộc.
+- Client/RPC nhận cả ngữ cảnh nhân viên/ngày, registration tùy chọn, giờ ca tùy chọn và actual check-in/out. Ca có sẵn chỉ được đọc/khóa; đăng ký mới chỉ được tạo trong nhánh tự nhập. Các guard Admin, ca hợp lệ, bản ghi trùng, tối đa 18 giờ và giờ tương lai được giữ.
+- Verification Passed: `node scripts/test-attendance-supplement-registered-shift.mjs`, `node scripts/test-admin-attendance-24h-notes.mjs`, `npx.cmd tsc --noEmit`, và `npm.cmd run build` (727 modules; `PRODUCTION_SUPABASE_BUNDLE_OK`). Không deploy frontend hoặc ghi dữ liệu nghiệp vụ production.
+- Production schema checkpoint: lỗi “Chưa cập nhật chức năng bổ sung công trên Supabase” được xác nhận do production còn chữ ký RPC 6 tham số cũ. Áp dụng đúng một file migration bằng linked `db query` (không dùng `db push`); readback xác nhận chỉ còn chữ ký 9 tham số mới, Security Definer và quyền authenticated đúng, cả hai nhánh logic hiện diện. Không gọi RPC nghiệp vụ và không thay đổi row công/ca; không deploy frontend.
+
 ## 2026-08-03 — MOD-06 nút "Xóa dòng" cho đăng ký ca chưa chấm công (BUG-129)
 
 - Owner requested an in-place delete for `Vắng / Chưa có bản ghi` rows. Implemented against the pre-written red-first contract in `scripts/test-admin-attendance-delete.mjs`: new RPC `admin_delete_empty_shift_registration` (Admin-only + active, row lock, blocked when attendance exists because of the delete-cascade FK, audited with the full registration snapshot), client `deleteEmptyShiftRegistrationByAdmin`, and a kind-aware `Xóa dòng` confirm flow in AdminPage matched by `registrationId`.
@@ -586,3 +639,10 @@ MOD-06/MOD-08/MOD-10/MOD-13/MOD-17 are now the user-prioritized implementation/t
 | 2026-07-20 | MOD-14 fair comparison source re-audit | Re-audited current source rather than deriving rules from prior test notes. The new role, shift-count and weekday/weekend controls were present, but employee `shiftCount` counted all non-rejected registrations, including absences. Current management copy and `buildAttendanceReport` define worked shifts as shifts with attendance. Ranking now filters and displays actual checked-in records; registration work date remains authoritative for overnight shifts, targets/revenue use the same selected day type, and leader mode continues to count actual operating sessions. `COMPETITION_FAIRNESS_FILTERS_OK` includes runtime weekday/weekend, overnight and actual-hours assertions. KPI targets, rewards and ranking order are unchanged. |
 | 2026-07-20 | BUG-095 intermittent attendance recovery | New pre-fix regression failed four source-backed cases: LAN HTTP status was discarded before retry classification, LAN selfie upload had no bounded retry, LAN checkout had no final read-back after lost responses, and LAN reverse geocoding called two five-second providers sequentially behind a 6.5-second client timeout. Added status-preserving errors, bounded selfie retry, checkout read-back recovery, and concurrent first-concrete-address lookup. GPS accuracy, selfie, concrete-address, ownership, timestamps and idempotency rules are unchanged. |
 | 2026-07-20 | MOD-06/MOD-14 final verification | Eleven focused attendance/competition regressions Passed, including new isolated LAN API integration against a temporary store. App TypeScript and `npm.cmd run build` Passed with 709 modules and `PRODUCTION_SUPABASE_BUNDLE_OK (index-D12xayqv.js; revenue-D2wMVpo_.js)`. Browser discovery remained `[]`, so signed-in physical-phone GPS/camera and responsive visual verification remain pending. No deployment, production data write, migration, webhook or cron invocation occurred. |
+# 2026-08-25 — Production attendance Storage quota incident
+
+- Reproduced the login failure directly against production: Supabase Auth returns HTTP 402 `exceed_storage_size_quota`.
+- Discovered the isolated evidence bucket and references: `attendance-selfies`, `attendance_records.selfie_url`, and `attendance_records.check_out_selfie_url`.
+- Added a dry-run-first cleanup utility with UTC+7 month boundaries, orphan detection, non-target reference protection, chunked Storage removal, before/after byte counts, and exact protected-path verification.
+- `node scripts/test-attendance-storage-cleanup-safety.mjs` passed with `ATTENDANCE_STORAGE_CLEANUP_SAFETY_OK`; `node --check` and `git diff --check` also passed (line-ending warnings only).
+- Production cleanup is blocked before inventory because this machine has only the linked project ref, not a Supabase owner access token/service-role key; Browser discovery also reports unavailable. No production mutation occurred, and August attendance/photos remain untouched.

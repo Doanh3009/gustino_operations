@@ -2,6 +2,7 @@
 import {
   buildAttendanceReport,
   buildAttendanceDetailRows,
+  ATTENDANCE_PHOTO_FILTER_OPTIONS,
   checkIn,
   checkOut,
   createManualShiftRegistration,
@@ -10,7 +11,7 @@ import {
   canManageShiftSetup,
   DEFAULT_WORK_SHIFT_TEMPLATES,
   deleteSchedulePerson,
-  ensureDefaultWorkShifts,
+  ensureCurrentDefaultWorkShifts,
   archiveWorkShift,
   fetchAttendanceRecords,
   fetchEmployees,
@@ -26,6 +27,8 @@ import {
   setScheduleEntry,
   setScheduleRegistration,
   withAttendanceReadDeadline,
+  DEFAULT_ATTENDANCE_PHOTO_FILTER,
+  type AttendancePhotoFilterPreset,
 } from '../lib/attendance'
 import { useRef } from 'react'
 import { branchName as configuredBranchName, useConfiguredBranches } from '../lib/branches'
@@ -352,6 +355,120 @@ function attendanceTimestampMatches(left?: string, right?: string) {
   return Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime === rightTime
 }
 
+function AttendanceSelfieCamera({
+  filter,
+  onFilterChange,
+  onCapture,
+  onClose,
+}: {
+  filter: AttendancePhotoFilterPreset
+  onFilterChange: (filter: AttendancePhotoFilterPreset) => void
+  onCapture: (file: File) => void
+  onClose: () => void
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user')
+  const [cameraError, setCameraError] = useState('')
+  const [ready, setReady] = useState(false)
+  const selectedOption = ATTENDANCE_PHOTO_FILTER_OPTIONS.find((item) => item.id === filter)
+    || ATTENDANCE_PHOTO_FILTER_OPTIONS[0]
+
+  useEffect(() => {
+    let cancelled = false
+    setReady(false)
+    setCameraError('')
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    const openCamera = async () => {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error('Trình duyệt không cho mở camera trực tiếp. Hãy dùng nút Camera máy bên dưới.')
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: facingMode },
+          width: { ideal: 1280 },
+          height: { ideal: 960 },
+        },
+      })
+      if (cancelled) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
+      streamRef.current = stream
+      const video = videoRef.current
+      if (!video) return
+      video.srcObject = stream
+      await video.play()
+      setReady(true)
+    }
+    void openCamera().catch(() => {
+      if (!cancelled) setCameraError('Không mở được camera live. Nếu đang dùng link HTTP/192.168, hãy dùng Camera máy; filter vẫn được áp sau khi chụp.')
+    })
+    return () => {
+      cancelled = true
+      streamRef.current?.getTracks().forEach((track) => track.stop())
+      streamRef.current = null
+    }
+  }, [facingMode])
+
+  function captureFrame() {
+    const video = videoRef.current
+    if (!video || !video.videoWidth || !video.videoHeight) return
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const context = canvas.getContext('2d')
+    if (!context) return
+    // Lưu frame gốc; filter được áp đúng một lần trong stampAttendancePhoto.
+    context.drawImage(video, 0, 0, canvas.width, canvas.height)
+    canvas.toBlob((blob) => {
+      if (!blob) return
+      onCapture(new File([blob], `attendance-selfie-${Date.now()}.jpg`, { type: 'image/jpeg' }))
+      onClose()
+    }, 'image/jpeg', .92)
+  }
+
+  return (
+    <div className="attendance-camera-backdrop" role="dialog" aria-modal="true" aria-label="Camera selfie có filter">
+      <section className="attendance-camera-modal">
+        <header>
+          <div><strong>Camera selfie</strong><small>Hiệu ứng hiển thị trực tiếp trên ảnh xem trước</small></div>
+          <button type="button" onClick={onClose} aria-label="Đóng camera">×</button>
+        </header>
+        <div className="attendance-camera-stage">
+          <video
+            ref={videoRef}
+            autoPlay
+            muted
+            playsInline
+            style={{ filter: selectedOption.previewFilter }}
+          />
+          {!ready && !cameraError && <span>Đang mở camera…</span>}
+          {cameraError && <p>{cameraError}</p>}
+        </div>
+        <div className="attendance-camera-filter-strip" role="group" aria-label="Filter camera selfie">
+          {ATTENDANCE_PHOTO_FILTER_OPTIONS.map((option) => (
+            <button
+              type="button"
+              key={option.id}
+              className={filter === option.id ? 'active' : ''}
+              aria-pressed={filter === option.id}
+              onClick={() => onFilterChange(option.id)}
+            >{option.label}</button>
+          ))}
+        </div>
+        <footer>
+          <button type="button" className="camera-switch-button" disabled={Boolean(cameraError)} onClick={() => setFacingMode((current) => current === 'user' ? 'environment' : 'user')}>Đổi camera</button>
+          <button type="button" className="camera-capture-button" disabled={!ready} onClick={captureFrame} aria-label="Chụp ảnh">●</button>
+          <button type="button" className="camera-close-button" onClick={onClose}>Hủy</button>
+        </footer>
+      </section>
+    </div>
+  )
+}
+
 function SchedulePanel({
   user, registrations, records, loadFailed, movements, onChanged, onFeedback, onOpenRegistration, onNavigate,
 }: {
@@ -368,6 +485,8 @@ function SchedulePanel({
   const [selfies, setSelfies] = useState<Record<string, File | undefined>>({})
   const [selfieLocalPreviews, setSelfieLocalPreviews] = useState<Record<string, string>>({})
   const [selfiePreviews, setSelfiePreviews] = useState<Record<string, string>>({})
+  const [selfieFilters, setSelfieFilters] = useState<Record<string, AttendancePhotoFilterPreset>>({})
+  const [cameraRegistration, setCameraRegistration] = useState<ShiftRegistration | null>(null)
   const [optimisticRecords, setOptimisticRecords] = useState<Record<string, AttendanceRecord>>({})
   const [pendingCheckOut, setPendingCheckOut] = useState<{ registrationId: string; sequence: number } | null>(null)
   // Cảnh báo khi bấm check-in ca khác trong lúc còn một ca chưa check-out: đây là
@@ -505,7 +624,13 @@ function SchedulePanel({
     setBusyId(registration.id)
     setBusyPhase('locating')
     try {
-      const record = await checkIn(user, registration, selfie, setBusyPhase)
+      const record = await checkIn(
+        user,
+        registration,
+        selfie,
+        setBusyPhase,
+        selfieFilters[registration.id] || DEFAULT_ATTENDANCE_PHOTO_FILTER,
+      )
       if (record.selfiePreviewUrl) {
         setSelfiePreviews((current) => ({ ...current, [registration.id]: record.selfiePreviewUrl! }))
       }
@@ -560,7 +685,14 @@ function SchedulePanel({
     setBusyId(record.id)
     setBusyPhase('locating')
     try {
-      const saved = await checkOut(user, record, registration, selfie, setBusyPhase)
+      const saved = await checkOut(
+        user,
+        record,
+        registration,
+        selfie,
+        setBusyPhase,
+        selfieFilters[registration.id] || DEFAULT_ATTENDANCE_PHOTO_FILTER,
+      )
       setOptimisticRecords((current) => ({ ...current, [saved.id]: saved }))
       pickSelfie(registration, undefined)
       // Vượt chặn: ghi dấu lên chính phiên ca để quản lý thấy trong báo cáo rằng
@@ -636,6 +768,9 @@ function SchedulePanel({
     const { registration, record, checkInWindow, canCheckIn, canCheckOut, checkOutTooEarly } = d
     const isOvertime = isOvertimeRegistration(registration)
     const localPreview = selfieLocalPreviews[registration.id]
+    const selectedPhotoFilter = selfieFilters[registration.id] || DEFAULT_ATTENDANCE_PHOTO_FILTER
+    const selectedPhotoFilterOption = ATTENDANCE_PHOTO_FILTER_OPTIONS.find((item) => item.id === selectedPhotoFilter)
+      || ATTENDANCE_PHOTO_FILTER_OPTIONS[0]
     const pendingOp = d.pendingOp
     return (
       <article className={`shift-card ${registration.status}${d.isCheckedOut ? ' done' : ''}${isOvertime ? ' overtime' : ''}`} key={registration.id}>
@@ -675,23 +810,42 @@ function SchedulePanel({
             </figure>
           )}
           {localPreview && (
-            <figure className="attendance-selfie-preview">
-              <img src={localPreview} alt="Ảnh chuẩn bị chấm công" />
-              <figcaption>Ảnh sắp chấm - chụp lại nếu bị rung/mờ</figcaption>
+            <figure className="attendance-selfie-preview pending-enhancement">
+              <img src={localPreview} alt="Ảnh chuẩn bị chấm công" style={{ filter: selectedPhotoFilterOption.previewFilter }} />
+              <figcaption>Ảnh sắp chấm · filter {selectedPhotoFilterOption.label} · chụp lại nếu bị rung/mờ</figcaption>
             </figure>
           )}
         </div>
         {!readOnly && (
-            <div className="shift-actions">
-              {canCheckIn && <>
+          <div className="shift-actions">
+            {(canCheckIn || canCheckOut) && (
+              <div className="attendance-photo-filter-picker">
+                <span>Filter ảnh</span>
+                <div role="group" aria-label="Chọn filter ảnh chấm công">
+                  {ATTENDANCE_PHOTO_FILTER_OPTIONS.map((option) => (
+                    <button
+                      type="button"
+                      key={option.id}
+                      className={selectedPhotoFilter === option.id ? 'active' : ''}
+                      aria-pressed={selectedPhotoFilter === option.id}
+                      disabled={Boolean(busyId)}
+                      onClick={() => setSelfieFilters((current) => ({ ...current, [registration.id]: option.id }))}
+                    >{option.label}</button>
+                  ))}
+                </div>
+                <small>{selectedPhotoFilterOption.description} · chọn trước hoặc sau khi chụp</small>
+              </div>
+            )}
+            {canCheckIn && <>
+              <button type="button" className="selfie-live-camera-button" onClick={() => setCameraRegistration(registration)}>✨ Camera selfie có filter</button>
               <label className="selfie-button">
                 <input
                   type="file"
                   accept="image/*"
-                  capture="environment"
+                  capture="user"
                   onChange={(event) => pickSelfie(registration, event.target.files?.[0])}
                 />
-                {selfies[registration.id] ? '🔄 Chụp lại' : '📷 Chụp ảnh chấm công'}
+                {selfies[registration.id] ? '🔄 Chụp lại bằng camera máy' : '📷 Camera máy'}
               </label>
               <button className="primary-button" disabled={busyId === registration.id} onClick={() => handleCheckIn(registration)}>
                 {busyId === registration.id ? busyLabel(busyPhase) : 'Check-in'}
@@ -710,14 +864,15 @@ function SchedulePanel({
               {busyId === registration.id && <small className="attendance-busy-hint">Đang xử lý, vui lòng giữ máy vài giây…</small>}
             </>}
             {canCheckOut && <>
+              <button type="button" className="selfie-live-camera-button" onClick={() => setCameraRegistration(registration)}>✨ Camera selfie có filter</button>
               <label className="selfie-button checkout-selfie-button">
                 <input
                   type="file"
                   accept="image/*"
-                  capture="environment"
+                  capture="user"
                   onChange={(event) => pickSelfie(registration, event.target.files?.[0])}
                 />
-                {selfies[registration.id] ? 'Chụp lại ảnh check-out' : 'Chụp ảnh check-out'}
+                {selfies[registration.id] ? 'Chụp lại bằng camera máy' : 'Camera máy check-out'}
               </label>
               {/* KHÔNG tắt nút theo ảnh: nút tắt bấm vào không phản hồi gì, nhân viên
                   tưởng đã check-out xong rồi bỏ đi (BUG-114). Cứ cho bấm để
@@ -761,7 +916,11 @@ function SchedulePanel({
         <time>{formatDate(registration.workDate)}</time>
         <strong>{registration.startTime} - {registration.endTime}</strong>
         <span>{branchName(registration.branchId)}</span>
-        <span>{isOvertime ? 'Tăng ca · ' : ''}Vào <b>{record ? formatTime(record.checkInTime) : '-'}</b> · Ra <b>{record?.checkOutTime ? formatTime(record.checkOutTime) : '-'}</b>{isOvertime && record?.checkOutTime ? ` · ${formatWorkDurationBetween(record.checkInTime, record.checkOutTime)} tăng ca` : ''}</span>
+        <span>
+          {isOvertime ? 'Tăng ca · ' : ''}Vào <b>{record ? formatTime(record.checkInTime) : '-'}</b>
+          {' · '}Ra <b>{record?.checkOutTime ? formatTime(record.checkOutTime) : '-'}</b>
+          {record?.checkOutTime && <>{' · '}Đã làm <b>{formatWorkDurationBetween(record.checkInTime, record.checkOutTime)}</b></>}
+        </span>
       </article>
     )
   }
@@ -825,6 +984,14 @@ function SchedulePanel({
   // unique một-phiên-mở từ chối; client không cần màn hình khóa.
   return (
     <>
+      {cameraRegistration && (
+        <AttendanceSelfieCamera
+          filter={selfieFilters[cameraRegistration.id] || DEFAULT_ATTENDANCE_PHOTO_FILTER}
+          onFilterChange={(filter) => setSelfieFilters((current) => ({ ...current, [cameraRegistration.id]: filter }))}
+          onCapture={(file) => pickSelfie(cameraRegistration, file)}
+          onClose={() => setCameraRegistration(null)}
+        />
+      )}
       {outboxBanner}
       <section className="section-card attendance-schedule">
         <div className="section-title">
@@ -1165,15 +1332,15 @@ function SharedScheduleBoard({
   }, [from, isScheduleManager])
 
   useEffect(() => {
-    if (!canSetupShifts || branchShifts.length || bootstrappedBranches[branchId]) return
+    if (!canSetupShifts || bootstrappedBranches[branchId]) return
     const branch = branches.find((item) => item.id === branchId)
     if (!branch) return
     setBootstrappedBranches((items) => ({ ...items, [branchId]: true }))
-    void ensureDefaultWorkShifts(user, branch)
-      .then(async (created) => {
-        if (!created.length) return
+    void ensureCurrentDefaultWorkShifts(user, branch)
+      .then(async (nextShifts) => {
+        if (nextShifts.length) window.dispatchEvent(new CustomEvent('gustino-attendance-updated'))
         await onChanged()
-        onFeedback('Đã khởi tạo khung ca mặc định cho chi nhánh này.')
+        onFeedback('Đã cập nhật khung ca mới; lịch cũ vẫn giữ nguyên.')
       })
       .catch((error) => {
         onFeedback(error instanceof Error ? error.message : 'Không thể khởi tạo khung ca mặc định.')

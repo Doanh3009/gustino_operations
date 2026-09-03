@@ -1,5 +1,29 @@
 # Bug Tracker
 
+## 2026-08-26 — POS mobile chưa tách luồng thao tác theo ba màn hình
+
+### BUG-137 — Menu, giỏ hàng và lịch sử hóa đơn dồn trong một trang dài trên điện thoại
+
+- Severity: Medium. Status: **Đã sửa và kiểm chứng local; chưa deploy**.
+- Evidence: `SalesPage` trước fix render menu và aside hóa đơn/lịch sử nối tiếp nhau ở ≤640px; CSS chỉ đổi grid thành một cột. Nhân viên phải cuộn giữa menu, giỏ và lịch sử, không có thanh giỏ cố định, tìm món hay tìm hóa đơn.
+- Fix: thêm state ba màn `menu | bill | history` chỉ tác động cách hiển thị mobile; desktop vẫn giữ workspace hai cột. Trang bán hàng có tìm kiếm/lọc thật, menu hai cột và thanh giỏ cố định; mỗi thẻ chỉ còn tên + giá và mỗi lần chạm cộng đúng 1. Hóa đơn mới có khách lẻ, tăng/giảm/xóa món, tổng và nút xác nhận lớn; Lịch sử có tìm kiếm, nhóm ngày, xem/xóa theo quyền và receipt bottom sheet. Hình minh họa, cụm `+1/+2/+3`, dòng “Bán không giới hạn” và các chú thích ngoài ba điện thoại đều không render.
+- Business preservation: vẫn gọi nguyên `checkout`, `setLineQuantity`, `handleDeleteReceipt`, `saveSalesReceipt`; không thêm phương thức/ô thu tiền, không đổi giá, seller attribution, quyền xóa, API, schema hoặc dữ liệu.
+- Responsive follow-up 2026-08-26: phát hiện rule workspace cũ có specificity cao vẫn ép `.pos-product-grid` thành hai cột ở ≤640px và shell header có thể chồng POS header. Đã thêm phone-layout guard cuối stylesheet, ẩn riêng shell header trong POS, nối nút hamburger POS vào handler menu điều hướng sẵn có, khóa menu một cột, giới hạn mọi panel theo viewport và thêm compact breakpoint ≤380px. Không đổi handler giỏ/hóa đơn.
+- Bill-row follow-up 2026-08-26: selector tổng quát `.bill-lines article > span` ghi đè `grid-area` của badge số thứ tự, làm cột `index` bị bỏ trống và nội dung trông như đang chừa chỗ cho ảnh. Đã khóa badge về `index`, bỏ `min-height` danh sách, dùng lưới `index | info | qty | remove` không có cột ảnh; tổng tiền nằm dưới bộ số lượng. Handler không đổi.
+- Duplicate-summary follow-up 2026-08-26: global mobile reset đặt `.pos-topbar`/`.pos-summary-strip { display:grid !important }`, ghi đè rule ẩn của view mobile nên ngày/ca và bốn KPI xuất hiện hai lần. Final phone guard nay ẩn trực tiếp hai khối desktop bằng selector theo `mobile-pos-*` + `!important`; chỉ bộ mobile còn hiển thị.
+- Menu-toggle follow-up 2026-08-26: hamburger POS gọi toggle menu sẵn có nhưng click gốc tiếp tục bubble lên `AppShell`, kích hoạt handler đóng khi chạm ngoài ngay sau lúc mở. Đã thêm `event.stopPropagation()` tại nút POS trước khi gọi toggle; navigation/permission không đổi.
+- Verification: `SALES_MOBILE_THREE_VIEW_OK`, `CASHIER_POS_WORKSPACE_OK`, `CRITICAL_LOAD_FAILURE_VISIBILITY_OK`, `test-stock-and-sync-performance`, TypeScript, diff check và final production build 727 modules Passed; `PRODUCTION_SUPABASE_BUNDLE_OK (index-DwPqCKyr.js; revenue-BTFfGPE7.js)`. `test-core-business-button-guards` còn bốn failure baseline ở Kho/Lương, ngoài file/phạm vi sửa. Browser skill không khởi tạo được kernel assets nên chưa có signed-in screenshot/visual QA.
+
+## 2026-08-25 — Bổ sung công sao chép giờ ca thành giờ check-in/check-out
+
+### BUG-136 — Bổ sung công dùng chung một cặp giờ cho ca đăng ký và chấm công thực tế
+
+- Severity: High. Status: **Đã sửa local; RPC migration đã áp dụng và xác minh trên production 2026-08-25; không deploy frontend trong lượt migration**.
+- Evidence/root cause: `AttendanceAdjustmentArchive` chỉ có `supplementStart/supplementEnd`; `createAttendanceSupplement` gửi chúng thành `p_start_time/p_end_time`; RPC `admin_add_attendance_supplement` vừa tìm/tạo `shift_registrations` theo hai giờ đó, vừa chép chính hai giờ vào `attendance_records.check_in_time/check_out_time`. Do đó sau khi Admin xóa bản ghi công và bổ sung lại, giờ ca và giờ chấm công bắt buộc trùng nhau.
+- Fix: form tải ca đăng ký của đúng nhân viên + ngày và cho phép chọn ca có sẵn hoặc `Tự nhập ca bổ sung (chưa có đăng ký)`. Nhánh tự nhập có một cặp giờ ca riêng; cả hai nhánh đều bắt buộc nhập thêm check-in/check-out thực tế. RPC không sửa ca có sẵn và chỉ tạo một đăng ký approved khi Admin chủ động chọn tự nhập; không nhánh nào sao chép giờ ca sang giờ công. Giới hạn 18 giờ, check-out tương lai, nhân viên/chi nhánh và bản ghi trùng vẫn được chặn.
+- Verification: `ATTENDANCE_SUPPLEMENT_REGISTERED_SHIFT_OK`, `ADMIN_ATTENDANCE_24H_NOTES_OK`, `npx.cmd tsc --noEmit`, và production build 727 modules đều Passed; final bundle guard `PRODUCTION_SUPABASE_BUNDLE_OK (index-MzDDWSPE.js; revenue-DwSHGGED.js)` Passed. Lần build đầu bị sandbox chặn đọc `vite.config.ts`; cùng lệnh chạy ngoài sandbox đạt, nên đây không phải lỗi source.
+- Production RPC: chạy trực tiếp duy nhất `20260825_attendance_supplement_uses_registered_shift.sql` qua linked `db query` vì lịch sử local/remote lệch phiên bản nên tuyệt đối không dùng `db push`. Hậu kiểm trả đúng một chữ ký 9 tham số; `security_definer=true`, `authenticated_execute=true`, nhánh ca có sẵn/tự nhập và marker actual-time tách biệt đều `true`. Không có attendance/registration row nào được tạo, sửa hoặc xóa; PostgREST đã nhận `reload schema`. Frontend không được deploy trong lượt này.
+
 ## 2026-08-05 — "Dữ liệu kho không đồng bộ sau khi chỉnh sửa"
 
 ### BUG-134 — Bản vá BUG-133 chỉ nâng độ chính xác hiển thị ở màn Kho nên mỗi màn đọc ra một con số khác nhau
@@ -1065,3 +1089,11 @@ Check-in **không kiểm tra khoảng cách tới chi nhánh**, chỉ yêu cầu
 - Tất cả đóng theo diện **`[CHỐT HÀNH CHÍNH]`**: không ảnh, không GPS — không bịa bằng chứng có mặt. Trạng thái trước khi sửa lưu ở `public._attendance_closed_20260724` (đã bật RLS + revoke để không lộ qua API); đảo ngược bằng `update ... set check_out_time = null from _attendance_closed_20260724`.
 
 **Xác minh cuối:** ca vận hành treo = 0, ngày vận hành treo = 0, chấm công treo ngày cũ = 0.
+# 2026-08-25 — INC-ATTENDANCE-STORAGE-QUOTA
+
+- Severity: Critical. Status: **Blocked — Requires project-owner access**.
+- Production evidence: `POST /auth/v1/token` on Supabase project `smtaiourlpqwmiulxuri` returns HTTP 402 with `exceed_storage_size_quota`, matching the user's login screenshot. This is a Supabase project restriction, not a rejected username/password.
+- Requested data action: delete only objects in bucket `attendance-selfies` related to July 2026; retain every attendance row and every object referenced outside July, especially August 2026.
+- Safety implementation: `scripts/cleanup-attendance-selfies-month.mjs` defaults to dry-run; defines July by the UTC+7 interval `[2026-06-30T17:00:00Z, 2026-07-31T17:00:00Z)`, removes target paths from the candidate set if any non-July attendance row references them, and verifies after deletion that the complete pre-existing protected set is unchanged.
+- Blocker evidence: the linked repository contains the project ref but no Supabase access token/service-role credential; the in-app Browser is unavailable. Because Auth itself is restricted, an ordinary Admin session cannot be created to perform even the read-only inventory. No Storage object or attendance row has been deleted or modified.
+- Unblock condition: the owner logs in with `npx supabase login` on this machine (or connects an authenticated Supabase Dashboard tab in the in-app Browser). Then run dry-run, review counts/bytes, execute, and verify protected August paths plus Auth health.

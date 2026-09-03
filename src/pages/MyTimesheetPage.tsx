@@ -65,6 +65,11 @@ function formatClock(value?: string) {
   })
 }
 
+function formatWorkDate(value: string) {
+  const [year, month, day] = value.split('-')
+  return `${day}/${month}/${year}`
+}
+
 export function MyTimesheetPage({ user }: Props) {
   const todayKey = localDateKey()
   const [month, setMonth] = useState(() => todayKey.slice(0, 7))
@@ -72,6 +77,7 @@ export function MyTimesheetPage({ user }: Props) {
   const [error, setError] = useState('')
   const [rows, setRows] = useState<AttendanceDetailRow[]>([])
   const [selectedDate, setSelectedDate] = useState(todayKey)
+  const [showLateDetails, setShowLateDetails] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -141,6 +147,10 @@ export function MyTimesheetPage({ user }: Props) {
     }
   }, [rows, rowsByDate])
 
+  const lateRows = useMemo(() => rows
+    .filter((row) => Boolean(row.attendanceRecordId) && row.lateMinutes > 0)
+    .sort((a, b) => a.workDate.localeCompare(b.workDate) || a.scheduledStart.localeCompare(b.scheduledStart)), [rows])
+
   const { lastDay } = monthBounds(month)
   const [yearNumber, monthNumber] = month.split('-').map(Number)
   // Lịch bắt đầu Thứ Hai: getUTCDay() trả 0=CN nên dồn CN về cuối hàng.
@@ -188,8 +198,42 @@ export function MyTimesheetPage({ user }: Props) {
         <article><small>Ngày có làm</small><strong>{summary.daysWorked}</strong></article>
         <article><small>Ngày công</small><strong>{summary.workDays}</strong></article>
         <article><small>Số ca</small><strong>{summary.shifts}</strong></article>
-        <article className={summary.late ? 'warn' : ''}><small>Đi trễ</small><strong>{summary.late}</strong></article>
+        <button
+          type="button"
+          className={summary.late ? 'tsheet-summary-late warn' : 'tsheet-summary-late'}
+          disabled={!summary.late}
+          aria-expanded={showLateDetails}
+          aria-controls="tsheet-late-details"
+          onClick={() => setShowLateDetails((visible) => !visible)}
+        >
+          <small>Đi trễ</small>
+          <strong>{summary.late}</strong>
+          <span>{summary.late ? 'Bấm xem chi tiết' : 'Không có lượt trễ'}</span>
+        </button>
       </div>
+
+      {showLateDetails && summary.late > 0 && (
+        <section id="tsheet-late-details" className="tsheet-late-details" aria-label="Chi tiết các lượt đi trễ">
+          <header>
+            <div><strong>Chi tiết đi trễ</strong><small>{lateRows.length} lượt trong tháng {monthNumber}/{yearNumber}</small></div>
+            <button type="button" onClick={() => setShowLateDetails(false)} aria-label="Đóng chi tiết đi trễ">×</button>
+          </header>
+          <div className="tsheet-late-list">
+            {lateRows.map((row) => (
+              <article key={`late-${row.registrationId}-${row.attendanceRecordId}`}>
+                <div>
+                  <strong>{formatWorkDate(row.workDate)}</strong>
+                  <small>Ca {row.scheduledStart}–{row.scheduledEnd}</small>
+                </div>
+                <div>
+                  <span>Check-in <b>{formatClock(row.checkInTime)}</b></span>
+                  <strong>Trễ {row.lateMinutes} phút</strong>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       {loading ? (
         <p className="tsheet-loading">Đang tải công tháng {monthNumber}/{yearNumber}…</p>

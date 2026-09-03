@@ -32,6 +32,7 @@ assert.doesNotMatch(admin, /formatNumber\(row\.totalHours\)\} giờ/, 'Không đ
 // không nhân nhầm 8 giờ 25 phút thành 8,25 (tính năng lương trong app đã gỡ).
 assert.ok(admin.includes('(thập phân)'), 'Cột giờ trong Excel phải ghi rõ là giờ thập phân.')
 assert.ok(attendancePage.includes('formatWorkDurationBetween(record.checkInTime, record.checkOutTime)'), 'Màn chấm công nhân viên phải dùng cùng định dạng giờ–phút.')
+assert.match(attendancePage, /Đã làm <b>\{formatWorkDurationBetween\(record\.checkInTime, record\.checkOutTime\)\}<\/b>/, 'Danh sách ca đã hoàn tất phải hiện thời lượng thực làm từ giờ vào/ra.')
 assert.ok(attendanceLib.includes('formatWorkDurationBetween(record.checkInTime, checkOutTime)'), 'Ảnh check-out phải đóng dấu thời lượng giờ–phút rõ ràng.')
 
 assert.match(admin, /const \[attendanceEmployeeSearch, setAttendanceEmployeeSearch\]/)

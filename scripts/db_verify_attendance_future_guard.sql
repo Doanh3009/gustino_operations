@@ -27,7 +27,7 @@ select jsonb_build_object(
   ), '{}'::jsonb),
   'database_guard_installed', position(
     'if v_check_out > now()' in lower(pg_get_functiondef(
-      'public.admin_add_attendance_supplement(uuid,text,date,time without time zone,time without time zone,text)'::regprocedure
+      'public.admin_add_attendance_supplement(uuid,text,date,uuid,time without time zone,time without time zone,time without time zone,time without time zone,text)'::regprocedure
     ))
   ) > 0
 ) as verification;

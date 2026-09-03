@@ -23,11 +23,18 @@ interface SellerOption {
   employeeId?: string
 }
 
+type MobilePosView = 'menu' | 'bill' | 'history'
+type ProductFilter = 'all' | 'cake' | 'grilled' | 'roasted' | 'other'
+
 export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (page: Page) => void }) {
   const [registrations, setRegistrations] = useState<ShiftRegistration[]>([])
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([])
   const [branchStaff, setBranchStaff] = useState<EmployeeProfile[]>([])
   const [cart, setCart] = useState<Record<string, number>>({})
+  const [mobileView, setMobileView] = useState<MobilePosView>('menu')
+  const [productSearch, setProductSearch] = useState('')
+  const [productFilter, setProductFilter] = useState<ProductFilter>('all')
+  const [receiptSearch, setReceiptSearch] = useState('')
   const [selectedSellerKey, setSelectedSellerKey] = useState(user.id)
   const [productTick, setProductTick] = useState(0)
   const saleProducts = useMemo(() => getSaleProducts(), [productTick])
@@ -191,6 +198,14 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
     product,
     inCart: cart[product.id] || 0,
   })), [cart, saleProducts])
+  const filteredSellerMenuProducts = useMemo(() => {
+    const search = normalizeName(productSearch)
+    return sellerMenuProducts.filter(({ product }) => {
+      const matchesSearch = !search || normalizeName(`${product.name} ${product.sku}`).includes(search)
+      const family = productFamily(product.name)
+      return matchesSearch && (productFilter === 'all' || family === productFilter)
+    })
+  }, [productFilter, productSearch, sellerMenuProducts])
   const todayReceipts = receipts.filter((receipt) => receipt.branchId === user.branchId && receipt.businessDate === selectedDate)
   const sellerReceipts = todayReceipts.filter((receipt) =>
     (receipt.sellerId && receipt.sellerId === selectedSeller.employeeId)
@@ -209,8 +224,17 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
     amount: sum.amount + line.total,
   }), { quantity: 0, amount: 0 })
   const currentCartHasItems = cartLines.length > 0
+  const filteredVisibleReceipts = useMemo(() => {
+    const search = normalizeName(receiptSearch)
+    if (!search) return visibleReceipts
+    return visibleReceipts.filter((receipt) => normalizeName([
+      receipt.code,
+      receipt.sellerName,
+      ...receipt.lines.map((line) => line.productName),
+    ].join(' ')).includes(search))
+  }, [receiptSearch, visibleReceipts])
   const receiptsByDate = Array.from(
-    visibleReceipts.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).reduce((map, receipt) => {
+    filteredVisibleReceipts.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt)).reduce((map, receipt) => {
       const key = receipt.businessDate || receipt.createdAt.slice(0, 10)
       map.set(key, [...(map.get(key) || []), receipt])
       return map
@@ -298,6 +322,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
       setReceipts((items) => dedupeReceipts([savedReceipt, ...items]).slice(0, 200))
       setLastReceipt(savedReceipt)
       setCart({})
+      setMobileView('history')
       showFeedback(`Đã ghi nhận bán hàng ${savedReceipt.code} - ${formatMoney(savedReceipt.totalAmount)}.`, 'ok')
       await refresh()
     } catch (error) {
@@ -316,7 +341,32 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   }
 
   return (
-    <div className="page sales-page-v2 pos-page">
+    <div className={`page sales-page-v2 pos-page mobile-pos-${mobileView}`}>
+      <div className="pos-mobile-viewbar">
+        {mobileView === 'menu' ? (
+          <button
+            type="button"
+            className="pos-mobile-icon-button pos-mobile-menu-button"
+            aria-label="Mở menu điều hướng"
+            onClick={(event) => {
+              event.stopPropagation()
+              document.querySelector<HTMLButtonElement>('.pos-workspace .mh-menu-toggle')?.click()
+            }}
+          >☰</button>
+        ) : (
+          <button type="button" className="pos-mobile-icon-button" aria-label="Quay lại trang bán hàng" onClick={() => setMobileView('menu')}>‹</button>
+        )}
+        <div>
+          <strong>{mobileView === 'menu' ? 'MENU BÁN NHANH' : mobileView === 'bill' ? 'Hóa đơn mới' : 'Lịch sử hóa đơn'}</strong>
+          <small>{mobileView === 'menu' ? branchName(user.branchId) : mobileView === 'bill' ? selectedSeller.employeeName : `${filteredVisibleReceipts.length} hóa đơn`}</small>
+        </div>
+        {mobileView === 'menu' ? (
+          <button type="button" className="pos-mobile-icon-button" aria-label="Mở lịch sử hóa đơn" onClick={() => setMobileView('history')}>▤</button>
+        ) : mobileView === 'bill' ? (
+          <button type="button" className="pos-mobile-icon-button danger" aria-label="Xóa hóa đơn đang nhập" disabled={!cartLines.length || checkoutBusy} onClick={clearCart}>⌫</button>
+        ) : <span className="pos-mobile-viewbar-spacer" />}
+      </div>
+
       <div className="pos-topbar">
         <div>
           <span className="eyebrow dark">BÁN HÀNG</span>
@@ -352,6 +402,11 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
 
       <div className="pos-layout">
         <section className="pos-menu-panel">
+          <div className="pos-mobile-greeting">
+            <span>Xin chào,</span>
+            <strong>{user.name}</strong>
+            <b>{filteredSellerMenuProducts.length} món</b>
+          </div>
           {canManageSales && sellerOptions.length > 0 && (
             <div className="seller-tabs" aria-label="Chọn nhân viên bán">
               {sellerOptions.map((seller) => {
@@ -384,8 +439,36 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
             <span className="count-pill">{sellerMenuProducts.length} món</span>
           </div>
 
+          <div className="pos-product-tools">
+            <label className="pos-product-search">
+              <span aria-hidden="true">⌕</span>
+              <input value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="Tìm sản phẩm…" aria-label="Tìm sản phẩm" />
+            </label>
+            <select value={productFilter} onChange={(event) => setProductFilter(event.target.value as ProductFilter)} aria-label="Lọc nhóm sản phẩm">
+              <option value="all">Tất cả</option>
+              <option value="cake">Bánh</option>
+              <option value="grilled">Nướng</option>
+              <option value="roasted">Rang</option>
+              <option value="other">Khác</option>
+            </select>
+          </div>
+
+          <div className="pos-product-category-tabs" aria-label="Nhóm sản phẩm">
+            {([
+              ['all', '▦', 'Tất cả'],
+              ['cake', '♨', 'Bánh'],
+              ['grilled', '♨', 'Nướng'],
+              ['roasted', '◇', 'Rang'],
+              ['other', '•••', 'Khác'],
+            ] as Array<[ProductFilter, string, string]>).map(([value, icon, label]) => (
+              <button type="button" key={value} className={productFilter === value ? 'active' : ''} onClick={() => setProductFilter(value)}>
+                <span aria-hidden="true">{icon}</span>{label}
+              </button>
+            ))}
+          </div>
+
           <div className="pos-product-grid">
-            {sellerMenuProducts
+            {filteredSellerMenuProducts
               .slice()
               .sort((a, b) => a.product.name.localeCompare(b.product.name, 'vi'))
               .map(({ product, inCart }) => {
@@ -399,17 +482,17 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
                     >
                       <span>{shortProductName(product.name)}</span>
                       <strong>{formatMoney(values.price)}</strong>
-                      <small>Bán không giới hạn</small>
                       {inCart > 0 && <b>{inCart}</b>}
                     </button>
-                    <div className="pos-product-quick">
-                      {[1, 2, 3].map((qty) => (
-                        <button key={qty} disabled={checkoutBusy} onClick={() => addProductToCart(product.id, qty)}>+{qty}</button>
-                      ))}
+                    <div className="pos-product-card-stepper" aria-label={`Số lượng ${shortProductName(product.name)}`}>
+                      <button type="button" aria-label={`Giảm ${shortProductName(product.name)}`} disabled={checkoutBusy || inCart <= 0} onClick={() => setLineQuantity(product.id, inCart - 1)}>−</button>
+                      <strong>{inCart}</strong>
+                      <button type="button" aria-label={`Tăng ${shortProductName(product.name)}`} disabled={checkoutBusy} onClick={() => addProductToCart(product.id, 1)}>+</button>
                     </div>
                   </article>
                 )
               })}
+            {!filteredSellerMenuProducts.length && <p className="pos-product-empty">Không tìm thấy món phù hợp.</p>}
           </div>
         </section>
 
@@ -422,9 +505,30 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
             <button disabled={!cartLines.length || checkoutBusy} onClick={clearCart}>Xóa</button>
           </div>
 
+          <div className="pos-mobile-bill-context">
+            <div><span>NGÀY</span><strong>{formatDate(selectedDate)}</strong></div>
+            <span className={shiftPillOpen ? 'sales-shift-pill open' : 'sales-shift-pill no-shift'}><i />{shiftPillLabel}</span>
+          </div>
+
+          <div className="pos-mobile-bill-stats">
+            <article><span>Đã bán</span><strong>{stats.sold}</strong><small>{formatMoney(stats.revenue)}</small></article>
+            <article><span>Hóa đơn</span><strong>{stats.receipts}</strong><small>{formatDate(selectedDate)}</small></article>
+            <article><span>Menu</span><strong>{saleProducts.length}</strong><small>món</small></article>
+            <article><span>Check-in</span><strong>{activeAttendanceShift ? 'OK' : '-'}</strong><small>Ca hiện tại</small></article>
+          </div>
+
+          <div className="pos-customer-card">
+            <span>Khách hàng</span>
+            <strong>Khách lẻ</strong>
+            <b aria-hidden="true">›</b>
+          </div>
+
+          <div className="bill-mobile-list-head"><strong>SẢN PHẨM</strong><span>{bill.quantity} sản phẩm</span></div>
+
           <div className="bill-lines">
-            {cartLines.map((line) => (
+            {cartLines.map((line, index) => (
               <article key={line.productId}>
+                <span className="bill-line-index">{index + 1}</span>
                 <div>
                   <strong>{shortProductName(line.productName)}</strong>
                   <small>{formatMoney(line.unitPrice)} / sản phẩm</small>
@@ -435,6 +539,7 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
                   <button disabled={checkoutBusy} onClick={() => setLineQuantity(line.productId, line.quantity + 1)}>+</button>
                 </div>
                 <span>{formatMoney(line.total)}</span>
+                <button type="button" className="bill-line-remove" aria-label={`Xóa ${shortProductName(line.productName)}`} disabled={checkoutBusy} onClick={() => setLineQuantity(line.productId, 0)}>×</button>
               </article>
             ))}
             {!cartLines.length && (
@@ -460,6 +565,10 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
               <strong>{canManageSales ? 'Hóa đơn đã bán (cả chi nhánh)' : 'Hóa đơn của bạn'}</strong>
               <span>{visibleReceipts.length}</span>
             </div>
+            <label className="receipt-history-search">
+              <span aria-hidden="true">⌕</span>
+              <input value={receiptSearch} onChange={(event) => setReceiptSearch(event.target.value)} placeholder="Tìm mã HĐ, sản phẩm…" aria-label="Tìm hóa đơn" />
+            </label>
             {receiptsByDate.length ? receiptsByDate.map(([date, dayReceipts], index) => (
               <details className="receipt-history-day" key={date} open={index === 0}>
                 <summary>
@@ -478,10 +587,18 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
                   </div>
                 ))}
               </details>
-            )) : <small className="receipt-empty">Chưa có hóa đơn nào.</small>}
+            )) : <small className="receipt-empty">{receiptSearch ? 'Không tìm thấy hóa đơn phù hợp.' : 'Chưa có hóa đơn nào.'}</small>}
           </div>
         </aside>
       </div>
+
+      {mobileView === 'menu' && (
+        <div className="pos-mobile-cart-bar">
+          <span aria-hidden="true">🛒</span>
+          <div><strong>{bill.quantity} sản phẩm</strong><small>{formatMoney(bill.amount)}</small></div>
+          <button type="button" onClick={() => setMobileView('bill')}>Xem hóa đơn ({bill.quantity})</button>
+        </div>
+      )}
 
       {lastReceipt && (
         <div className="receipt-modal-backdrop" onClick={(event) => { if (event.currentTarget === event.target) setLastReceipt(null) }}>
@@ -547,7 +664,7 @@ function dedupeReceipts(receipts: SalesReceipt[]) {
 }
 
 function shortProductName(value: string) {
-  return value
+  const displayName = value
     .replace(/^Hạt dẻ\s*/i, '')
     .replace(/^Hat de\s*/i, '')
     .replace(/^Khoai lang mật\s*/i, 'Khoai ')
@@ -555,10 +672,20 @@ function shortProductName(value: string) {
     .replace(/^Bánh hạt dẻ\s*/i, 'Bánh ')
     .replace(/^Banh hat de\s*/i, 'Bánh ')
     .trim()
+  if (!displayName) return displayName
+  return `${displayName[0].toLocaleUpperCase('vi')}${displayName.slice(1)}`
+}
+
+function productFamily(value: string): Exclude<ProductFilter, 'all'> {
+  const normalized = normalizeName(value)
+  if (normalized.includes('banh')) return 'cake'
+  if (normalized.includes('nuong')) return 'grilled'
+  if (normalized.includes('rang')) return 'roasted'
+  return 'other'
 }
 
 function formatMoney(value: number) {
-  return `${Math.round(value).toLocaleString('vi-VN')}d`
+  return `${Math.round(value).toLocaleString('vi-VN')} đ`
 }
 
 function formatDate(value: string) {

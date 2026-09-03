@@ -45,10 +45,10 @@ interface AttendanceFilters {
 const ATTENDANCE_PAGE_SIZE = 500
 
 export const DEFAULT_WORK_SHIFT_TEMPLATES: Array<Pick<WorkShift, 'name' | 'startTime' | 'endTime' | 'employmentTypes'>> = [
-  { name: 'Ca 1', startTime: '07:15', endTime: '15:15', employmentTypes: ['leader', 'full_time'] },
-  { name: 'Ca 2', startTime: '14:15', endTime: '22:15', employmentTypes: ['leader', 'full_time'] },
+  { name: 'Ca 1', startTime: '07:00', endTime: '14:30', employmentTypes: ['leader', 'full_time'] },
+  { name: 'Ca 2', startTime: '14:30', endTime: '22:00', employmentTypes: ['leader', 'full_time'] },
   { name: 'Ca PT sáng', startTime: '09:00', endTime: '13:00', employmentTypes: ['part_time'] },
-  { name: 'Ca PT chiều', startTime: '16:00', endTime: '21:00', employmentTypes: ['part_time'] },
+  { name: 'Ca PT chiều', startTime: '16:00', endTime: '22:00', employmentTypes: ['part_time'] },
 ]
 
 export function canManageShiftSetup(user: AppUser) {
@@ -403,6 +403,33 @@ export async function ensureDefaultWorkShifts(user: AppUser, branch: Branch): Pr
   return (await fetchWorkShifts(user)).filter((shift) => shift.branchId === branch.id && shift.active !== false)
 }
 
+/**
+ * Chuyển bộ ca mặc định sang giờ mới mà không tái sử dụng shift ID cũ.
+ * Các đăng ký ca lịch sử vẫn giữ start/end time đã lưu trong registration.
+ */
+export async function ensureCurrentDefaultWorkShifts(user: AppUser, branch: Branch): Promise<WorkShift[]> {
+  if (!canManageShiftSetup(user)) throw new Error('Bạn không có quyền thiết lập khung ca.')
+  if (user.role === 'admin') await syncBranchToCloud(user, branch)
+
+  let current = (await fetchWorkShifts(user)).filter((shift) => shift.branchId === branch.id && shift.active !== false)
+  const desiredTimes = new Set(['07:00-14:30', '14:30-22:00', '09:00-13:00', '16:00-21:00'])
+  const obsoleteShifts = current.filter((shift) => !desiredTimes.has(`${shift.startTime}-${shift.endTime}`))
+  for (const shift of obsoleteShifts) await archiveWorkShift(user, shift.id)
+
+  current = (await fetchWorkShifts(user)).filter((shift) => shift.branchId === branch.id && shift.active !== false)
+  const desired = [
+    { name: 'Ca 1 mới', startTime: '07:00', endTime: '14:30', employmentTypes: ['leader', 'full_time'] as EmploymentType[] },
+    { name: 'Ca 2 mới', startTime: '14:30', endTime: '22:00', employmentTypes: ['leader', 'full_time'] as EmploymentType[] },
+    { name: 'Ca PT sáng', startTime: '09:00', endTime: '13:00', employmentTypes: ['part_time'] as EmploymentType[] },
+    { name: 'Ca PT chiều', startTime: '16:00', endTime: '21:00', employmentTypes: ['part_time'] as EmploymentType[] },
+  ]
+  for (const template of desired) {
+    if (current.some((shift) => shift.startTime === template.startTime && shift.endTime === template.endTime)) continue
+    await createWorkShift(user, { branchId: branch.id, ...template })
+  }
+  return (await fetchWorkShifts(user)).filter((shift) => shift.branchId === branch.id && shift.active !== false)
+}
+
 export async function archiveWorkShift(user: AppUser, shiftId: string) {
   if (!canManageShiftSetup(user)) throw new Error('Bạn không có quyền xóa khung ca.')
   if (shiftId.startsWith('fallback-shift:')) {
@@ -747,26 +774,37 @@ export async function createAttendanceSupplement(
   input: {
     userId: string
     branchId: string
+    shiftRegistrationId?: string
     workDate: string
-    startTime: string
-    endTime: string
+    scheduledStartTime?: string
+    scheduledEndTime?: string
+    checkInTime: string
+    checkOutTime: string
     reason: string
   },
 ) {
   if (actor.role !== 'admin') throw new Error('Chỉ Admin hệ thống được bổ sung công cho nhân viên.')
   validateRegistration({
-    branchId: input.branchId,
+    branchId: 'selected-registration',
     workDate: input.workDate,
-    startTime: input.startTime,
-    endTime: input.endTime,
+    startTime: input.checkInTime,
+    endTime: input.checkOutTime,
   })
   const supplementalCheckOut = localDateTime(
     input.workDate,
-    input.endTime,
-    input.endTime <= input.startTime,
+    input.checkOutTime,
+    input.checkOutTime <= input.checkInTime,
   )
   if (supplementalCheckOut.getTime() > Date.now()) {
     throw new Error('Chỉ được bổ sung công sau khi ca đã kết thúc. Ca đang hoặc chưa diễn ra phải chấm công bình thường.')
+  }
+  if (!input.shiftRegistrationId) {
+    validateRegistration({
+      branchId: input.branchId,
+      workDate: input.workDate,
+      startTime: input.scheduledStartTime || '',
+      endTime: input.scheduledEndTime || '',
+    })
   }
   if (shouldUseAttendanceApi(actor)) {
     throw new Error('Bổ sung công chỉ thực hiện trên hệ thống online để đảm bảo đồng bộ dữ liệu.')
@@ -775,8 +813,11 @@ export async function createAttendanceSupplement(
     p_user_id: input.userId,
     p_branch_id: input.branchId,
     p_work_date: input.workDate,
-    p_start_time: input.startTime,
-    p_end_time: input.endTime,
+    p_shift_registration_id: input.shiftRegistrationId || null,
+    p_scheduled_start_time: input.scheduledStartTime || null,
+    p_scheduled_end_time: input.scheduledEndTime || null,
+    p_check_in_time: input.checkInTime,
+    p_check_out_time: input.checkOutTime,
     p_reason: input.reason.trim(),
   })
   if (error) {
@@ -1065,6 +1106,20 @@ const ATTENDANCE_LOCATION_DEADLINE_MS = 25000
 /** Cạnh dài tối đa khi giải mã ảnh chấm công (ảnh đóng dấu vẫn xuất ở 1280px chiều ngang). */
 const ATTENDANCE_PHOTO_DECODE_MAX_EDGE = 2560
 const ATTENDANCE_PHOTO_DEADLINE_MS = 20000
+// Filter nhẹ, cố định cho ảnh chấm công: cân sáng/màu rồi phủ lớp làm mịn mờ
+// rất thấp; không thay đổi hình học khuôn mặt. Reset trước khi đóng dấu để chữ/GPS luôn sắc nét.
+const ATTENDANCE_PHOTO_ENHANCEMENT_FILTER = 'brightness(1.07) contrast(1.03) saturate(1.08)'
+const ATTENDANCE_PHOTO_SMOOTHING_SCALE = 0.2
+const ATTENDANCE_PHOTO_SMOOTHING_OPACITY = 0.34
+export const ATTENDANCE_PHOTO_FILTER_OPTIONS = [
+  { id: 'natural', label: 'Tự nhiên', description: 'Giữ màu ảnh gốc', canvasFilter: 'none', previewFilter: 'none', smoothingOpacity: 0 },
+  { id: 'smooth', label: 'Mịn da', description: 'Da baby, sáng và mịn rõ hơn', canvasFilter: ATTENDANCE_PHOTO_ENHANCEMENT_FILTER, previewFilter: 'brightness(1.09) contrast(1.02) saturate(1.08) blur(.7px)', smoothingOpacity: ATTENDANCE_PHOTO_SMOOTHING_OPACITY },
+  { id: 'bright', label: 'Sáng', description: 'Tăng sáng, giữ màu tự nhiên', canvasFilter: 'brightness(1.15) contrast(1.03) saturate(1.05)', previewFilter: 'brightness(1.15) contrast(1.03) saturate(1.05)', smoothingOpacity: 0 },
+  { id: 'warm', label: 'Ấm', description: 'Tông màu ấm nhẹ', canvasFilter: 'brightness(1.08) contrast(1.03) saturate(1.08) sepia(0.14)', previewFilter: 'brightness(1.08) contrast(1.03) saturate(1.08) sepia(.14)', smoothingOpacity: 0 },
+  { id: 'fresh', label: 'Tươi', description: 'Màu sắc tươi hơn', canvasFilter: 'brightness(1.08) contrast(1.04) saturate(1.18)', previewFilter: 'brightness(1.08) contrast(1.04) saturate(1.18)', smoothingOpacity: 0 },
+] as const
+export type AttendancePhotoFilterPreset = typeof ATTENDANCE_PHOTO_FILTER_OPTIONS[number]['id']
+export const DEFAULT_ATTENDANCE_PHOTO_FILTER: AttendancePhotoFilterPreset = 'smooth'
 const ATTENDANCE_UPLOAD_DEADLINE_MS = 25000
 const ATTENDANCE_DB_DEADLINE_MS = 20000
 
@@ -1175,7 +1230,13 @@ class AttendanceReplayNeedsReviewError extends Error {
   }
 }
 
-export async function checkIn(user: AppUser, registration: ShiftRegistration, selfie: Blob, onPhase?: (phase: AttendancePhase) => void) {
+export async function checkIn(
+  user: AppUser,
+  registration: ShiftRegistration,
+  selfie: Blob,
+  onPhase?: (phase: AttendancePhase) => void,
+  photoFilter: AttendancePhotoFilterPreset = DEFAULT_ATTENDANCE_PHOTO_FILTER,
+) {
   if (registration.userId !== user.id || registration.status === 'rejected') {
     throw new Error('Ca làm không hợp lệ hoặc không thuộc tài khoản này.')
   }
@@ -1196,6 +1257,7 @@ export async function checkIn(user: AppUser, registration: ShiftRegistration, se
     latitude: location.latitude,
     longitude: location.longitude,
     accuracy: location.accuracy,
+    photoFilter,
   }).catch(() => selfie)
   // Ảnh xem trước chỉ để hiển thị, KHÔNG phải bằng chứng chấm công: nếu máy đọc
   // chậm/thiếu bộ nhớ thì bỏ qua preview chứ không được treo cả lượt check-in.
@@ -1306,7 +1368,14 @@ async function quarantineAttendanceOutboxOp(op: AttendanceOutboxOp, deliveryNote
   throw new AttendanceReplayNeedsReviewError(deliveryNote)
 }
 
-export async function checkOut(user: AppUser, record: AttendanceRecord, registration: ShiftRegistration, selfie: Blob, onPhase?: (phase: AttendancePhase) => void) {
+export async function checkOut(
+  user: AppUser,
+  record: AttendanceRecord,
+  registration: ShiftRegistration,
+  selfie: Blob,
+  onPhase?: (phase: AttendancePhase) => void,
+  photoFilter: AttendancePhotoFilterPreset = DEFAULT_ATTENDANCE_PHOTO_FILTER,
+) {
   if (record.userId !== user.id || record.checkOutTime) throw new Error('Bản ghi này không thể check-out.')
   onPhase?.('locating')
   const location = await getAttendanceLocation()
@@ -1324,6 +1393,7 @@ export async function checkOut(user: AppUser, record: AttendanceRecord, registra
     longitude: location.longitude,
     accuracy: location.accuracy,
     totalHoursLabel: record.checkInTime ? `Tổng giờ làm: ${formatWorkDurationBetween(record.checkInTime, checkOutTime)}` : undefined,
+    photoFilter,
   }).catch(() => selfie)
   const checkOutSelfieUrl = await uploadSelfie(
     user,
@@ -2529,6 +2599,7 @@ async function stampAttendancePhoto(
     longitude: number | null
     accuracy: number | null
     totalHoursLabel?: string
+    photoFilter?: AttendancePhotoFilterPreset
   },
 ) {
   // createImageBitmap()/image.decode() không có timeout và có thể treo vô hạn
@@ -2549,7 +2620,30 @@ async function stampAttendancePhoto(
   canvas.height = height
   const context = canvas.getContext('2d')
   if (!context) throw new Error('Không thể xử lý ảnh selfie.')
+  const photoFilter = ATTENDANCE_PHOTO_FILTER_OPTIONS.find((item) => item.id === details.photoFilter)
+    || ATTENDANCE_PHOTO_FILTER_OPTIONS.find((item) => item.id === DEFAULT_ATTENDANCE_PHOTO_FILTER)!
+  context.filter = photoFilter.canvasFilter
   context.drawImage(decoded.source, 0, 0, width, height)
+  if (photoFilter.smoothingOpacity > 0) {
+    // Làm mịn bằng lớp ảnh thu nhỏ rồi phóng lại để Safari/iPhone cũ vẫn xử lý
+    // được ngay cả khi CanvasRenderingContext2D.filter không hỗ trợ blur.
+    const smoothingCanvas = document.createElement('canvas')
+    smoothingCanvas.width = Math.max(1, Math.round(width * ATTENDANCE_PHOTO_SMOOTHING_SCALE))
+    smoothingCanvas.height = Math.max(1, Math.round(height * ATTENDANCE_PHOTO_SMOOTHING_SCALE))
+    const smoothingContext = smoothingCanvas.getContext('2d')
+    if (smoothingContext) {
+      smoothingContext.imageSmoothingEnabled = true
+      smoothingContext.imageSmoothingQuality = 'high'
+      smoothingContext.drawImage(decoded.source, 0, 0, smoothingCanvas.width, smoothingCanvas.height)
+      context.filter = 'brightness(1.05)'
+      context.imageSmoothingEnabled = true
+      context.imageSmoothingQuality = 'high'
+      context.globalAlpha = photoFilter.smoothingOpacity
+      context.drawImage(smoothingCanvas, 0, 0, width, height)
+    }
+  }
+  context.globalAlpha = 1
+  context.filter = 'none'
   decoded.close()
   const panelHeight = Math.max(190, Math.round(height * .3))
   const gradient = context.createLinearGradient(0, height - panelHeight, 0, height)

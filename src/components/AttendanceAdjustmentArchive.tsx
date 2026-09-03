@@ -5,6 +5,7 @@ import {
   createAttendanceSupplement,
   fetchAttendanceRecords,
   fetchEmployees,
+  fetchShiftRegistrations,
   permittedBranchIds,
   updateAttendanceRecordByAdmin,
 } from '../lib/attendance'
@@ -12,7 +13,7 @@ import { branchName, useConfiguredBranches } from '../lib/branches'
 import { downloadBlob } from '../lib/browser'
 import { localDateKey } from '../lib/dates'
 import { Time24Field } from './Time24Field'
-import type { AppUser, AttendanceAdjustmentRequest, AttendanceRecord, EmployeeProfile } from '../types'
+import type { AppUser, AttendanceAdjustmentRequest, AttendanceRecord, EmployeeProfile, ShiftRegistration } from '../types'
 
 export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
   const today = new Date()
@@ -29,8 +30,13 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
   const [supplementEmployeeId, setSupplementEmployeeId] = useState('')
   const [supplementEmployeeSearch, setSupplementEmployeeSearch] = useState('')
   const [supplementDate, setSupplementDate] = useState(localDateKey())
-  const [supplementStart, setSupplementStart] = useState('08:00')
-  const [supplementEnd, setSupplementEnd] = useState('16:00')
+  const [supplementRegistrationId, setSupplementRegistrationId] = useState('')
+  const [supplementRegistrations, setSupplementRegistrations] = useState<ShiftRegistration[]>([])
+  const [supplementRegistrationsLoading, setSupplementRegistrationsLoading] = useState(false)
+  const [supplementScheduledStart, setSupplementScheduledStart] = useState('')
+  const [supplementScheduledEnd, setSupplementScheduledEnd] = useState('')
+  const [supplementStart, setSupplementStart] = useState('')
+  const [supplementEnd, setSupplementEnd] = useState('')
   const [supplementReason, setSupplementReason] = useState('Hệ thống chấm công gặp lỗi')
   const [supplementBusy, setSupplementBusy] = useState(false)
   const [supplementFeedback, setSupplementFeedback] = useState('')
@@ -59,6 +65,35 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
   }
 
   useEffect(() => { void refresh() }, [user.id, branchId, employeeId, from, to])
+
+  useEffect(() => {
+    let cancelled = false
+    setSupplementRegistrationId('')
+    setSupplementRegistrations([])
+    setSupplementRegistrationsLoading(false)
+    setSupplementScheduledStart('')
+    setSupplementScheduledEnd('')
+    setSupplementStart('')
+    setSupplementEnd('')
+    if (!supplementEmployeeId || !supplementDate) return () => { cancelled = true }
+    setSupplementRegistrationsLoading(true)
+    void fetchShiftRegistrations(user, {
+      userId: supplementEmployeeId,
+      from: supplementDate,
+      to: supplementDate,
+    }).then((items) => {
+      if (!cancelled) {
+        const available = items.filter((item) => item.status !== 'rejected')
+        setSupplementRegistrations(available)
+        if (!available.length) setSupplementRegistrationId('manual')
+      }
+    }).catch((reason) => {
+      if (!cancelled) setSupplementFeedback(reason instanceof Error ? reason.message : 'Không thể tải ca đã đăng ký của nhân viên.')
+    }).finally(() => {
+      if (!cancelled) setSupplementRegistrationsLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [user.id, supplementEmployeeId, supplementDate])
 
   const filteredEmployees = useMemo(
     () => employees.filter((employee) => !branchId || employee.branchId === branchId),
@@ -149,8 +184,22 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
   async function addAttendanceSupplement(event: FormEvent) {
     event.preventDefault()
     const employee = employees.find((item) => item.id === supplementEmployeeId)
+    const registration = supplementRegistrations.find((item) => item.id === supplementRegistrationId)
+    const usesManualRegistration = supplementRegistrationId === 'manual'
     if (!employee?.branchId) {
       setSupplementFeedback('Hãy chọn nhân viên có chi nhánh làm việc.')
+      return
+    }
+    if (!registration && !usesManualRegistration) {
+      setSupplementFeedback('Hãy chọn ca đã đăng ký hoặc chọn tự nhập ca bổ sung.')
+      return
+    }
+    if (usesManualRegistration && (!supplementScheduledStart || !supplementScheduledEnd)) {
+      setSupplementFeedback('Hãy nhập đủ giờ bắt đầu và kết thúc của ca bổ sung.')
+      return
+    }
+    if (!supplementStart || !supplementEnd) {
+      setSupplementFeedback('Hãy nhập riêng giờ check-in và check-out thực tế.')
       return
     }
     setSupplementBusy(true)
@@ -159,13 +208,19 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
       await createAttendanceSupplement(user, {
         userId: employee.id,
         branchId: employee.branchId,
-        workDate: supplementDate,
-        startTime: supplementStart,
-        endTime: supplementEnd,
+        shiftRegistrationId: registration?.id,
+        workDate: registration?.workDate || supplementDate,
+        scheduledStartTime: usesManualRegistration ? supplementScheduledStart : undefined,
+        scheduledEndTime: usesManualRegistration ? supplementScheduledEnd : undefined,
+        checkInTime: supplementStart,
+        checkOutTime: supplementEnd,
         reason: supplementReason,
       })
       await refresh()
-      setSupplementFeedback(`Đã bổ sung công ${supplementStart}-${supplementEnd} ngày ${supplementDate} cho ${employee.name}. Dữ liệu đang đồng bộ realtime.`)
+      const scheduledTime = registration
+        ? `${registration.startTime}-${registration.endTime}`
+        : `${supplementScheduledStart}-${supplementScheduledEnd}`
+      setSupplementFeedback(`Đã bổ sung giờ thực tế ${supplementStart}-${supplementEnd} cho ca ${scheduledTime} ngày ${supplementDate} của ${employee.name}.`)
     } catch (reason) {
       setSupplementFeedback(reason instanceof Error ? reason.message : 'Không thể bổ sung công cho nhân viên.')
     } finally {
@@ -181,7 +236,7 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
             <div>
               <span className="eyebrow dark">BỔ SUNG CÔNG</span>
               <h2>Khôi phục công khi hệ thống gặp lỗi</h2>
-              <p>Admin nhập đúng ca đã làm. Hệ thống tạo đăng ký ca và bản ghi vào/ra riêng, sau đó đồng bộ realtime vào bảng công và báo cáo.</p>
+              <p>Admin chọn ca nhân viên đã đăng ký hoặc tự nhập ca nếu chưa có, rồi nhập riêng giờ check-in/check-out thực tế.</p>
             </div>
           </div>
           <form className="attendance-adjustment-form attendance-supplement-form" onSubmit={addAttendanceSupplement}>
@@ -204,15 +259,32 @@ export function AttendanceAdjustmentArchive({ user }: { user: AppUser }) {
             <label>Ngày làm
               <input type="date" max={localDateKey()} value={supplementDate} onChange={(event) => setSupplementDate(event.target.value)} required />
             </label>
-            <div className="attendance-supplement-time-pair" aria-label="Giờ vào và giờ ra">
-              <Time24Field label="Giờ vào" value={supplementStart} onChange={setSupplementStart} />
-              <Time24Field label="Giờ ra" value={supplementEnd} onChange={setSupplementEnd} />
+            <label className="span-2">Ca làm đã đăng ký
+              <select value={supplementRegistrationId} onChange={(event) => setSupplementRegistrationId(event.target.value)} required disabled={!supplementEmployeeId || supplementRegistrationsLoading}>
+                <option value="">{supplementRegistrationsLoading ? 'Đang tải ca…' : 'Chọn ca làm'}</option>
+                {supplementRegistrations.map((registration) => (
+                  <option key={registration.id} value={registration.id}>
+                    {registration.startTime}–{registration.endTime}{registration.note ? ` · ${registration.note}` : ''}
+                  </option>
+                ))}
+                <option value="manual">Tự nhập ca bổ sung (chưa có đăng ký)</option>
+              </select>
+            </label>
+            {supplementRegistrationId === 'manual' && (
+              <div className="attendance-supplement-time-pair span-2" aria-label="Giờ của ca bổ sung">
+                <Time24Field label="Ca bắt đầu" value={supplementScheduledStart} onChange={setSupplementScheduledStart} allowEmpty required />
+                <Time24Field label="Ca kết thúc" value={supplementScheduledEnd} onChange={setSupplementScheduledEnd} allowEmpty required />
+              </div>
+            )}
+            <div className="attendance-supplement-time-pair" aria-label="Giờ check-in và check-out thực tế">
+              <Time24Field label="Check-in thực tế" value={supplementStart} onChange={setSupplementStart} allowEmpty required />
+              <Time24Field label="Check-out thực tế" value={supplementEnd} onChange={setSupplementEnd} allowEmpty required />
             </div>
             <label className="span-2">Lý do bổ sung
               <input value={supplementReason} onChange={(event) => setSupplementReason(event.target.value)} required placeholder="Ví dụ: máy chấm công không hiển thị nút check-in" />
             </label>
-            <small className="attendance-supplement-help">Chỉ bổ sung sau khi ca đã kết thúc. Ca đang hoặc chưa diễn ra vẫn phải check-in/check-out bình thường.</small>
-            <button className="primary-button" disabled={supplementBusy || !supplementEmployeeId}>{supplementBusy ? 'Đang bổ sung…' : 'Bổ sung công'}</button>
+            <small className="attendance-supplement-help">Giờ ca và giờ chấm công thực tế là hai dữ liệu riêng. Chọn “Tự nhập ca bổ sung” chỉ khi nhân viên chưa đăng ký ca ngày đó.</small>
+            <button className="primary-button" disabled={supplementBusy || !supplementEmployeeId || !supplementRegistrationId || !supplementStart || !supplementEnd || (supplementRegistrationId === 'manual' && (!supplementScheduledStart || !supplementScheduledEnd))}>{supplementBusy ? 'Đang bổ sung…' : 'Bổ sung công'}</button>
           </form>
           {supplementFeedback && <div className="feedback-bar">{supplementFeedback}<button type="button" onClick={() => setSupplementFeedback('')}>×</button></div>}
         </section>

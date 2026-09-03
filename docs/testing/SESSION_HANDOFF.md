@@ -1,5 +1,55 @@
 # Session Handoff
 
+## 2026-08-27 — POS currency label normalized locally
+
+- All `formatMoney` output now uses `33.000 đ` rather than `33.000d`, across menu, cart, totals, history, messages and printable receipt. Numeric values and sales logic are unchanged. Mobile POS regression/TypeScript/diff/build Passed; asset `SalesPage-D2RLDOGk.js`, bundle guard green. Not deployed.
+
+## 2026-08-27 — POS product display names capitalized locally
+
+- `shortProductName` capitalizes the first displayed character with Vietnamese locale across menu, current bill, action labels and receipt details. Stored catalog/receipt names, search, grouping, sorting and checkout logic are unchanged. Mobile POS regression/TypeScript/diff/build Passed; asset `SalesPage-DITwA_n-.js`, bundle guard green. Not deployed.
+
+## 2026-08-27 — Selectable attendance photo filters added locally
+
+- Employee check-in/out now offers `Tự nhiên`, `Mịn da`, `Sáng`, `Ấm`, and `Tươi`, defaulting to `Mịn da`. An in-app selfie camera defaults to the front lens and shows the selected filter live; native camera remains available for HTTP/192.168, denied permission and device failures. The selected preset is passed into `stampAttendancePhoto`; “baby skin” smoothing now uses a `0.2` downscale/upscale overlay at `0.34` opacity so Safari/iPhone does not depend on canvas blur support.
+- Canvas alpha/filter reset before the evidence overlay; face geometry and timestamp/GPS/upload/outbox behavior are unchanged. Selectable-filter/front+native-camera/idempotency/outbox/TypeScript/diff/build Passed. Latest assets: `AttendancePage-DpHb_yf2.js`, `index-NBTzGi1f.css`, bundle guard `index-mvhMW5P-.js` + `revenue-C__TVl8Q.js`. Not deployed.
+
+## 2026-08-27 — Self-service avatar removed
+
+- Owner reversed the self-service avatar request. Removed the account-menu entry, image processing helper, narrow RPC migration, related CSS and focused test; restored the original static desktop account header and mobile language/logout menu.
+- Existing Admin-managed employee avatars remain intact. TypeScript/load/build Passed; latest main asset `index-51oz6Wja.js`, CSS `index-BljT9b9r.css`, bundle guard green. Nothing deployed.
+
+## 2026-08-26 — Completed attendance duration added locally
+
+- `AttendancePage.tsx` completed-shift rows now append `Đã làm {formatWorkDurationBetween(checkIn, checkOut)}` after actual in/out times. This is display-only and reuses the existing cross-midnight-safe duration helper.
+- Duration/search, schedule sync, late-checkout, TypeScript and build Passed. Asset: `AttendancePage-Ll2Nz0uG.js`; bundle guard `index-51oz6Wja.js` + `revenue-DseUdpdv.js`. Not deployed.
+
+## 2026-08-26 — MyTimesheet late detail added locally
+
+- `MyTimesheetPage.tsx` now lets staff click the monthly `Đi trễ` KPI to expand read-only rows containing work date, scheduled shift, actual check-in and existing `lateMinutes`; zero disables the drill-down.
+- No attendance calculation or persistence changed. Added `scripts/test-my-timesheet-late-details.mjs`; focused attendance regressions, TypeScript and build Passed. Assets: `MyTimesheetPage-D6Zhaa_G.js`, `index-BljT9b9r.css`, bundle guard `index-C2TF6PgQ.js` + `revenue-C9p3SREv.js`. Not deployed.
+
+## 2026-08-26 — BUG-137 fixed locally: POS mobile ba màn
+
+- Active module: MOD-09 Sales/POS. User-provided mockup defines three in-app surfaces only; surrounding callouts are documentation, not UI content.
+- Changed `SalesPage.tsx`: mobile view state (`menu/bill/history`), real product search/family filter, real receipt search, fixed cart CTA, mobile view header, customer card and direct line removal. Product cards are intentionally text-only (name + price); whole-card tap adds exactly one. No glyph/image, quick quantity buttons or unlimited-sale copy remains. Existing checkout/delete/seller/date behavior is reused.
+- Changed `styles.css`: ≤640px view switching, touch-sized controls, two-column menu, fixed one-hand cart bar, focused bill editor, history cards and receipt bottom sheet. Desktop declarations remain active outside the media query.
+- Added `scripts/test-sales-mobile-three-view.mjs`. Focused POS/cashier/load/stock tests and TypeScript Passed. Final build Passed 727 modules with `SalesPage-D9gmPuu5.js`, `index-myx9pIAJ.css` and `PRODUCTION_SUPABASE_BUNDLE_OK (index-DwPqCKyr.js; revenue-BTFfGPE7.js)`.
+- Unrelated baseline: `test-core-business-button-guards.mjs` reports four existing failures in Inventory/Admin payroll guards; no implicated file was changed. Browser skill bootstrap failed because the environment could not create kernel assets, so no signed-in phone screenshot claim. No deploy, schema, API, Supabase row or production-data change occurred.
+- Exact next action: when Browser is available, verify menu → bill → history at 360/390px with a signed-in staff account, including search, repeated whole-card taps (+1 each), line removal, back navigation and receipt detail. Deploy only after explicit release request.
+- Responsive follow-up: final EOF guard now wins older `.pos-workspace` rules, forces one product column, removes the duplicate shell header only on phone POS, constrains panels/controls to viewport, respects safe-area insets and compacts ≤380px. The POS hamburger programmatically invokes the existing AppShell menu toggle. Regression/build Passed; latest assets are `SalesPage-BtXxWqiM.js`, `index-8LsDzhsh.css`, bundle guard `index-ynRRFmUC.js` + `revenue-DUP2u7Vq.js`.
+- Bill row follow-up: fixed the screenshot-evidenced empty left column by overriding the generic direct-span grid rule for `.bill-line-index`; mobile bill rows now have only index, text, quantity, total and remove cells, with no image slot and no forced list height. Latest build: `SalesPage-CcJOaZkh.js`, `index-BIEAC-Dc.css`, bundle guard `index-DN26rQrH.js` + `revenue-IVeYuWaB.js`.
+- Duplicate stats follow-up: global mobile `display:grid !important` had resurrected desktop topbar/KPIs above the mobile copies. Final POS guard now hides the direct desktop topbar/summary in menu, bill and history, leaving one mobile set. Latest build: `SalesPage-DE0KIe-U.js`, `index-CD8OxaZw.css`, bundle guard `index-DY-PGznq.js` + `revenue-Bk0bptY3.js`.
+- Hamburger follow-up: local POS click now stops propagation before invoking the existing hidden AppShell toggle, preventing the shell click-away handler from immediately closing the drawer. Latest build: `SalesPage-Q4rJ3jb1.js`, bundle guard `index-CnRv4uvQ.js` + `revenue-Dzd9wZQd.js`.
+
+## 2026-08-25 — BUG-136 fixed locally: bổ sung công chọn ca, giờ thực tế độc lập
+
+- Active module: MOD-06 Attendance/Admin. User reports deleting and restoring one employee-day causes scheduled shift hours to become check-in/check-out hours.
+- Root cause confirmed in source: the supplement form/RPC reused one time pair for both registration lookup/creation and attendance timestamps.
+- Changed: `AttendanceAdjustmentArchive` loads the employee's registrations for the selected date and offers either an existing shift or `Tự nhập ca bổ sung`; an empty list automatically selects manual mode and reveals separate scheduled start/end fields. Actual check-in/out remain separate and empty. The RPC leaves selected registrations untouched and creates an approved supplemental registration only in explicit manual mode.
+- Tests: `ATTENDANCE_SUPPLEMENT_REGISTERED_SHIFT_OK`, `ADMIN_ATTENDANCE_24H_NOTES_OK`, `npx.cmd tsc --noEmit`, and final production build 727 modules with `PRODUCTION_SUPABASE_BUNDLE_OK (index-MzDDWSPE.js; revenue-DwSHGGED.js)` all Passed. Initial build failed only because sandbox denied Vite config access; approved identical retry Passed.
+- Changed files in this batch: `src/components/AttendanceAdjustmentArchive.tsx`, `src/components/Time24Field.tsx`, `src/lib/attendance.ts`, `supabase/migrations/20260825_attendance_supplement_uses_registered_shift.sql`, `scripts/test-attendance-supplement-registered-shift.mjs`, and testing trackers.
+- Production RPC migration is now applied through linked `db query` only; `db push` was deliberately avoided because local eight-digit and remote fourteen-digit histories remain mismatched. Before: one legacy 6-argument signature. After: one 9-argument signature with `security_definer`, authenticated execute, existing/manual branches and actual-time separation all verified true. No business RPC call, attendance/registration row mutation, or frontend deploy occurred. Exact next action: refresh/retry the already-open Admin form; if the UI bundle is the pictured version, the prior missing-RPC error should be gone.
+
 ## 2026-08-05 — BUG-134 + BUG-135 deployed: kho hiển thị đồng bộ + sổ kho cân sau khi sửa tồn
 
 - Chủ quán báo "dữ liệu kho không đồng bộ sau khi tôi chỉnh sửa". Không phải lỗi đồng bộ: mọi màn dùng chung một mảng `movements` và chung `calculateStock`. Bản vá BUG-133 sáng cùng ngày chỉ đổi bộ hiển thị của riêng `InventoryPage` nên cùng một tồn 5,123 kg đọc ra 4 kiểu (`5.123` dấu chấm ở màn Kho, `5,123` ở Quản trị, `5,12` ở Báo cáo/Bàn giao, `5,1` ở Nhà hàng). BUG-134: gom về một bộ hiển thị dùng chung trong `lib/inventoryEntry.ts` (`formatQuantity` chuẩn vi-VN 3 số lẻ) + tách `quantityInputValue` cho ô nhập.
@@ -678,3 +728,11 @@ Last updated: 2026-07-15
 - Linked production read-only evidence: 23/10 has Ca 1 leader Nguyễn Thị Yến and Ca 2 leader Nguyễn Bình Thảo Nguyên, both closed. Its one snapshot was written immediately after Ca 2 at 554,000đ/10 sold, records an unrelated legacy summary leader, contains only the Ca 2 entry, and the operation day is open. Nine POS receipts at/before snapshot equal 554,000đ; 25 later receipts add 1,244,000đ, so current true POS total is 1,798,000đ/35 sold. Vũng Tàu Ca 2 is closed at 21:44 local but no Ca 2/day snapshot exists.
 - Root source findings: Report owner matching falls back to display name even for persisted `leader_id`, and prefers a closed shift rather than the latest own sequence; Handover renders any branch's open session as if it were the current leader's; it writes `gustino:handover-report` but Report never consumes it. Revenue hides all POS rows once any numeric snapshot exists. Normal cloud employee removal incorrectly selects the destructive `hard_delete` Edge action rather than the built-in deactivation action, then removes the active detail from React state.
 - No production row/migration/write/n8n delivery was performed. Next: implement canonical owner/session matching, post-handover automatic finalization intent, correct Ca 1/Ca 2 n8n scopes, receipt-after-snapshot realtime overlay, and safe employee deactivation/detail routing; run focused regressions/build/production bundle guard; deploy only the verified frontend/Edge payload. Any repair of today's already-stale snapshot needs an explicit, reviewed production data action after the hotfix.
+# 2026-08-25 — Active incident: attendance Storage quota
+
+- User requested fixing the HTTP 402 login outage and deleting July attendance images without affecting August attendance.
+- Confirmed production Supabase project `smtaiourlpqwmiulxuri` is restricted for `exceed_storage_size_quota`; this blocks Auth before credentials can be evaluated.
+- Added `scripts/cleanup-attendance-selfies-month.mjs`. It is dry-run by default and requires `--execute`; target month is calculated in UTC+7, all non-target references are protected, only `attendance-selfies` objects are candidates, attendance rows are never updated/deleted, and post-delete verification compares the full protected object set.
+- Latest verification: `ATTENDANCE_STORAGE_CLEANUP_SAFETY_OK`, cleanup script syntax, and diff check passed.
+- Current blocker: no `SUPABASE_ACCESS_TOKEN`/service-role credential is available and the in-app Browser reports unavailable. CLI project linking metadata alone cannot retrieve API keys. No Storage or business-data mutation occurred.
+- Exact next action: owner runs `npx supabase login` locally or connects a signed-in Supabase Dashboard tab. Then run `node scripts/cleanup-attendance-selfies-month.mjs 2026-07`, review the counts/bytes, rerun with `--execute`, confirm `protectedRemoved: 0`, and verify Auth health/login recovery. Do not delete or alter attendance rows; do not touch any August-referenced path.

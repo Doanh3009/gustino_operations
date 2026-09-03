@@ -1,5 +1,15 @@
 # Decision Log
 
+- 2026-08-27 — Tiền trên toàn bộ trang bán hàng dùng định dạng `33.000 đ` thay cho `33.000d`: có một khoảng trắng trước ký hiệu đồng Việt Nam. Chỉ `formatMoney` thay đổi; số tiền, giá, doanh thu, phép tính, dữ liệu hóa đơn và API không đổi.
+
+- 2026-08-27 — Tên mặt hàng trên toàn bộ giao diện bán hàng được viết hoa ký tự đầu tiên bằng locale tiếng Việt, ví dụ `nướng 110g` → `Nướng 110g`. Chỉ helper hiển thị `shortProductName` thay đổi; tên sản phẩm trong catalog, tìm kiếm, phân nhóm, sắp xếp, dòng hóa đơn đã lưu và API không bị sửa.
+
+- 2026-08-27 — Theo yêu cầu mới nhất của owner, nhân viên được chọn một trong 5 filter ảnh check-in/check-out: `Tự nhiên`, `Mịn da`, `Sáng`, `Ấm`, `Tươi`; mặc định là `Mịn da`. Bổ sung camera selfie live mặc định camera trước để nhìn filter ngay, có nút đổi camera; camera native vẫn là fallback bắt buộc cho HTTP/192.168, thiết bị từ chối quyền hoặc camera live lỗi. Owner yêu cầu `Mịn da` mức “da baby”: lớp ảnh làm mịn downscale `0.2` được phủ opacity `0.34` trên ảnh gốc, tương thích cả Safari/iPhone không hỗ trợ canvas blur đầy đủ và không biến đổi hình học khuôn mặt. Canvas luôn reset `globalAlpha` và filter trước khi đóng dấu nhân viên/thời gian/địa chỉ/GPS. Không đổi dữ liệu, GPS, timestamp, upload, outbox hay logic chấm công.
+
+- 2026-08-26 — Mockup POS mobile được hiểu là ba giao diện ứng dụng: Trang bán hàng, Hóa đơn mới và Lịch sử hóa đơn. Các khối chú thích bên ngoài điện thoại chỉ là nguyên tắc thiết kế, không render vào app. Refinement: thẻ món chỉ hiển thị tên và giá; không hình minh họa, không `+1/+2/+3`, không “Bán không giới hạn”; mỗi lần chạm toàn thẻ cộng 1. Desktop, checkout, giá, seller attribution, quyền xóa hóa đơn và API hiện tại không đổi.
+
+- 2026-08-25 — Khi Admin bổ sung lại công đã xóa, ca đăng ký và giờ chấm công là hai dữ liệu độc lập. Nếu có ca thì chọn đúng `shift_registrations` của nhân viên/ngày và không sửa nó; nếu chưa có thì Admin được chọn `Tự nhập ca bổ sung` để tạo đăng ký approved với giờ ca nhập riêng. Trong cả hai trường hợp, `attendance_records` chỉ dùng giờ check-in/check-out thực tế do Admin nhập, không tự sao chép `start_time/end_time` của ca.
+
 ## 2026-08-03 — correction actions preserve filter context
 
 - Opening an attendance correction from a row already visible in the correction list must not change its day/employee mode, date, branch, employee or search text. Viewing all shifts for that employee is a separate explicit action.
@@ -166,3 +176,9 @@
 | 2026-07-18 | Deploy the screenshot-corrected Admin release only after the attendance and prebuilt gates pass. | The owner explicitly requires immediate deployment and no check-in/check-out regression. Run the non-destructive attendance/idempotency/camera/GPS/schedule/cloud/realtime suite, keep the request-aware Capy overlay gated to fetches following user actions, deploy only the inspected prebuilt output, and perform read-only live checks. Do not run migrations, create synthetic attendance, invoke cron/webhooks or mutate production business data. |
 | 2026-07-18 | Scope the new ERP design to Admin and preserve the existing Manager product experience. | Direct owner clarification supersedes the shared Admin/Manager shell introduced by the recent UI refactor. Admin continues to use the new durable `#/admin/...` workspace; Manager returns to the existing dashboard and focused Revenue/Business/Inventory routes. This is a role-specific presentation/navigation correction only and must not broaden data permissions or change formulas, schema or writes. |
 | 2026-07-19 | Resolve displayed shift-leader identity from existing session-overlapping attendance before stored session text. | The owner reports Ca 2 duplicates Ca 1 at Lotte Vũng Tàu. Report generation already loads approved registrations and authoritative attendance. Use the checked-in leader nearest each session start independently, with the stored session leader as a safe fallback. This is a presentation correction only: do not rewrite historical sessions/attendance, alter shift ownership, or change report calculations/finalization. |
+# 2026-08-25 — Preserve August while reducing attendance-photo quota
+
+- Decision: scope cleanup only to bucket `attendance-selfies`; never delete attendance rows or clear their URL columns.
+- July is defined by `check_in_time` converted through the fixed UTC+7 month boundary. Orphan bucket objects are eligible only when their Storage `created_at` is within the same boundary and no attendance row references them.
+- Any object path referenced by a non-July row is excluded even if it is also referenced by July. Verification must prove the complete pre-existing protected set remains present after deletion.
+- Production mutation is deferred until owner-level Supabase access is available; the HTTP 402 restriction prevents ordinary Admin authentication.
