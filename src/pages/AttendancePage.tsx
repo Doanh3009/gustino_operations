@@ -2,7 +2,6 @@
 import {
   buildAttendanceReport,
   buildAttendanceDetailRows,
-  ATTENDANCE_PHOTO_FILTER_OPTIONS,
   checkIn,
   checkOut,
   createManualShiftRegistration,
@@ -27,8 +26,6 @@ import {
   setScheduleEntry,
   setScheduleRegistration,
   withAttendanceReadDeadline,
-  DEFAULT_ATTENDANCE_PHOTO_FILTER,
-  type AttendancePhotoFilterPreset,
 } from '../lib/attendance'
 import { useRef } from 'react'
 import { branchName as configuredBranchName, useConfiguredBranches } from '../lib/branches'
@@ -356,13 +353,9 @@ function attendanceTimestampMatches(left?: string, right?: string) {
 }
 
 function AttendanceSelfieCamera({
-  filter,
-  onFilterChange,
   onCapture,
   onClose,
 }: {
-  filter: AttendancePhotoFilterPreset
-  onFilterChange: (filter: AttendancePhotoFilterPreset) => void
   onCapture: (file: File) => void
   onClose: () => void
 }) {
@@ -371,9 +364,6 @@ function AttendanceSelfieCamera({
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user')
   const [cameraError, setCameraError] = useState('')
   const [ready, setReady] = useState(false)
-  const selectedOption = ATTENDANCE_PHOTO_FILTER_OPTIONS.find((item) => item.id === filter)
-    || ATTENDANCE_PHOTO_FILTER_OPTIONS[0]
-
   useEffect(() => {
     let cancelled = false
     setReady(false)
@@ -431,10 +421,10 @@ function AttendanceSelfieCamera({
   }
 
   return (
-    <div className="attendance-camera-backdrop" role="dialog" aria-modal="true" aria-label="Camera selfie có filter">
+    <div className="attendance-camera-backdrop" role="dialog" aria-modal="true" aria-label="Camera selfie">
       <section className="attendance-camera-modal">
         <header>
-          <div><strong>Camera selfie</strong><small>Hiệu ứng hiển thị trực tiếp trên ảnh xem trước</small></div>
+          <div><strong>Camera selfie</strong><small>Chụp ảnh gốc để lưu cùng lượt chấm công</small></div>
           <button type="button" onClick={onClose} aria-label="Đóng camera">×</button>
         </header>
         <div className="attendance-camera-stage">
@@ -443,21 +433,9 @@ function AttendanceSelfieCamera({
             autoPlay
             muted
             playsInline
-            style={{ filter: selectedOption.previewFilter }}
           />
           {!ready && !cameraError && <span>Đang mở camera…</span>}
           {cameraError && <p>{cameraError}</p>}
-        </div>
-        <div className="attendance-camera-filter-strip" role="group" aria-label="Filter camera selfie">
-          {ATTENDANCE_PHOTO_FILTER_OPTIONS.map((option) => (
-            <button
-              type="button"
-              key={option.id}
-              className={filter === option.id ? 'active' : ''}
-              aria-pressed={filter === option.id}
-              onClick={() => onFilterChange(option.id)}
-            >{option.label}</button>
-          ))}
         </div>
         <footer>
           <button type="button" className="camera-switch-button" disabled={Boolean(cameraError)} onClick={() => setFacingMode((current) => current === 'user' ? 'environment' : 'user')}>Đổi camera</button>
@@ -485,7 +463,6 @@ function SchedulePanel({
   const [selfies, setSelfies] = useState<Record<string, File | undefined>>({})
   const [selfieLocalPreviews, setSelfieLocalPreviews] = useState<Record<string, string>>({})
   const [selfiePreviews, setSelfiePreviews] = useState<Record<string, string>>({})
-  const [selfieFilters, setSelfieFilters] = useState<Record<string, AttendancePhotoFilterPreset>>({})
   const [cameraRegistration, setCameraRegistration] = useState<ShiftRegistration | null>(null)
   const [optimisticRecords, setOptimisticRecords] = useState<Record<string, AttendanceRecord>>({})
   const [pendingCheckOut, setPendingCheckOut] = useState<{ registrationId: string; sequence: number } | null>(null)
@@ -629,7 +606,6 @@ function SchedulePanel({
         registration,
         selfie,
         setBusyPhase,
-        selfieFilters[registration.id] || DEFAULT_ATTENDANCE_PHOTO_FILTER,
       )
       if (record.selfiePreviewUrl) {
         setSelfiePreviews((current) => ({ ...current, [registration.id]: record.selfiePreviewUrl! }))
@@ -691,7 +667,6 @@ function SchedulePanel({
         registration,
         selfie,
         setBusyPhase,
-        selfieFilters[registration.id] || DEFAULT_ATTENDANCE_PHOTO_FILTER,
       )
       setOptimisticRecords((current) => ({ ...current, [saved.id]: saved }))
       pickSelfie(registration, undefined)
@@ -768,9 +743,6 @@ function SchedulePanel({
     const { registration, record, checkInWindow, canCheckIn, canCheckOut, checkOutTooEarly } = d
     const isOvertime = isOvertimeRegistration(registration)
     const localPreview = selfieLocalPreviews[registration.id]
-    const selectedPhotoFilter = selfieFilters[registration.id] || DEFAULT_ATTENDANCE_PHOTO_FILTER
-    const selectedPhotoFilterOption = ATTENDANCE_PHOTO_FILTER_OPTIONS.find((item) => item.id === selectedPhotoFilter)
-      || ATTENDANCE_PHOTO_FILTER_OPTIONS[0]
     const pendingOp = d.pendingOp
     return (
       <article className={`shift-card ${registration.status}${d.isCheckedOut ? ' done' : ''}${isOvertime ? ' overtime' : ''}`} key={registration.id}>
@@ -810,34 +782,16 @@ function SchedulePanel({
             </figure>
           )}
           {localPreview && (
-            <figure className="attendance-selfie-preview pending-enhancement">
-              <img src={localPreview} alt="Ảnh chuẩn bị chấm công" style={{ filter: selectedPhotoFilterOption.previewFilter }} />
-              <figcaption>Ảnh sắp chấm · filter {selectedPhotoFilterOption.label} · chụp lại nếu bị rung/mờ</figcaption>
+            <figure className="attendance-selfie-preview">
+              <img src={localPreview} alt="Ảnh chuẩn bị chấm công" />
+              <figcaption>Ảnh sắp chấm · chụp lại nếu bị rung/mờ</figcaption>
             </figure>
           )}
         </div>
         {!readOnly && (
           <div className="shift-actions">
-            {(canCheckIn || canCheckOut) && (
-              <div className="attendance-photo-filter-picker">
-                <span>Filter ảnh</span>
-                <div role="group" aria-label="Chọn filter ảnh chấm công">
-                  {ATTENDANCE_PHOTO_FILTER_OPTIONS.map((option) => (
-                    <button
-                      type="button"
-                      key={option.id}
-                      className={selectedPhotoFilter === option.id ? 'active' : ''}
-                      aria-pressed={selectedPhotoFilter === option.id}
-                      disabled={Boolean(busyId)}
-                      onClick={() => setSelfieFilters((current) => ({ ...current, [registration.id]: option.id }))}
-                    >{option.label}</button>
-                  ))}
-                </div>
-                <small>{selectedPhotoFilterOption.description} · chọn trước hoặc sau khi chụp</small>
-              </div>
-            )}
             {canCheckIn && <>
-              <button type="button" className="selfie-live-camera-button" onClick={() => setCameraRegistration(registration)}>✨ Camera selfie có filter</button>
+              <button type="button" className="selfie-live-camera-button" onClick={() => setCameraRegistration(registration)}>📷 Camera selfie</button>
               <label className="selfie-button">
                 <input
                   type="file"
@@ -864,7 +818,7 @@ function SchedulePanel({
               {busyId === registration.id && <small className="attendance-busy-hint">Đang xử lý, vui lòng giữ máy vài giây…</small>}
             </>}
             {canCheckOut && <>
-              <button type="button" className="selfie-live-camera-button" onClick={() => setCameraRegistration(registration)}>✨ Camera selfie có filter</button>
+              <button type="button" className="selfie-live-camera-button" onClick={() => setCameraRegistration(registration)}>📷 Camera selfie</button>
               <label className="selfie-button checkout-selfie-button">
                 <input
                   type="file"
@@ -986,8 +940,6 @@ function SchedulePanel({
     <>
       {cameraRegistration && (
         <AttendanceSelfieCamera
-          filter={selfieFilters[cameraRegistration.id] || DEFAULT_ATTENDANCE_PHOTO_FILTER}
-          onFilterChange={(filter) => setSelfieFilters((current) => ({ ...current, [cameraRegistration.id]: filter }))}
           onCapture={(file) => pickSelfie(cameraRegistration, file)}
           onClose={() => setCameraRegistration(null)}
         />

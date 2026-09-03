@@ -1106,20 +1106,6 @@ const ATTENDANCE_LOCATION_DEADLINE_MS = 25000
 /** Cạnh dài tối đa khi giải mã ảnh chấm công (ảnh đóng dấu vẫn xuất ở 1280px chiều ngang). */
 const ATTENDANCE_PHOTO_DECODE_MAX_EDGE = 2560
 const ATTENDANCE_PHOTO_DEADLINE_MS = 20000
-// Filter nhẹ, cố định cho ảnh chấm công: cân sáng/màu rồi phủ lớp làm mịn mờ
-// rất thấp; không thay đổi hình học khuôn mặt. Reset trước khi đóng dấu để chữ/GPS luôn sắc nét.
-const ATTENDANCE_PHOTO_ENHANCEMENT_FILTER = 'brightness(1.07) contrast(1.03) saturate(1.08)'
-const ATTENDANCE_PHOTO_SMOOTHING_SCALE = 0.14
-const ATTENDANCE_PHOTO_SMOOTHING_OPACITY = 0.58
-export const ATTENDANCE_PHOTO_FILTER_OPTIONS = [
-  { id: 'natural', label: 'Tự nhiên', description: 'Giữ màu ảnh gốc', canvasFilter: 'none', previewFilter: 'none', smoothingOpacity: 0 },
-  { id: 'smooth', label: 'Mịn da', description: 'Da baby, sáng và mịn rõ hơn', canvasFilter: ATTENDANCE_PHOTO_ENHANCEMENT_FILTER, previewFilter: 'brightness(1.09) contrast(1.02) saturate(1.08) blur(.7px)', smoothingOpacity: ATTENDANCE_PHOTO_SMOOTHING_OPACITY },
-  { id: 'bright', label: 'Sáng', description: 'Tăng sáng, giữ màu tự nhiên', canvasFilter: 'brightness(1.15) contrast(1.03) saturate(1.05)', previewFilter: 'brightness(1.15) contrast(1.03) saturate(1.05)', smoothingOpacity: 0 },
-  { id: 'warm', label: 'Ấm', description: 'Tông màu ấm nhẹ', canvasFilter: 'brightness(1.08) contrast(1.03) saturate(1.08) sepia(0.14)', previewFilter: 'brightness(1.08) contrast(1.03) saturate(1.08) sepia(.14)', smoothingOpacity: 0 },
-  { id: 'fresh', label: 'Tươi', description: 'Màu sắc tươi hơn', canvasFilter: 'brightness(1.08) contrast(1.04) saturate(1.18)', previewFilter: 'brightness(1.08) contrast(1.04) saturate(1.18)', smoothingOpacity: 0 },
-] as const
-export type AttendancePhotoFilterPreset = typeof ATTENDANCE_PHOTO_FILTER_OPTIONS[number]['id']
-export const DEFAULT_ATTENDANCE_PHOTO_FILTER: AttendancePhotoFilterPreset = 'smooth'
 const ATTENDANCE_UPLOAD_DEADLINE_MS = 25000
 const ATTENDANCE_DB_DEADLINE_MS = 20000
 
@@ -1235,7 +1221,6 @@ export async function checkIn(
   registration: ShiftRegistration,
   selfie: Blob,
   onPhase?: (phase: AttendancePhase) => void,
-  photoFilter: AttendancePhotoFilterPreset = DEFAULT_ATTENDANCE_PHOTO_FILTER,
 ) {
   if (registration.userId !== user.id || registration.status === 'rejected') {
     throw new Error('Ca làm không hợp lệ hoặc không thuộc tài khoản này.')
@@ -1257,7 +1242,6 @@ export async function checkIn(
     latitude: location.latitude,
     longitude: location.longitude,
     accuracy: location.accuracy,
-    photoFilter,
   }).catch(() => selfie)
   // Ảnh xem trước chỉ để hiển thị, KHÔNG phải bằng chứng chấm công: nếu máy đọc
   // chậm/thiếu bộ nhớ thì bỏ qua preview chứ không được treo cả lượt check-in.
@@ -1374,7 +1358,6 @@ export async function checkOut(
   registration: ShiftRegistration,
   selfie: Blob,
   onPhase?: (phase: AttendancePhase) => void,
-  photoFilter: AttendancePhotoFilterPreset = DEFAULT_ATTENDANCE_PHOTO_FILTER,
 ) {
   if (record.userId !== user.id || record.checkOutTime) throw new Error('Bản ghi này không thể check-out.')
   onPhase?.('locating')
@@ -1393,7 +1376,6 @@ export async function checkOut(
     longitude: location.longitude,
     accuracy: location.accuracy,
     totalHoursLabel: record.checkInTime ? `Tổng giờ làm: ${formatWorkDurationBetween(record.checkInTime, checkOutTime)}` : undefined,
-    photoFilter,
   }).catch(() => selfie)
   const checkOutSelfieUrl = await uploadSelfie(
     user,
@@ -2599,7 +2581,6 @@ async function stampAttendancePhoto(
     longitude: number | null
     accuracy: number | null
     totalHoursLabel?: string
-    photoFilter?: AttendancePhotoFilterPreset
   },
 ) {
   // createImageBitmap()/image.decode() không có timeout và có thể treo vô hạn
@@ -2620,30 +2601,7 @@ async function stampAttendancePhoto(
   canvas.height = height
   const context = canvas.getContext('2d')
   if (!context) throw new Error('Không thể xử lý ảnh selfie.')
-  const photoFilter = ATTENDANCE_PHOTO_FILTER_OPTIONS.find((item) => item.id === details.photoFilter)
-    || ATTENDANCE_PHOTO_FILTER_OPTIONS.find((item) => item.id === DEFAULT_ATTENDANCE_PHOTO_FILTER)!
-  context.filter = photoFilter.canvasFilter
   context.drawImage(decoded.source, 0, 0, width, height)
-  if (photoFilter.smoothingOpacity > 0) {
-    // Làm mịn bằng lớp ảnh thu nhỏ rồi phóng lại để Safari/iPhone cũ vẫn xử lý
-    // được ngay cả khi CanvasRenderingContext2D.filter không hỗ trợ blur.
-    const smoothingCanvas = document.createElement('canvas')
-    smoothingCanvas.width = Math.max(1, Math.round(width * ATTENDANCE_PHOTO_SMOOTHING_SCALE))
-    smoothingCanvas.height = Math.max(1, Math.round(height * ATTENDANCE_PHOTO_SMOOTHING_SCALE))
-    const smoothingContext = smoothingCanvas.getContext('2d')
-    if (smoothingContext) {
-      smoothingContext.imageSmoothingEnabled = true
-      smoothingContext.imageSmoothingQuality = 'high'
-      smoothingContext.drawImage(decoded.source, 0, 0, smoothingCanvas.width, smoothingCanvas.height)
-      context.filter = 'brightness(1.05)'
-      context.imageSmoothingEnabled = true
-      context.imageSmoothingQuality = 'high'
-      context.globalAlpha = photoFilter.smoothingOpacity
-      context.drawImage(smoothingCanvas, 0, 0, width, height)
-    }
-  }
-  context.globalAlpha = 1
-  context.filter = 'none'
   decoded.close()
   const panelHeight = Math.max(190, Math.round(height * .3))
   const gradient = context.createLinearGradient(0, height - panelHeight, 0, height)
