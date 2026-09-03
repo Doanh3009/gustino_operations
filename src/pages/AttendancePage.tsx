@@ -352,101 +352,6 @@ function attendanceTimestampMatches(left?: string, right?: string) {
   return Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime === rightTime
 }
 
-function AttendanceSelfieCamera({
-  onCapture,
-  onClose,
-}: {
-  onCapture: (file: File) => void
-  onClose: () => void
-}) {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user')
-  const [cameraError, setCameraError] = useState('')
-  const [ready, setReady] = useState(false)
-  useEffect(() => {
-    let cancelled = false
-    setReady(false)
-    setCameraError('')
-    streamRef.current?.getTracks().forEach((track) => track.stop())
-    streamRef.current = null
-    const openCamera = async () => {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        throw new Error('Trình duyệt không cho mở camera trực tiếp. Hãy dùng nút Camera máy bên dưới.')
-      }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: facingMode },
-          width: { ideal: 1280 },
-          height: { ideal: 960 },
-        },
-      })
-      if (cancelled) {
-        stream.getTracks().forEach((track) => track.stop())
-        return
-      }
-      streamRef.current = stream
-      const video = videoRef.current
-      if (!video) return
-      video.srcObject = stream
-      await video.play()
-      setReady(true)
-    }
-    void openCamera().catch(() => {
-      if (!cancelled) setCameraError('Không mở được camera live. Nếu đang dùng link HTTP/192.168, hãy dùng Camera máy; filter vẫn được áp sau khi chụp.')
-    })
-    return () => {
-      cancelled = true
-      streamRef.current?.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-    }
-  }, [facingMode])
-
-  function captureFrame() {
-    const video = videoRef.current
-    if (!video || !video.videoWidth || !video.videoHeight) return
-    const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    const context = canvas.getContext('2d')
-    if (!context) return
-    // Lưu frame gốc; filter được áp đúng một lần trong stampAttendancePhoto.
-    context.drawImage(video, 0, 0, canvas.width, canvas.height)
-    canvas.toBlob((blob) => {
-      if (!blob) return
-      onCapture(new File([blob], `attendance-selfie-${Date.now()}.jpg`, { type: 'image/jpeg' }))
-      onClose()
-    }, 'image/jpeg', .92)
-  }
-
-  return (
-    <div className="attendance-camera-backdrop" role="dialog" aria-modal="true" aria-label="Camera selfie">
-      <section className="attendance-camera-modal">
-        <header>
-          <div><strong>Camera selfie</strong><small>Chụp ảnh gốc để lưu cùng lượt chấm công</small></div>
-          <button type="button" onClick={onClose} aria-label="Đóng camera">×</button>
-        </header>
-        <div className="attendance-camera-stage">
-          <video
-            ref={videoRef}
-            autoPlay
-            muted
-            playsInline
-          />
-          {!ready && !cameraError && <span>Đang mở camera…</span>}
-          {cameraError && <p>{cameraError}</p>}
-        </div>
-        <footer>
-          <button type="button" className="camera-switch-button" disabled={Boolean(cameraError)} onClick={() => setFacingMode((current) => current === 'user' ? 'environment' : 'user')}>Đổi camera</button>
-          <button type="button" className="camera-capture-button" disabled={!ready} onClick={captureFrame} aria-label="Chụp ảnh">●</button>
-          <button type="button" className="camera-close-button" onClick={onClose}>Hủy</button>
-        </footer>
-      </section>
-    </div>
-  )
-}
-
 function SchedulePanel({
   user, registrations, records, loadFailed, movements, onChanged, onFeedback, onOpenRegistration, onNavigate,
 }: {
@@ -463,7 +368,6 @@ function SchedulePanel({
   const [selfies, setSelfies] = useState<Record<string, File | undefined>>({})
   const [selfieLocalPreviews, setSelfieLocalPreviews] = useState<Record<string, string>>({})
   const [selfiePreviews, setSelfiePreviews] = useState<Record<string, string>>({})
-  const [cameraRegistration, setCameraRegistration] = useState<ShiftRegistration | null>(null)
   const [optimisticRecords, setOptimisticRecords] = useState<Record<string, AttendanceRecord>>({})
   const [pendingCheckOut, setPendingCheckOut] = useState<{ registrationId: string; sequence: number } | null>(null)
   // Cảnh báo khi bấm check-in ca khác trong lúc còn một ca chưa check-out: đây là
@@ -791,7 +695,6 @@ function SchedulePanel({
         {!readOnly && (
           <div className="shift-actions">
             {canCheckIn && <>
-              <button type="button" className="selfie-live-camera-button" onClick={() => setCameraRegistration(registration)}>📷 Camera selfie</button>
               <label className="selfie-button">
                 <input
                   type="file"
@@ -818,7 +721,6 @@ function SchedulePanel({
               {busyId === registration.id && <small className="attendance-busy-hint">Đang xử lý, vui lòng giữ máy vài giây…</small>}
             </>}
             {canCheckOut && <>
-              <button type="button" className="selfie-live-camera-button" onClick={() => setCameraRegistration(registration)}>📷 Camera selfie</button>
               <label className="selfie-button checkout-selfie-button">
                 <input
                   type="file"
@@ -938,12 +840,6 @@ function SchedulePanel({
   // unique một-phiên-mở từ chối; client không cần màn hình khóa.
   return (
     <>
-      {cameraRegistration && (
-        <AttendanceSelfieCamera
-          onCapture={(file) => pickSelfie(cameraRegistration, file)}
-          onClose={() => setCameraRegistration(null)}
-        />
-      )}
       {outboxBanner}
       <section className="section-card attendance-schedule">
         <div className="section-title">

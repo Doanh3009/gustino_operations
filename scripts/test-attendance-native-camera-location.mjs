@@ -12,7 +12,7 @@ const [shell, attendanceLib, attendancePage, supabaseSource, reverseApi, lanServ
 const failures = []
 if (!shell.includes('attendanceReminder')) failures.push('AppShell chưa có popup nhắc check-in/check-out theo dữ liệu ca hôm nay.')
 if (!shell.includes('fetchAttendanceRecords') || !shell.includes('fetchShiftRegistrations')) failures.push('Popup chưa kiểm tra dữ liệu chấm công thật.')
-if (!attendancePage.includes('AttendanceSelfieCamera') || !attendancePage.includes("facingMode, setFacingMode] = useState<'user' | 'environment'>('user')")) failures.push('Trang chưa có camera selfie mặc định dùng camera trước.')
+if (attendancePage.includes('AttendanceSelfieCamera') || !/type="file"[\s\S]{0,120}accept="image\/\*"[\s\S]{0,120}capture=/.test(attendancePage)) failures.push('Trang vẫn còn camera selfie live hoặc thiếu camera máy.')
 if (attendancePage.includes('requestAttendanceLocationPermission') || attendancePage.includes('attendance-location-permission')) failures.push('Trang vẫn bắt người dùng qua bước xin/kiểm tra định vị thủ công.')
 if (!/type="file"[\s\S]{0,120}accept="image\/\*"[\s\S]{0,120}capture=/.test(attendancePage)) failures.push('Trang chưa trả về bộ chụp ảnh gốc của điện thoại.')
 if ((attendancePage.match(/capture="user"/g) || []).length < 2) failures.push('Camera máy dự phòng chưa mặc định dùng camera trước cho cả check-in và check-out.')
