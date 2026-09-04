@@ -25,10 +25,10 @@ import { useLang } from '../lib/i18n'
 import { PRODUCTS, getPackingOptionsByOutput, getProducts, productById } from '../lib/constants'
 import { branchName as configuredBranchName, syncConfiguredBranchRows, useConfiguredBranches, writeConfiguredBranchRows, type ConfigBranch } from '../lib/branches'
 import { downloadBlob, shareOrDownloadBlob } from '../lib/browser'
-import { calculateStock, fetchInventoryReports, fetchMovements, fetchReportSnapshots, stockAdjustmentDeltas, sumStockAdjustments, type StockAdjustment } from '../lib/store'
+import { calculateStock, ensureOperationDay, fetchInventoryReports, fetchMovements, fetchReportSnapshots, stockAdjustmentDeltas, sumStockAdjustments, type StockAdjustment } from '../lib/store'
 import { QUANTITY_DECIMALS, formatStockAmount } from '../lib/inventoryEntry'
 import { supabase, uniqueChannelName } from '../lib/supabase'
-import { fetchBagAllocations, fetchBagShiftSessions } from '../lib/shiftLedger'
+import { fetchBagAllocations, fetchBagShiftSessions, reopenBagShift } from '../lib/shiftLedger'
 import { buildShiftLeaderReceiptSources, buildShiftLeaderRevenueRows } from '../lib/shiftCompetition'
 import { buildEmployeeCompetitionRevenueSources } from '../lib/competitionDrilldown'
 import {
@@ -478,6 +478,7 @@ export function ManagementPage({ user, initialSection, focused = false, onNaviga
   const [inventoryLedgerSearch, setInventoryLedgerSearch] = useState('')
   const [inventoryLedgerPage, setInventoryLedgerPage] = useState(1)
   const [inventoryLedgerPageSize, setInventoryLedgerPageSize] = useState(50)
+  const [adminShiftActionId, setAdminShiftActionId] = useState('')
   const [activeUsers, setActiveUsers] = useState<ActiveUserSession[]>([])
   const [attendanceEdit, setAttendanceEdit] = useState<{
     recordId: string
@@ -2274,6 +2275,43 @@ export function ManagementPage({ user, initialSection, focused = false, onNaviga
     }
   }
 
+  async function reopenShiftsFromAdmin(rows: Array<{ sessionId: string; branchId: string; businessDate: string; sequence: number }>) {
+    if (user.role !== 'admin' || !rows.length || adminShiftActionId) return
+    const sessionRows = rows
+      .map((row) => bagSessions.find((session) => session.id === row.sessionId))
+      .filter((session): session is BagShiftSession => Boolean(session && session.status === 'closed'))
+    if (!sessionRows.length) return
+    if (sessionRows.some((session) => session.businessDate !== todayKey)) {
+      setError('Chỉ có thể mở lại ca của ngày hôm nay. Ca ngày cũ cần xử lý theo quy trình quản trị ngày vận hành.')
+      return
+    }
+    const branchId = sessionRows[0].branchId
+    const businessDate = sessionRows[0].businessDate
+    const label = sessionRows.map((session) => shiftLabel(session.sequence)).join(' và ')
+    const reason = window.prompt(
+      `Mở lại ${label} tại ${branchName(branchId)} ngày ${formatDate(businessDate)}?\n\n`
+        + 'Hệ thống sẽ hoàn tác phiếu kiểm kê/kho do lần chốt tạo ra, giữ nguyên hóa đơn và dữ liệu gốc. Nhập lý do:',
+      'Admin cần chỉnh lại số liệu chốt ca',
+    )
+    if (reason === null || reason.trim().length < 3) {
+      if (reason !== null) setError('Lý do mở lại ca cần ít nhất 3 ký tự.')
+      return
+    }
+    setAdminShiftActionId(sessionRows.map((session) => session.id).join('|'))
+    setError('')
+    try {
+      const scopedUser = { ...user, branchId }
+      await ensureOperationDay(scopedUser, businessDate, { allowAutoOpen: true, reopenClosed: true })
+      for (const session of sessionRows) await reopenBagShift(scopedUser, session, reason.trim())
+      await refresh(false)
+      setFeedback(`Đã mở lại ${label}. Có thể chỉnh dữ liệu rồi chốt lại ca.`)
+    } catch (reasonError) {
+      setError(reasonError instanceof Error ? reasonError.message : 'Không thể mở lại ca đã chọn.')
+    } finally {
+      setAdminShiftActionId('')
+    }
+  }
+
   async function saveAttendanceDeletion(event: React.FormEvent) {
     event.preventDefault()
     if (!attendanceDelete || attendanceDeleteSaving) return
@@ -3308,6 +3346,40 @@ export function ManagementPage({ user, initialSection, focused = false, onNaviga
                       <span data-label="Tồn bàn giao" role="cell"><b>{row.closingSummary}</b></span>
                       <span data-label="Out chính thức" role="cell"><b>{row.officialOutSummary}</b></span>
                       <span data-label="Chênh lệch" role="cell"><b className={row.differenceTone}>{row.differenceLabel}</b></span>
+                      {user.role === 'admin' && row.status === 'closed' && (
+                        <div data-label="Thao tác" className="inventory-shift-admin-actions" role="cell">
+                          <button
+                            type="button"
+                            className="mini-button"
+                            disabled={Boolean(adminShiftActionId) || row.businessDate !== todayKey}
+                            title={row.businessDate === todayKey ? 'Hoàn tác chốt ca để chỉnh sửa rồi chốt lại' : 'Chỉ hỗ trợ ca của ngày hôm nay'}
+                            onClick={() => void reopenShiftsFromAdmin([row])}
+                          >
+                            {adminShiftActionId === row.sessionId ? 'Đang mở…' : 'Mở lại ca'}
+                          </button>
+                          {row.sequence === 1 && inventoryShiftReconciliationRows.some((other) =>
+                            other.branchId === row.branchId
+                            && other.businessDate === row.businessDate
+                            && other.sequence === 2
+                            && other.status === 'closed',
+                          ) && (
+                            <button
+                              type="button"
+                              className="mini-button"
+                              disabled={Boolean(adminShiftActionId) || row.businessDate !== todayKey}
+                              title="Hoàn tác cả Ca 1 và Ca 2 để chỉnh sửa lại"
+                              onClick={() => void reopenShiftsFromAdmin([
+                                row,
+                                inventoryShiftReconciliationRows.find((other) =>
+                                  other.branchId === row.branchId
+                                  && other.businessDate === row.businessDate
+                                  && other.sequence === 2,
+                                )!,
+                              ])}
+                            >Mở lại cả 2 ca</button>
+                          )}
+                        </div>
+                      )}
                       <details className="inventory-shift-reconciliation-details">
                         <summary>Chi tiết đối chiếu theo SKU</summary>
                         <div className="inventory-shift-reconciliation-lines">
@@ -4847,6 +4919,12 @@ function summarizeInventoryQuantities(items: Array<{ quantity: number; unit: str
 function formatShiftTime(startedAt: string, endedAt?: string) {
   const time = (value: string) => new Date(value).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
   return `${time(startedAt)} – ${endedAt ? time(endedAt) : 'đang làm'}`
+}
+
+function shiftLabel(sequence: number) {
+  if (sequence === 1) return 'Ca sáng'
+  if (sequence === 2) return 'Ca tối'
+  return `Ca ${sequence}`
 }
 
 function buildShiftInventoryReconciliation(
