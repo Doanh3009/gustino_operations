@@ -139,7 +139,7 @@ assert(
   'Bộ dò ca thiếu điều kiện dừng, có thể mở ca sai.',
 )
 assert(
-  autoOpen.includes('canOpenNextScheduledOperationalShift(item, sessions, registrations, workShifts)')
+  autoOpen.includes('canOpenNextScheduledOperationalShift(item, sessions, effectiveRegistrations, workShifts)')
   && autoOpen.includes('openAttendances.some((record) => record.shiftRegistrationId === item.id)'),
   'Bộ dò ca phải giữ quy tắc BUG-100: đúng lịch VÀ đang check-in.',
 )

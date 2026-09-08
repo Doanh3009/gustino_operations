@@ -1,4 +1,4 @@
-import type { BagShiftSession, ShiftRegistration, WorkShift } from '../types'
+import type { AppUser, BagShiftSession, ShiftRegistration, WorkShift } from '../types'
 
 /**
  * "Ca phó" KHÔNG phải một role riêng: ca trưởng và ca phó cùng đăng nhập bằng
@@ -19,6 +19,25 @@ export function isDeputyShiftLeader(person?: { positionTitle?: string } | null) 
     .normalize('NFD')
     .replace(/\p{Diacritic}/gu, '')
   return /(^|[^a-z])pho([^a-z]|$)/.test(title)
+}
+
+/**
+ * Hồ sơ hiện tại là nguồn xác thực quyền của người đang đăng nhập. Bản ghi lịch
+ * vẫn giữ snapshot nhóm nhân sự tại lúc lập lịch; snapshot đó có thể cũ sau khi
+ * Admin đổi tài khoản sang Ca trưởng. Khi ấy người dùng check-in được nhưng lại
+ * bị loại khỏi chính ca vận hành của mình. Chỉ chuẩn hoá người đang đăng nhập;
+ * Ca phó vẫn bị loại bởi `positionTitle` trong `isLeaderRegistration()`.
+ */
+export function registrationWithAuthenticatedLeaderRole(
+  registration: ShiftRegistration,
+  user: Pick<AppUser, 'id' | 'role' | 'positionTitle'>,
+): ShiftRegistration {
+  if (user.role !== 'shift_leader' || registration.userId !== user.id) return registration
+  return {
+    ...registration,
+    employmentType: 'leader',
+    positionTitle: user.positionTitle || registration.positionTitle,
+  }
 }
 
 /**

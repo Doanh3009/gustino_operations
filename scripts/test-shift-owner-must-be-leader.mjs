@@ -75,7 +75,7 @@ assert.equal(primaryLeadersScheduledFor(1, '2026-07-28', deputyOnly, workShifts)
 
 // 3. Bộ dò ca chặn ca phó tự đứng tên và trả quyền chủ ca cho ca trưởng.
 assert.match(autoOpenSource, /deputy-not-owner/)
-assert.match(autoOpenSource, /blockedAsDeputy\(user, sequence, today, registrations, workShifts\)/)
+assert.match(autoOpenSource, /blockedAsDeputy\(user, sequence, today, effectiveRegistrations, workShifts\)/)
 assert.match(autoOpenSource, /reclaimShiftForPrimaryLeader/)
 // 07/08/2026 — chỉ bỏ qua khi người giữ ca ĐÚNG là chủ ca của phiên ca đó.
 // Gold Coast 07/08: Ca 2 mở dưới tên ca trưởng CA 1; vì người giữ cũng là "ca trưởng"
@@ -83,7 +83,7 @@ assert.match(autoOpenSource, /reclaimShiftForPrimaryLeader/)
 // Ca 1 chưa bàn giao vẫn không bị chiếm: người giữ có lịch đúng sequence 1.
 assert.match(
   autoOpenSource,
-  /const holderOwnsThisSequence = Boolean\(holder\)\s*\n\s*&& !isDeputyShiftLeader\(holder\)\s*\n\s*&& operationalSequencesFor\(holder!, registrations, workShifts\)\.includes\(session\.sequence\)/,
+  /const holderOwnsThisSequence = Boolean\(holder\)\s*\n\s*&& !isDeputyShiftLeader\(holder\)\s*\n\s*&& operationalSequencesFor\(holder!, effectiveRegistrations, workShifts\)\.includes\(session\.sequence\)/,
   'Phải xét người giữ ca có lịch đúng phiên ca này hay không, không chỉ xét ca phó.',
 )
 assert.match(autoOpenSource, /if \(holderOwnsThisSequence\) return skip\('shift-already-open'\)/)

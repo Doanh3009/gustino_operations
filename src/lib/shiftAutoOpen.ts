@@ -6,6 +6,7 @@ import {
   isDeputyShiftLeader,
   nextOperationalSequence,
   primaryLeadersScheduledFor,
+  registrationWithAuthenticatedLeaderRole,
   operationalSequencesFor,
 } from './operationalShiftAssignment'
 import {
@@ -91,12 +92,13 @@ export async function reconcileOperationalShift(user: AppUser): Promise<ShiftAut
   const openAttendances = attendance.filter((record) => !record.checkOutTime)
   if (!openAttendances.length) return skip('not-checked-in')
 
-  const registration = registrations.find((item) =>
+  const effectiveRegistrations = registrations.map((item) => registrationWithAuthenticatedLeaderRole(item, user))
+  const registration = effectiveRegistrations.find((item) =>
     item.userId === user.id
     && item.workDate === today
     && item.status === 'approved'
     && openAttendances.some((record) => record.shiftRegistrationId === item.id)
-    && canOpenNextScheduledOperationalShift(item, sessions, registrations, workShifts),
+    && canOpenNextScheduledOperationalShift(item, sessions, effectiveRegistrations, workShifts),
   )
   if (!registration) return skip('not-scheduled')
 
@@ -104,7 +106,7 @@ export async function reconcileOperationalShift(user: AppUser): Promise<ShiftAut
   // phiên ca này — kể cả khi check-in trước. Muốn mở thay (ca trưởng vắng) thì
   // phải bấm tay ở màn Bàn giao, có xác nhận và ghi rõ vào ghi chú ca.
   const sequence = nextOperationalSequence(sessions)
-  if (blockedAsDeputy(user, sequence, today, registrations, workShifts)) return skip('deputy-not-owner')
+  if (blockedAsDeputy(user, sequence, today, effectiveRegistrations, workShifts)) return skip('deputy-not-owner')
 
   await ensureOperationDay(user, today)
   const session = await startBagShift(user, today, await buildOpeningBalances(user))
@@ -152,23 +154,24 @@ async function reclaimShiftForPrimaryLeader(
     fetchAttendanceRecords(user, { branchId: user.branchId, userId: user.id, from: workDate, to: workDate }),
     fetchWorkShifts(user),
   ])
+  const effectiveRegistrations = registrations.map((item) => registrationWithAuthenticatedLeaderRole(item, user))
   // Chỉ bỏ qua khi người đang giữ ca ĐÚNG là chủ ca của phiên ca này: ca trưởng
   // (không phải ca phó) và có lịch đúng sequence đó. Mọi trường hợp còn lại —
   // ca phó mở hộ, ca trưởng ca khác giữ nhầm, người không có lịch hôm nay — đều
   // là giữ nhầm và phải trả về đúng người.
-  const holder = registrations.find((item) => item.userId === session.leaderId && item.workDate === workDate)
+  const holder = effectiveRegistrations.find((item) => item.userId === session.leaderId && item.workDate === workDate)
   const holderOwnsThisSequence = Boolean(holder)
     && !isDeputyShiftLeader(holder)
-    && operationalSequencesFor(holder!, registrations, workShifts).includes(session.sequence)
+    && operationalSequencesFor(holder!, effectiveRegistrations, workShifts).includes(session.sequence)
   if (holderOwnsThisSequence) return skip('shift-already-open')
 
   const openAttendances = attendance.filter((record) => !record.checkOutTime)
-  const registration = registrations.find((item) =>
+  const registration = effectiveRegistrations.find((item) =>
     item.userId === user.id
     && item.workDate === workDate
     && item.status === 'approved'
     && openAttendances.some((record) => record.shiftRegistrationId === item.id)
-    && operationalSequencesFor(item, registrations, workShifts).includes(session.sequence),
+    && operationalSequencesFor(item, effectiveRegistrations, workShifts).includes(session.sequence),
   )
   if (!registration) return skip('shift-already-open')
 
@@ -190,6 +193,7 @@ export async function openShiftAfterLeaderCheckIn(
   user: AppUser,
   registration: ShiftRegistration,
 ): Promise<string> {
+  const effectiveRegistration = registrationWithAuthenticatedLeaderRole(registration, user)
   const sessions = await fetchBagShiftSessions(user, { branchId: user.branchId, date: registration.workDate })
   const openSession = sessions.find((item) => item.status === 'open')
   if (openSession) {
@@ -212,7 +216,8 @@ export async function openShiftAfterLeaderCheckIn(
       to: registration.workDate,
     }),
   ])
-  if (!canOpenNextScheduledOperationalShift(registration, sessions, registrations, workShifts)) {
+  const effectiveRegistrations = registrations.map((item) => registrationWithAuthenticatedLeaderRole(item, user))
+  if (!canOpenNextScheduledOperationalShift(effectiveRegistration, sessions, effectiveRegistrations, workShifts)) {
     const nextSequence = nextOperationalSequence(sessions)
     return nextSequence === 2
       ? ' Đã check-in Ca 1, nhưng chỉ ca trưởng có lịch Ca 2 mới được tự nhận Ca 2.'
@@ -220,7 +225,7 @@ export async function openShiftAfterLeaderCheckIn(
   }
   const sequence = nextOperationalSequence(sessions)
   if (isDeputyShiftLeader(user)) {
-    const primaryLeaders = primaryLeadersScheduledFor(sequence, registration.workDate, registrations, workShifts)
+    const primaryLeaders = primaryLeadersScheduledFor(sequence, registration.workDate, effectiveRegistrations, workShifts)
       .filter((item) => item.userId !== user.id)
     if (primaryLeaders.length) {
       const names = primaryLeaders.map((item) => item.userName).join(', ')

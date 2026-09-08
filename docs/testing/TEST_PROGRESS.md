@@ -1,11 +1,18 @@
 # Test Progress
 
+## 2026-09-08 — BUG-140 authenticated Ca trưởng registration recovery
+
+- Reproduced the split state shown on production: attendance accepts an approved registration and saves check-in, while operational assignment excludes the same registration when its stored employment snapshot is stale even though the authenticated account role is `shift_leader`.
+- The current authenticated role now repairs only that user's in-memory registration identity for operational assignment. Current `positionTitle` remains authoritative, so Ca phó cannot become primary shift owner; other employees and persisted/history data remain unchanged.
+- Passed: `AUTHENTICATED_SHIFT_LEADER_REGISTRATION_OK`, shift-owner/deputy regression, second-shift assignment, handover recovery, Today recovery, TypeScript, diff check, and 728-module production build (`TodayPage-PCnDfdBW.js`; bundle guard `index-DakAhWGH.js` + `revenue-B0oKLhU1.js`).
+- No schema, migration or production business-data write occurred. Pending push/deploy and signed-in phone verification.
+
 ## 2026-09-08 — BUG-139 Today shift-open recovery without Realtime
 
 - Confirmed that Realtime is not required for eventual updates: Today polls session/receipt data every 8 seconds and App retries reconciliation every 60 seconds. The actual defect was that Today never retried the idempotent open operation itself and App suppressed every reconciliation error.
 - Today now reconciles on entry, reloads sessions after the result, presents the exact skip/error reason, and offers `Thử mở ca lại`. No leader assignment, approved-schedule, check-in, sequence, deputy, inventory-opening, or day-close rule changed.
 - `TODAY_SHIFT_OPEN_RECOVERY_OK`, handover recovery, second-shift assignment, TypeScript and diff check Passed. Final 728-module build Passed: `TodayPage-vBr-cZBa.js`; bundle guard `index-BzAp-YdE.js` + `revenue-DbqIv0vj.js`.
-- Not deployed; no production business-data write occurred.
+- Pushed in `a8930f6`; live Vercel serves the new Today asset and the signed-in phone displayed its diagnostic/retry card. No production business-data write occurred.
 
 ## 2026-09-08 — BUG-138 Admin Functions error-context handling
 

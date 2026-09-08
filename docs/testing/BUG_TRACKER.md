@@ -1,14 +1,23 @@
 # Bug Tracker
 
+## 2026-09-08 — BUG-140 High: đã check-in nhưng lịch Ca trưởng bị nhận nhầm là lịch nhân viên
+
+- Status: **Fixed and verified locally; pending push/deploy**.
+- User evidence: Trần Minh Lý, Gold Coast Nha Trang, lịch 08/09/2026 07:00–14:30 đã check-in lúc 09:44 nhưng `Thử mở ca lại` trả `Đã nhận check-in nhưng lịch ca trưởng hôm nay chưa được duyệt hoặc không khớp ca vận hành kế tiếp`.
+- Root cause: quyền đăng nhập hiện tại là `shift_leader`, nhưng `isLeaderRegistration()` chỉ đọc snapshot `employment_type` trong `shift_registrations`. Snapshot có thể cũ sau khi Admin đổi hồ sơ sang Ca trưởng; `manage-employee` đồng bộ `profiles` và `schedule_people` nhưng không đồng bộ registration đã có. Vì `checkIn()` chỉ loại `rejected`, lượt công vẫn lưu đúng trong khi bộ mở ca loại chính registration đó.
+- Fix: chỉ đối với người đang đăng nhập có role `shift_leader`, bộ phân ca chuẩn hóa registration của chính họ thành nhóm `leader` theo quyền xác thực hiện tại. `positionTitle` hiện tại vẫn được giữ nên Ca phó tiếp tục bị loại, và đăng ký của người khác không bị thay đổi. Không sửa database/schema, lịch sử công, sequence hay quy tắc người đứng tên ca.
+- Verification: `AUTHENTICATED_SHIFT_LEADER_REGISTRATION_OK`, shift-owner/deputy, auto-second-shift, handover recovery, Today recovery, TypeScript và diff check Passed. Production build 728 modules Passed; `TodayPage-PCnDfdBW.js`, `PRODUCTION_SUPABASE_BUNDLE_OK (index-DakAhWGH.js; revenue-B0oKLhU1.js)`.
+- Infrastructure observation: linked project `ppglstwhnzdgnowhdomm` reports migration-history rows only through 2026-06-24 although the repository contains later migrations. This does not alone prove the live schema is missing because it may have been imported manually; no migration or production data was changed during this fix.
+
 ## 2026-09-08 — BUG-139 High: trang Hôm nay kẹt `Chờ mở ca` và che mất lý do
 
-- Status: **Fixed and verified locally; not deployed**.
+- Status: **Fixed, pushed in `a8930f6`, and verified in the live Vercel bundle**.
 - User evidence: Trần Minh Lý tại Gold Coast Nha Trang đã thao tác nhưng trang Hôm nay lúc 11:30 vẫn hiển thị `Chờ mở ca`, `Chưa mở ca`, `0/6 bước`.
 - Source reproduction: `App.tsx` attempts `reconcileOperationalShift()` once on effect start and then every 60 seconds, but catches every error silently. If that first attempt runs before check-in finishes syncing or the immediate post-check-in open fails, `TodayPage` only reloads `bag_shift_sessions`; it never invokes reconciliation itself and gives no reason/button while no session exists.
 - Realtime assessment: disabling Realtime can delay push updates but is not the root cause. Today already polls sessions every 8 seconds and the background reconciler polls every 60 seconds; neither creates a missing session from the Today page after the race, and the background path hides errors.
 - Fix: Today now calls the existing idempotent reconciler on page entry, reads sessions again after the result, shows explicit states for missing server check-in, mismatched/unapproved schedule, deputy ownership, closed/completed day, or server error, and provides `Thử mở ca lại`. Existing leader/schedule/sequence/deputy business gates are unchanged.
 - Verification: `TODAY_SHIFT_OPEN_RECOVERY_OK`, `HANDOVER_SHIFT_RECOVERY_OK`, `AUTO_SECOND_SHIFT_START_OK`, TypeScript and diff check Passed. Production build Passed with 728 modules and `PRODUCTION_SUPABASE_BUNDLE_OK (index-BzAp-YdE.js; revenue-DbqIv0vj.js)`; Today asset is `TodayPage-vBr-cZBa.js`.
-- Remaining: push/deploy and signed-in phone verification with Realtime disabled. No production session, attendance, schedule, schema, or data was changed.
+- Deployment verification: live Vercel serves `TodayPage-vBr-cZBa.js` containing `Thử mở ca lại`; the user's signed-in phone then displayed the new diagnostic state. No production session, attendance, schedule, schema, or data was changed by this deployment.
 
 ## 2026-09-08 — BUG-138 High: Admin hiện `b.clone is not a function`
 

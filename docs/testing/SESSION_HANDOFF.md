@@ -1,5 +1,13 @@
 # Session Handoff
 
+## 2026-09-08 — BUG-140 local handoff
+
+- Production evidence: Trần Minh Lý at Gold Coast has an open attendance for the approved 07:00–14:30 registration (check-in 09:44), but retry reports the schedule is unapproved/not the next operational shift.
+- Confirmed source mismatch: authenticated profile role is Ca trưởng, while operational assignment trusts the registration's older employment snapshot; employee editing updates profile/schedule directory but not an existing registration snapshot.
+- Fix normalizes only the authenticated `shift_leader` registration during auto-open/reclaim; current Ca phó title still blocks primary ownership and no persisted record is rewritten.
+- All focused regressions, TypeScript, diff check and production build Passed. Changed source: `operationalShiftAssignment.ts`, `shiftAutoOpen.ts`; added focused test and updated two source-contract regressions.
+- Remaining: commit/push, wait for Vercel, then on the existing checked-in phone session press `Thử mở ca lại`. Do not check in/out again. No production data or migration was changed.
+
 ## 2026-09-08 — BUG-139 local handoff
 
 - Active module: MOD-08 operational shift opening / Today dashboard.
