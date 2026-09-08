@@ -1,5 +1,7 @@
 # Decision Log
 
+- 2026-09-08 — Opening an eligible operational shift must not depend on Realtime delivery. Keep all existing server-backed eligibility gates and idempotency, but make Today explicitly invoke reconciliation on entry, read back the session, expose the actual skip/error reason, and allow a bounded manual retry. Realtime remains only an acceleration path; it is not authoritative state or a prerequisite for creating the session.
+
 - 2026-09-08 — At the user's direct request, relink the repository from stale CLI project `drmqlbycitdtzvcunlux` to the `.env.local` target `ppglstwhnzdgnowhdomm` and deploy only `manage-employee`. Do not run migrations or change employee data. Validate deployment with function metadata, CORS preflight, and an unauthenticated JWT-rejected request; the user will perform the signed-in employee-status action and SQL confirmation.
 - 2026-09-08 — Supabase Functions error contexts are parsed by capability, not an asserted `Response` type. HTTP/relay errors may provide a response, while fetch errors provide the original thrown value. Error presentation tests `status`, `clone`, and `json` before use and preserves the most specific message. Employee save actions clear stale banners before a new attempt. This changes only presentation/error handling, not employee status, roles, permissions, RPC inputs, or data writes.
 

@@ -1,5 +1,15 @@
 # Session Handoff
 
+## 2026-09-08 — BUG-139 local handoff
+
+- Active module: MOD-08 operational shift opening / Today dashboard.
+- User evidence: Gold Coast Nha Trang, Trần Minh Lý, 08/09/2026 11:30 remained at `Chờ mở ca` and `0/6 bước` after an action.
+- Root cause: Today polled missing sessions but did not rerun the operation that creates one; App's 60-second reconciler swallowed failures. Realtime being disabled can delay UI events but does not explain a permanently missing session.
+- Fix: Today reconciles immediately on entry, reads back sessions, displays precise eligibility/error feedback and offers `Thử mở ca lại`; all current business gates remain intact.
+- Passed: new recovery test, handover recovery, auto-second-shift test, TypeScript, diff check, and 728-module production build (`TodayPage-vBr-cZBa.js`; bundle guard green).
+- Changed: `src/pages/TodayPage.tsx`, `scripts/test-today-shift-open-recovery.mjs`, and testing trackers.
+- Remaining: not pushed/deployed. Next action is an explicitly authorized push/deploy followed by signed-in phone verification with Realtime disabled. No production data was mutated.
+
 ## 2026-09-08 — BUG-138 local handoff
 
 - Cloud follow-up completed: local function existed; CLI login was valid; stale project link was changed to `ppglstwhnzdgnowhdomm`; `manage-employee` deployed successfully and is `ACTIVE` version 1 with `verify_jwt=true`. Live preflight returned 200 and unauthenticated POST returned the expected 401 with CORS. The user chose to perform the signed-in UI action personally. No SQL/migration/data write was run by Codex.

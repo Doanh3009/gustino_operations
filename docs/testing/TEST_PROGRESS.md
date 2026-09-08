@@ -1,5 +1,12 @@
 # Test Progress
 
+## 2026-09-08 — BUG-139 Today shift-open recovery without Realtime
+
+- Confirmed that Realtime is not required for eventual updates: Today polls session/receipt data every 8 seconds and App retries reconciliation every 60 seconds. The actual defect was that Today never retried the idempotent open operation itself and App suppressed every reconciliation error.
+- Today now reconciles on entry, reloads sessions after the result, presents the exact skip/error reason, and offers `Thử mở ca lại`. No leader assignment, approved-schedule, check-in, sequence, deputy, inventory-opening, or day-close rule changed.
+- `TODAY_SHIFT_OPEN_RECOVERY_OK`, handover recovery, second-shift assignment, TypeScript and diff check Passed. Final 728-module build Passed: `TodayPage-vBr-cZBa.js`; bundle guard `index-BzAp-YdE.js` + `revenue-DbqIv0vj.js`.
+- Not deployed; no production business-data write occurred.
+
 ## 2026-09-08 — BUG-138 Admin Functions error-context handling
 
 - User-authorized cloud follow-up completed: Supabase CLI 2.115.0 was already authenticated and had access to healthy target `ppglstwhnzdgnowhdomm` (`Hatdeongly`). Relink succeeded, then `manage-employee` deployed as `ACTIVE` version 1 with JWT verification enabled. Live CORS OPTIONS = 200; unauthenticated POST = 401 with `UNAUTHORIZED_NO_AUTH_HEADER` and CORS headers. No migration or data mutation was executed; signed-in UI/SQL confirmation is delegated to the user.

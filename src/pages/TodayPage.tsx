@@ -11,6 +11,7 @@ import { createSupplyRequests, type SupplyDeliveryPeriod } from '../lib/supplyRe
 import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { localDateKey } from '../lib/dates'
 import { supabase, uniqueChannelName } from '../lib/supabase'
+import { reconcileOperationalShift, type ShiftAutoOpenResult } from '../lib/shiftAutoOpen'
 import type { AppUser, AttendanceRecord, BagShiftSession, OperationDay, ShiftRegistration, StockMovement } from '../types'
 
 interface Props {
@@ -53,6 +54,8 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   const [openingFeedback, setOpeningFeedback] = useState('')
   const [closingBusy, setClosingBusy] = useState(false)
   const [closingFeedback, setClosingFeedback] = useState('')
+  const [shiftOpeningBusy, setShiftOpeningBusy] = useState(false)
+  const [shiftOpeningFeedback, setShiftOpeningFeedback] = useState('')
   const [clockNow, setClockNow] = useState(() => new Date())
   const orderProductRef = useRef<HTMLInputElement>(null)
   const todayKey = localDateKey(clockNow)
@@ -169,6 +172,32 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
     }, 30000)
     return () => window.clearInterval(timer)
   }, [todayKey, user.id, user.branchId])
+
+  async function syncOperationalShift(showFeedback = false) {
+    if (user.role !== 'shift_leader') return
+    setShiftOpeningBusy(true)
+    if (showFeedback) setShiftOpeningFeedback('Đang kiểm tra check-in và lịch ca trưởng…')
+    try {
+      const result = await reconcileOperationalShift(user)
+      const nextSessions = await fetchBagShiftSessions(user, { branchId: user.branchId, date: todayKey })
+      setBagSessions(nextSessions)
+      const message = shiftAutoOpenMessage(result)
+      if (showFeedback || result.status !== 'skipped' || !nextSessions.some((item) => item.status === 'open')) {
+        setShiftOpeningFeedback(message)
+      }
+    } catch (reason) {
+      setShiftOpeningFeedback(reason instanceof Error ? reason.message : 'Không thể đồng bộ mở ca. Vui lòng thử lại.')
+    } finally {
+      setShiftOpeningBusy(false)
+    }
+  }
+
+  // Nếu lần mở ngay sau check-in gặp mạng chập chờn hoặc check-in vừa mới đồng bộ xong,
+  // vào trang Hôm nay phải thử lại NGAY và đọc lại session thay vì chờ nhịp nền 60 giây.
+  useEffect(() => {
+    if (user.role !== 'shift_leader') return
+    void syncOperationalShift(false)
+  }, [todayKey, user.id, user.branchId, user.role])
   const scrollToPhotoActions = () => document.getElementById('shift-photo-quick-actions')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   const latestClosedSession = [...closedBagSessions].sort((a, b) => b.sequence - a.sequence)[0]
   const openingPhotoDone = Boolean(openBagSession?.openingPhotoUrl || latestClosedSession?.openingPhotoUrl)
@@ -231,6 +260,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   ]
   const nextStep = steps.find((step) => !step.done) || steps[steps.length - 1]
   const blockedByAttendance = !reportDone && !userCheckedInToday
+  const waitingForShift = !reportDone && userCheckedInToday && !openBagSession && !reportReady
   const needsOpeningPhoto = !reportDone && userCheckedInToday && Boolean(openBagSession) && !openBagSession?.openingPhotoUrl
   const actionStep = blockedByAttendance
     ? {
@@ -240,7 +270,15 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
         action: () => onNavigate('attendance'),
         actionLabel: 'Mở chấm công',
       }
-    : needsOpeningPhoto
+    : waitingForShift
+      ? {
+          number: 0,
+          title: shiftOpeningBusy ? 'Đang đồng bộ mở ca' : 'Ca chưa mở sau khi check-in',
+          description: shiftOpeningFeedback || 'Hệ thống đã nhận check-in nhưng chưa thấy phiên ca vận hành. Bấm thử lại để kiểm tra lịch ca và mở đúng ca được phân công.',
+          action: () => void syncOperationalShift(true),
+          actionLabel: shiftOpeningBusy ? 'Đang kiểm tra…' : 'Thử mở ca lại',
+        }
+      : needsOpeningPhoto
       ? {
           number: 0,
           title: 'Chụp ảnh quầy đầu ca',
@@ -379,7 +417,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
         </div>
         <div className="shift-hero-status">
           <span className={reportDone ? 'shift-status closed' : !userCheckedInToday ? 'shift-status waiting' : openBagSession ? 'shift-status open' : 'shift-status waiting'}>
-            <i /> {reportDone ? 'Đã chốt ngày' : !userCheckedInToday ? 'Cần check-in' : openBagSession ? shiftLabel : 'Chờ mở ca'}
+            <i /> {reportDone ? 'Đã chốt ngày' : !userCheckedInToday ? 'Cần check-in' : openBagSession ? shiftLabel : shiftOpeningBusy ? 'Đang mở ca' : 'Chờ mở ca'}
           </span>
           <div id="shift-photo-quick-actions" className="shift-photo-quick-actions" aria-label="Chụp hình đầu ca và cuối ca">
             <ShiftPhotoButton
@@ -422,6 +460,16 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
           <strong>{attendanceReminder.title}</strong>
           <span>{attendanceReminder.message}</span>
           <button onClick={() => onNavigate('attendance')}>Mở chấm công</button>
+        </section>
+      )}
+
+      {!reportDone && userCheckedInToday && !openBagSession && shiftOpeningFeedback && (
+        <section className="attendance-reminder-card warning shift-opening-feedback" role="status">
+          <strong>Ca vận hành chưa mở</strong>
+          <span>{shiftOpeningFeedback}</span>
+          <button type="button" disabled={shiftOpeningBusy} onClick={() => void syncOperationalShift(true)}>
+            {shiftOpeningBusy ? 'Đang kiểm tra…' : 'Thử mở ca lại'}
+          </button>
         </section>
       )}
 
@@ -628,6 +676,18 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
       )}
     </div>
   )
+}
+
+function shiftAutoOpenMessage(result: ShiftAutoOpenResult) {
+  if (result.status === 'opened') return `Đã mở Ca ${result.sequence} thành công.`
+  if (result.status === 'reassigned') return `Đã nhận lại quyền Ca ${result.sequence} theo lịch phân công.`
+  if (result.reason === 'not-checked-in') return 'Máy chủ chưa nhận được lượt check-in đang mở của bạn. Hãy kiểm tra lại trong mục Chấm công.'
+  if (result.reason === 'not-scheduled') return 'Đã nhận check-in nhưng lịch ca trưởng hôm nay chưa được duyệt hoặc không khớp ca vận hành kế tiếp.'
+  if (result.reason === 'deputy-not-owner') return 'Bạn đang được xếp là ca phó; ca trưởng chính phải mở ca. Nếu ca trưởng vắng, vào Bàn giao để nhận ca thay.'
+  if (result.reason === 'day-closed') return 'Ngày vận hành đã được chốt. Quản lý cần mở lại ngày trước khi tiếp tục.'
+  if (result.reason === 'day-complete') return 'Hôm nay đã hoàn tất đủ hai ca vận hành.'
+  if (result.reason === 'shift-already-open') return 'Máy chủ đã có một ca đang mở. Đang tải lại thông tin ca.'
+  return 'Tài khoản này không có quyền tự mở ca vận hành.'
 }
 
 function buildAttendanceReminder(registrations: ShiftRegistration[], records: AttendanceRecord[], now = new Date()) {

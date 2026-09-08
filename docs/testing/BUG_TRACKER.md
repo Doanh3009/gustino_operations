@@ -1,5 +1,15 @@
 # Bug Tracker
 
+## 2026-09-08 — BUG-139 High: trang Hôm nay kẹt `Chờ mở ca` và che mất lý do
+
+- Status: **Fixed and verified locally; not deployed**.
+- User evidence: Trần Minh Lý tại Gold Coast Nha Trang đã thao tác nhưng trang Hôm nay lúc 11:30 vẫn hiển thị `Chờ mở ca`, `Chưa mở ca`, `0/6 bước`.
+- Source reproduction: `App.tsx` attempts `reconcileOperationalShift()` once on effect start and then every 60 seconds, but catches every error silently. If that first attempt runs before check-in finishes syncing or the immediate post-check-in open fails, `TodayPage` only reloads `bag_shift_sessions`; it never invokes reconciliation itself and gives no reason/button while no session exists.
+- Realtime assessment: disabling Realtime can delay push updates but is not the root cause. Today already polls sessions every 8 seconds and the background reconciler polls every 60 seconds; neither creates a missing session from the Today page after the race, and the background path hides errors.
+- Fix: Today now calls the existing idempotent reconciler on page entry, reads sessions again after the result, shows explicit states for missing server check-in, mismatched/unapproved schedule, deputy ownership, closed/completed day, or server error, and provides `Thử mở ca lại`. Existing leader/schedule/sequence/deputy business gates are unchanged.
+- Verification: `TODAY_SHIFT_OPEN_RECOVERY_OK`, `HANDOVER_SHIFT_RECOVERY_OK`, `AUTO_SECOND_SHIFT_START_OK`, TypeScript and diff check Passed. Production build Passed with 728 modules and `PRODUCTION_SUPABASE_BUNDLE_OK (index-BzAp-YdE.js; revenue-DbqIv0vj.js)`; Today asset is `TodayPage-vBr-cZBa.js`.
+- Remaining: push/deploy and signed-in phone verification with Realtime disabled. No production session, attendance, schedule, schema, or data was changed.
+
 ## 2026-09-08 — BUG-138 High: Admin hiện `b.clone is not a function`
 
 - Status: **Edge Function deployed and verified; frontend defensive fix remains local**.

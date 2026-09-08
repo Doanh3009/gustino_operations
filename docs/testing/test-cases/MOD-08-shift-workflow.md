@@ -4,6 +4,7 @@ Status: in progress; isolated LAN browser integration passed, cloud/multi-device
 
 | ID | Flow | Expected result | Automation/status |
 |---|---|---|---|
+| MOD08-TC-OPEN-RECOVERY | Eligible shift leader opens Today after check-in while Realtime is unavailable or the first auto-open attempt raced/fails | Today invokes the existing idempotent reconciliation, reads back the session, opens the assigned sequence when eligible, otherwise shows the exact reason and a retry action | `TODAY_SHIFT_OPEN_RECOVERY_OK`, handover/sequence regressions, TypeScript and build Passed; signed-in phone check pending |
 | MOD08-TC-AUTO-01 | Leader checks in | Operational shift opens automatically without a Receive button | `test-shift-realtime-reminders.mjs` and isolated `qa-handover.mjs` Passed |
 | MOD08-TC-DAY-01 | Previous shift left open across date | Stale shift closes and new business date starts at Ca 1 | Static contract Passed |
 | MOD08-TC-PHOTO-01 | Today checklist | Step 1 is opening counter photo; last step is closing counter photo | Static contract Passed |
