@@ -17,6 +17,9 @@ supabase/.temp/
 
 .npm-cache/
 
+# Prevent the accidental repository-within-repository copy from returning.
+/gustino_operations/
+
 # Rac build cua Python (script dung bao cao).
 __pycache__/
 *.pyc
