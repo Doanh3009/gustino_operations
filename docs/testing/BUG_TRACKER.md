@@ -2,12 +2,12 @@
 
 ## 2026-09-08 — BUG-140 High: đã check-in nhưng lịch Ca trưởng bị nhận nhầm là lịch nhân viên
 
-- Status: **Fixed and verified locally; pending push/deploy**.
+- Status: **Fixed, pushed in `76c3e5b`, and deployed to Vercel; pending signed-in phone confirmation**.
 - User evidence: Trần Minh Lý, Gold Coast Nha Trang, lịch 08/09/2026 07:00–14:30 đã check-in lúc 09:44 nhưng `Thử mở ca lại` trả `Đã nhận check-in nhưng lịch ca trưởng hôm nay chưa được duyệt hoặc không khớp ca vận hành kế tiếp`.
 - Root cause: quyền đăng nhập hiện tại là `shift_leader`, nhưng `isLeaderRegistration()` chỉ đọc snapshot `employment_type` trong `shift_registrations`. Snapshot có thể cũ sau khi Admin đổi hồ sơ sang Ca trưởng; `manage-employee` đồng bộ `profiles` và `schedule_people` nhưng không đồng bộ registration đã có. Vì `checkIn()` chỉ loại `rejected`, lượt công vẫn lưu đúng trong khi bộ mở ca loại chính registration đó.
 - Fix: chỉ đối với người đang đăng nhập có role `shift_leader`, bộ phân ca chuẩn hóa registration của chính họ thành nhóm `leader` theo quyền xác thực hiện tại. `positionTitle` hiện tại vẫn được giữ nên Ca phó tiếp tục bị loại, và đăng ký của người khác không bị thay đổi. Không sửa database/schema, lịch sử công, sequence hay quy tắc người đứng tên ca.
 - Verification: `AUTHENTICATED_SHIFT_LEADER_REGISTRATION_OK`, shift-owner/deputy, auto-second-shift, handover recovery, Today recovery, TypeScript và diff check Passed. Production build 728 modules Passed; `TodayPage-PCnDfdBW.js`, `PRODUCTION_SUPABASE_BUNDLE_OK (index-DakAhWGH.js; revenue-B0oKLhU1.js)`.
-- Infrastructure observation: linked project `ppglstwhnzdgnowhdomm` reports migration-history rows only through 2026-06-24 although the repository contains later migrations. This does not alone prove the live schema is missing because it may have been imported manually; no migration or production data was changed during this fix.
+- Deployment: live alias now serves the exact production-build assets `index-DakAhWGH.js` and `TodayPage-PCnDfdBW.js`. Infrastructure observation: linked project `ppglstwhnzdgnowhdomm` reports migration-history rows only through 2026-06-24 although the repository contains later migrations. This does not alone prove the live schema is missing because it may have been imported manually; no migration or production data was changed during this fix.
 
 ## 2026-09-08 — BUG-139 High: trang Hôm nay kẹt `Chờ mở ca` và che mất lý do
 

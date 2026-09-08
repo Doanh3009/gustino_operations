@@ -5,7 +5,7 @@
 - Reproduced the split state shown on production: attendance accepts an approved registration and saves check-in, while operational assignment excludes the same registration when its stored employment snapshot is stale even though the authenticated account role is `shift_leader`.
 - The current authenticated role now repairs only that user's in-memory registration identity for operational assignment. Current `positionTitle` remains authoritative, so Ca phó cannot become primary shift owner; other employees and persisted/history data remain unchanged.
 - Passed: `AUTHENTICATED_SHIFT_LEADER_REGISTRATION_OK`, shift-owner/deputy regression, second-shift assignment, handover recovery, Today recovery, TypeScript, diff check, and 728-module production build (`TodayPage-PCnDfdBW.js`; bundle guard `index-DakAhWGH.js` + `revenue-B0oKLhU1.js`).
-- No schema, migration or production business-data write occurred. Pending push/deploy and signed-in phone verification.
+- Pushed in `76c3e5b`; live Vercel serves the matching production assets `index-DakAhWGH.js` and `TodayPage-PCnDfdBW.js`. No schema, migration or production business-data write occurred. Pending signed-in phone verification.
 
 ## 2026-09-08 — BUG-139 Today shift-open recovery without Realtime
 
