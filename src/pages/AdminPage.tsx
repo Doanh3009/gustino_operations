@@ -1476,6 +1476,8 @@ export function ManagementPage({ user, initialSection, focused = false, onNaviga
 
   async function saveEmployeeCrm(employee: EmployeeProfile) {
     setEmployeeCrmSaving(true)
+    setError('')
+    setFeedback('')
     try {
       const updated = await updateEmployeeCrmDetails(user, employee.id, employeeCrmDraft)
       setEmployees((items) => items.map((item) => item.id === employee.id ? { ...item, ...updated } : item))
@@ -1558,6 +1560,8 @@ export function ManagementPage({ user, initialSection, focused = false, onNaviga
   async function saveEmployeeDetails(employee: EmployeeProfile) {
     const draft = employeeDraft(employee)
     setSavingEmployeeDetailsId(employee.id)
+    setError('')
+    setFeedback('')
     try {
       const updated = await updateEmployeeDetails(user, employee.id, {
         ...draft,

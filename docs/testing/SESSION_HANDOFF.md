@@ -1,5 +1,16 @@
 # Session Handoff
 
+## 2026-09-08 — BUG-138 local handoff
+
+- Cloud follow-up completed: local function existed; CLI login was valid; stale project link was changed to `ppglstwhnzdgnowhdomm`; `manage-employee` deployed successfully and is `ACTIVE` version 1 with `verify_jwt=true`. Live preflight returned 200 and unauthenticated POST returned the expected 401 with CORS. The user chose to perform the signed-in UI action personally. No SQL/migration/data write was run by Codex.
+- Active module: MOD-04 Admin employee/account management.
+- Completed: non-Response Supabase Functions contexts no longer receive an unconditional `.clone()` call; HTTP status/JSON handling remains, and employee profile/CRM saves clear stale banners.
+- Passed: new error-context regression, account-orphan regression, safe-branch-remove regression, TypeScript, diff check, and 728-module production build (`index-CXoRf18a.js`; bundle guard green).
+- Test infrastructure: legacy Admin CRM directory script imports absent `src/lib/payroll.ts`; preserve this unrelated worktree condition.
+- Changed files: `src/lib/functionsError.ts`, `src/lib/attendance.ts`, `src/lib/branches.ts`, `src/pages/AdminPage.tsx`, `scripts/test-functions-error-context.mjs`, and testing trackers.
+- Remaining: frontend defensive parser deployment (only if requested) and the user's signed-in runtime/SQL confirmation. No schema/API/business-rule change or production data write occurred.
+- Next action: user retries the employee profile/status save, checks Console for CORS errors, then runs the requested read-only `employment_status` SQL query.
+
 ## 2026-08-27 — POS currency label normalized locally
 
 - All `formatMoney` output now uses `33.000 đ` rather than `33.000d`, across menu, cart, totals, history, messages and printable receipt. Numeric values and sales logic are unchanged. Mobile POS regression/TypeScript/diff/build Passed; asset `SalesPage-D2RLDOGk.js`, bundle guard green. Not deployed.

@@ -4,6 +4,7 @@ Status: in progress; isolated LAN account lifecycle/browser integration passed, 
 
 | ID | Flow | Expected result | Automation/status |
 |---|---|---|---|
+| MOD04-TC-ERR-01 | Edge Function returns an HTTP, relay, or fetch error while Admin manages an employee | Read status/JSON only when supported, never call `.clone()` on a plain error, show the underlying message, and clear stale banners before a new save | `FUNCTIONS_ERROR_CONTEXT_OK`, account/branch regressions, TypeScript and build Passed; signed-in post-deploy check pending |
 | MOD04-TC-CRM-01 | Open Admin employee/branch directories and select one record | Overviews are compact lists; branch opens a restaurant profile; employee opens a profile containing avatar/work/role/password/delete controls, while list rows contain none | `ADMIN_CRM_DIRECTORY_OK`; TypeScript/build Passed; visual verification pending |
 | MOD04-TC-CRM-02 | Review directory without creating an account, then open/close create panel and enter/leave detail | Create form is hidden behind `+ Thêm nhân viên`; branch/employee details have explicit sticky back actions | `ADMIN_CRM_DIRECTORY_OK`; visual verification pending |
 | MOD04-TC-CRM-03 | Add or inspect a branch from Admin CRM | `+ Thêm chi nhánh` is beside the branch directory; Control Center has no branch-creation form; detail shows branch address/manager | `ADMIN_CRM_DIRECTORY_OK` Passed |

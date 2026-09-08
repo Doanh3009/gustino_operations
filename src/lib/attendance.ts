@@ -12,6 +12,7 @@ import { detectDeviceEnvironment } from './deviceReadiness'
 import { branchIds, branchName } from './branches'
 import { localDateKey } from './dates'
 import { shouldUseLanApi, supabase } from './supabase'
+import { functionsErrorMessage, functionsErrorStatus } from './functionsError'
 import { usernameToEmail, validateUsername } from './authIdentity'
 import { formatWorkDurationBetween } from './workDuration'
 import { resolveLateCheckOutAt } from './lateCheckOut'
@@ -520,21 +521,17 @@ async function invokeManageEmployee(body: Record<string, unknown>): Promise<any>
   }
 
   let result = await invoke(sessionData.session.access_token)
-  if ((result.error as { context?: Response } | null)?.context?.status === 401) {
+  if (functionsErrorStatus(result.error) === 401) {
     const { data: refreshed, error: refreshError } = await client.auth.refreshSession()
     if (!refreshError && refreshed.session?.access_token) {
       result = await invoke(refreshed.session.access_token)
     }
   }
   if (result.error) {
-    const context = (result.error as { context?: Response }).context
-    const payload = context
-      ? await context.clone().json().catch(() => null) as { error?: string } | null
-      : null
-    if (context?.status === 401) {
+    if (functionsErrorStatus(result.error) === 401) {
       throw new Error('Supabase chưa xác nhận được phiên Admin. Hãy bấm lại thao tác, không cần đăng nhập lại.')
     }
-    throw new Error(payload?.error || result.error.message || 'Không thể quản lý tài khoản.')
+    throw new Error(await functionsErrorMessage(result.error, 'Không thể quản lý tài khoản.'))
   }
   if (result.data?.error) throw new Error(result.data.error)
   return result.data

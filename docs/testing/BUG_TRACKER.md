@@ -1,5 +1,18 @@
 # Bug Tracker
 
+## 2026-09-08 — BUG-138 High: Admin hiện `b.clone is not a function`
+
+- Status: **Edge Function deployed and verified; frontend defensive fix remains local**.
+- Deployment follow-up: repository contained `supabase/functions/manage-employee/index.ts` (24,312 bytes). `.env.local` targeted `ppglstwhnzdgnowhdomm` while CLI metadata still targeted `drmqlbycitdtzvcunlux`; at the user's direct request the workspace was relinked to `ppglstwhnzdgnowhdomm` and only `manage-employee` was deployed. Supabase reports the function `ACTIVE`, version 1, `verify_jwt=true`.
+- Non-mutating live verification: CORS preflight from `https://gustino-operations.vercel.app` returned HTTP 200 with `Access-Control-Allow-Origin: *`; an unauthenticated POST returned HTTP 401 `UNAUTHORIZED_NO_AUTH_HEADER` with CORS headers, proving the endpoint and JWT gate are active without reaching a business-data write.
+- User evidence: Admin employee detail displayed `b.clone is not a function` while a later employment-status save also displayed its success banner.
+- Source/bundle reproduction: `invokeManageEmployee()` and `hardDeleteConfiguredBranch()` treated every Supabase Functions `error.context` as a browser `Response` and unconditionally called `context.clone().json()`. Fetch/network failures instead supply an ordinary `Error` context with no `clone`. The pre-fix bundle contained the exact minified path `b?await b.clone().json()`, matching the screenshot.
+- Root cause: this secondary parser exception replaced the actionable Supabase/network error. Employee profile and CRM save handlers also retained the opposite stale banner, allowing an old error and a new success to appear together.
+- Fix: `src/lib/functionsError.ts` narrows unknown context safely, preserves HTTP status/JSON messages, and falls back to the underlying error. Account and branch paths use it; employee profile/CRM saves clear stale banners before starting. No status, permission, API, schema, or business rule changed.
+- Verification: `FUNCTIONS_ERROR_CONTEXT_OK`, `ACCOUNT_ORPHAN_RECOVERY_OK`, `ADMIN_BRANCH_SAFE_REMOVE_OK`, TypeScript, diff check, and the 728-module production build Passed. Bundle guard: `PRODUCTION_SUPABASE_BUNDLE_OK (index-CXoRf18a.js; revenue-DOQvdNzk.js)`.
+- Infrastructure note: legacy `test-admin-crm-directory.mjs` cannot start because it references absent user-worktree file `src/lib/payroll.ts`; no unrelated module was restored.
+- Remaining: the user will perform signed-in employee-status confirmation and the read-only SQL check. The frontend defensive parser build was not deployed in this step. No migration or production business-data write was performed by Codex.
+
 ## 2026-08-26 — POS mobile chưa tách luồng thao tác theo ba màn hình
 
 ### BUG-137 — Menu, giỏ hàng và lịch sử hóa đơn dồn trong một trang dài trên điện thoại

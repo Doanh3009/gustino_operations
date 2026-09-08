@@ -1,5 +1,8 @@
 # Decision Log
 
+- 2026-09-08 — At the user's direct request, relink the repository from stale CLI project `drmqlbycitdtzvcunlux` to the `.env.local` target `ppglstwhnzdgnowhdomm` and deploy only `manage-employee`. Do not run migrations or change employee data. Validate deployment with function metadata, CORS preflight, and an unauthenticated JWT-rejected request; the user will perform the signed-in employee-status action and SQL confirmation.
+- 2026-09-08 — Supabase Functions error contexts are parsed by capability, not an asserted `Response` type. HTTP/relay errors may provide a response, while fetch errors provide the original thrown value. Error presentation tests `status`, `clone`, and `json` before use and preserves the most specific message. Employee save actions clear stale banners before a new attempt. This changes only presentation/error handling, not employee status, roles, permissions, RPC inputs, or data writes.
+
 - 2026-08-27 — Tiền trên toàn bộ trang bán hàng dùng định dạng `33.000 đ` thay cho `33.000d`: có một khoảng trắng trước ký hiệu đồng Việt Nam. Chỉ `formatMoney` thay đổi; số tiền, giá, doanh thu, phép tính, dữ liệu hóa đơn và API không đổi.
 
 - 2026-08-27 — Tên mặt hàng trên toàn bộ giao diện bán hàng được viết hoa ký tự đầu tiên bằng locale tiếng Việt, ví dụ `nướng 110g` → `Nướng 110g`. Chỉ helper hiển thị `shortProductName` thay đổi; tên sản phẩm trong catalog, tìm kiếm, phân nhóm, sắp xếp, dòng hóa đơn đã lưu và API không bị sửa.

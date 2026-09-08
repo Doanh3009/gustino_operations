@@ -1,5 +1,13 @@
 # Test Progress
 
+## 2026-09-08 — BUG-138 Admin Functions error-context handling
+
+- User-authorized cloud follow-up completed: Supabase CLI 2.115.0 was already authenticated and had access to healthy target `ppglstwhnzdgnowhdomm` (`Hatdeongly`). Relink succeeded, then `manage-employee` deployed as `ACTIVE` version 1 with JWT verification enabled. Live CORS OPTIONS = 200; unauthenticated POST = 401 with `UNAUTHORIZED_NO_AUTH_HEADER` and CORS headers. No migration or data mutation was executed; signed-in UI/SQL confirmation is delegated to the user.
+- Confirmed the screenshot against source and the pre-fix minified bundle: account/branch Edge Function error parsing called `.clone()` on `error.context`, although network failures provide a plain `Error`.
+- Added a shared capability-checked parser, retained existing Admin 401/server-message behavior, and cleared stale employee error/success banners before profile/CRM saves. Business status updates and permissions are unchanged.
+- Passed: `FUNCTIONS_ERROR_CONTEXT_OK`, `ACCOUNT_ORPHAN_RECOVERY_OK`, `ADMIN_BRANCH_SAFE_REMOVE_OK`, TypeScript, diff check, and the 728-module production build with `PRODUCTION_SUPABASE_BUNDLE_OK (index-CXoRf18a.js; revenue-DOQvdNzk.js)`.
+- Legacy Admin CRM directory automation is unavailable because it imports absent `src/lib/payroll.ts`; this unrelated worktree condition was preserved. No deploy, schema change, account mutation, or production-data write occurred.
+
 ## 2026-08-27 — POS chuẩn hóa ký hiệu tiền Việt Nam
 
 - `formatMoney` đổi hậu tố từ `d` sang ` đ`, áp dụng đồng nhất cho giá menu, hóa đơn đang tạo, tổng cộng, lịch sử và bản in hóa đơn.

@@ -3,6 +3,7 @@ import type { AppUser, Branch } from '../types'
 import { BRANCHES } from './constants'
 import { isMissingRpc, userBranchIds, userHeaders } from './core'
 import { shouldUseLanApi, supabase, uniqueChannelName } from './supabase'
+import { functionsErrorMessage } from './functionsError'
 
 export type ConfigBranchSource = 'system' | 'custom'
 
@@ -198,11 +199,7 @@ export async function hardDeleteConfiguredBranch(user: AppUser, branchId: string
     body: { action: 'delete_branch', branchId },
   })
   if (result.error) {
-    const context = (result.error as { context?: Response }).context
-    const payload = context
-      ? await context.clone().json().catch(() => null) as { error?: string } | null
-      : null
-    throw new Error(payload?.error || result.error.message || 'Không thể xóa chi nhánh.')
+    throw new Error(await functionsErrorMessage(result.error, 'Không thể xóa chi nhánh.'))
   }
   if (result.data?.error) throw new Error(result.data.error)
   const rows = readConfiguredBranchRows().filter((branch) => branch.id !== branchId)
