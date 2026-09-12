@@ -203,7 +203,7 @@ export function LoginPage({ onLogin }: Props) {
           )}
           {error && <div className="form-error">{error}</div>}
           <button className="primary-button wide" disabled={loading}>
-            {loading ? 'Đang đăng nhập...' : 'Đăng nhập →'}
+            {loading ? 'Đang đăng nhập...' : 'Đăng nhập'}
           </button>
           <small className="login-help">Cần hỗ trợ? Liên hệ quản lý hệ thống.</small>
         </form>

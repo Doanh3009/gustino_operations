@@ -1149,3 +1149,14 @@ Check-in **không kiểm tra khoảng cách tới chi nhánh**, chỉ yêu cầu
 - Evidence: saveDetail previously replaced the saved row with the request object, which omitted persisted ID and published/viewed timestamps. This hid sent state after save and would prevent new revoke/delete actions from locating a freshly saved slip.
 - Targeted fix: upsertPayrollEntry returns the database row via select/single; UI stores its mapped ID and publication state. Payload and salary formulas unchanged.
 - Verification: test-payslip-revoke-delete.mjs exercises save returning ID/publishedAt; original payroll and delivery contracts plus TypeScript pass. Real signed-in read-back remains pending.
+
+# 2026-09-12 — Mobile payslip bell clipping (fixed locally)
+
+- Evidence: supplied iPhone screenshot shows bell above avatar and clipped by the header; .mh-right lacks display:flex and children stack as blocks.
+- Fix: horizontal flex alignment, explicit bell border-box sizing and dropdown vertical overflow bounds. Notification fetch, unread count and navigation unchanged.
+- Browser unavailable (iab runtime result); signed-in physical-phone visual verification pending.
+
+# 2026-09-12 — Login show-password label wrap (fixed locally)
+
+- Evidence: owner phone screenshot shows 'Hiện mật khẩu' on two lines; CSS uses fit-content flex label with wrapping enabled.
+- Fix: .login-card .password-visibility uses full width and nowrap. Existing checkbox dimensions and showPassword handler preserved; no auth logic changes.

@@ -833,3 +833,19 @@ Last updated: 2026-07-15
 
 - Final 2026-09-12 validation: revoke/delete adapter test, original Admin/delivery/timesheet contracts, 144 browser route/role checks, TypeScript and diff check passed. Elevated production build passed: 731 modules; PayrollPage-SClmdik0.js, MyPayslipsPage-DwjOvR4b.js; PRODUCTION_SUPABASE_BUNDLE_OK (index-BHF5XFw3.js).
 - Next: apply the previously unapplied payslip migration and release frontend under deployment authorization, then use an isolated employee to verify cancel/revoke/re-publish/delete and cross-employee RLS. No production writes/deploy or git add/commit performed in this change.
+
+# 2026-09-12 — Mobile notification header fix
+
+- User screenshot confirms bell stacked above avatar, clipped outside the header. Source evidence: mobile .mh-right had no horizontal layout after the notification wrapper was added before the avatar.
+- Targeted CSS fix: align the two children with flex/gap, constrain mobile bell border-box height to 38px, and bound dropdown vertical scrolling. No notification/payroll logic changes.
+- In-app Browser connection attempted via skill runtime; returned Browser is not available: iab. Signed-in phone visual QA remains pending. Next: delivery contract, CSS verification and build.
+
+- Final mobile bell fix validation: delivery contract and diff check pass; full build passes with 731 modules and PRODUCTION_SUPABASE_BUNDLE_OK (index-DT2lO329.js; CSS index-CwcPhpAc.css). In-app Browser unavailable; phone visual QA remains pending. No deploy, git add or production mutation.
+
+# 2026-09-12 — Login password visibility label wrapping
+
+- Screenshot confirms 'Hiện mật khẩu' wraps into two lines. Existing flex label uses width:fit-content and has no nowrap rule.
+- Minimal CSS fix scopes the label to .login-card, gives it full available width and white-space:nowrap; checkbox behavior and authentication logic unchanged. Existing user changes to LoginPage.tsx preserved.
+- Source verification and diff check pending; in-app Browser was unavailable in the preceding connection attempt, so physical phone visual verification is pending. No deploy/staging.
+
+- Final password-label result: PostCSS syntax/layout checks and diff check passed. Next: phone check after frontend release; no deploy or staging performed.

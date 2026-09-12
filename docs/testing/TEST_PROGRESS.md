@@ -737,3 +737,13 @@ MOD-06/MOD-08/MOD-10/MOD-13/MOD-17 are now the user-prioritized implementation/t
 - Revoke/delete employee reconciliation and signed-in database RLS behavior still require isolated live QA after the unapplied payslip migration and frontend release. No production mutation.
 
 - Final build passed with 731 modules and PRODUCTION_SUPABASE_BUNDLE_OK; permission matrix passed 144 role/page checks. Revoke/delete database integration and signed-in visual QA remain pending.
+
+# 2026-09-12 — Mobile notification layout
+
+- Confirmed screenshot/source defect: bell/avatar stack vertically because .mh-right lacks horizontal layout. Fix adds flex alignment and bounds bell/dropdown sizing.
+- Passed: test-payslip-delivery-notifications.mjs; git diff --check. Full build pending.
+- Browser runtime reports unavailable; cannot claim rendered iPhone verification. Next: final build result and owner phone check after release. No deployment or staging performed.
+
+- Mobile bell fix final: full CSS/TypeScript/Vite build and production bundle guard pass (731 modules). Signed-in iPhone visual check remains pending; no deployment.
+
+- Login password label verification: PostCSS parse and scoped flex/full-width/nowrap checks passed (LOGIN_PASSWORD_LABEL_CSS_OK); git diff --check passed. Phone visual verification remains pending; no full rebuild for this isolated CSS adjustment.
