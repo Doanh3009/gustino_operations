@@ -1,5 +1,12 @@
 # Test Progress
 
+## 2026-09-10 — BUG-141/142 employee KPI reward and completed-shift lateness
+
+- Owner authorized staff visibility of the existing `Thưởng KPI` value and clarified that an open/working attendance must not yet count as late.
+- `MyTimesheetPage` now reads the signed-in employee's own allocation/direct-POS sources for the viewed month and displays the same day + week KPI reward composition used by the management column. Allocation-linked POS lines remain excluded to prevent double counting; monthly bonus remains excluded exactly as before.
+- `buildAttendanceDetailRows` now returns `lateMinutes = 0` while check-out is absent. Once the shift is completed it calculates actual check-in minus scheduled start and the configured grace period; attendance persistence and timestamps are unchanged.
+- Passed: `MY_TIMESHEET_KPI_AND_LATE_OK`, `KPI_RANKING_REWARD_CLARITY_OK`, `ATTENDANCE_DURATION_SEARCH_OK`, TypeScript, diff check, and the 728-module production build with `PRODUCTION_SUPABASE_BUNDLE_OK (index-DuCRtBTK.js; revenue-8F_j3M4k.js)`. New timesheet asset: `MyTimesheetPage-DLlQ-syf.js`. No deployment, migration, schema change, or production-data write occurred.
+
 ## 2026-09-08 — BUG-140 authenticated Ca trưởng registration recovery
 
 - Reproduced the split state shown on production: attendance accepts an approved registration and saves check-in, while operational assignment excludes the same registration when its stored employment snapshot is stale even though the authenticated account role is `shift_leader`.
@@ -668,3 +675,65 @@ MOD-06/MOD-08/MOD-10/MOD-13/MOD-17 are now the user-prioritized implementation/t
 - Added a dry-run-first cleanup utility with UTC+7 month boundaries, orphan detection, non-target reference protection, chunked Storage removal, before/after byte counts, and exact protected-path verification.
 - `node scripts/test-attendance-storage-cleanup-safety.mjs` passed with `ATTENDANCE_STORAGE_CLEANUP_SAFETY_OK`; `node --check` and `git diff --check` also passed (line-ending warnings only).
 - Production cleanup is blocked before inventory because this machine has only the linked project ref, not a Supabase owner access token/service-role key; Browser discovery also reports unavailable. No production mutation occurred, and August attendance/photos remain untouched.
+# 2026-09-10 — MOD-07 Admin Phiếu lương (in progress)
+
+- User-authorized feature scope: add an Admin-only `Phiếu lương` entry immediately below `Báo cáo`, list employees by branch, and show a detail editor for the ten requested payroll values. Existing attendance/KPI/pay configuration must be reused; absent values remain Admin-entered rather than inferred from a new business formula.
+- Red contract added: `node scripts/test-admin-payslip-contract.mjs` fails with `ENOENT src/pages/PayrollPage.tsx`, proving the requested page/route/data layer is absent before implementation.
+- No production, database, or external write occurred. Next: implement the page/data layer and additive reviewed migration, then rerun focused and regression checks.
+# 2026-09-10 — MOD-07 Admin Phiếu lương implementation batch
+
+- Added `PayrollPage`, restored a dedicated payroll data adapter, added the `manager-payroll` route, and placed the Admin-only navigation item immediately below `Báo cáo`.
+- Detail view contains all ten requested values. Existing `payroll_fixed`, attendance work/overtime data, and the unchanged daily+weekly KPI reward calculation are reused. No net-pay/overtime-pay formula was invented; missing monthly values remain explicit Admin inputs.
+- Added additive migration `20260910_admin_payslips.sql` with nullable monthly columns and Admin-only RLS for payroll configuration/entries; migration has not been applied.
+- Verification: `node scripts/test-admin-payslip-contract.mjs` Passed (`ADMIN_PAYSLIP_CONTRACT_OK`); `npx tsc -b --pretty false` Passed.
+# 2026-09-10 — Admin Phiếu lương regression batch 1
+
+- `test-fixed-sidebar-navigation.mjs` did not reach the new payslip assertions: it expects stale label `KPI nhân viên`, while current user-owned source already labels that existing item `Thi đua nhân viên`. This is an unrelated pre-existing test/source mismatch; no application behavior was changed to satisfy the stale expectation.
+- The chained batch stopped at that first failure, so the remaining role/button/KPI regressions and build still need to run independently.
+# 2026-09-10 — Admin Phiếu lương regression/build batch 2
+
+- Passed: `test-ui-button-contract.mjs` (`284` controls, `273` reachable; `PayrollPage.tsx` contributes four reachable controls).
+- Unrelated stale regressions: `test-role-specific-admin-manager-ui.mjs` still expects management to be Admin-only, conflicting with the pre-existing SUP MT read-only console; `test-kpi-reward-reverse-audit.mjs` reports three failures against the existing in-progress KPI/timesheet worktree. No implicated logic was changed for this feature.
+- `npm.cmd run build` completed CSS and TypeScript, then Vite was blocked by workspace sandbox traversal (`Cannot read directory ../../..`, access denied). This is an environment failure, not a compile defect; rerun the same build with approved elevated filesystem access.
+# 2026-09-10 — Admin Phiếu lương final local verification
+
+- Final focused contract and TypeScript passed again after switching the default payroll month to the Vietnam local business month; `git diff --check` has no whitespace errors (line-ending notices only).
+- Final production build passed: 730 modules, dedicated lazy chunk `PayrollPage-D0DOYXG5.js`, and `PRODUCTION_SUPABASE_BUNDLE_OK (index-FrLs9b42.js; revenue-B-HgIwpX.js)`.
+- Browser skill connection reported no available in-app Browser, so signed-in desktop/mobile visual verification remains pending. No standalone browser backend was substituted per the active skill instructions.
+- No migration, Supabase row, deployment, or other production/external mutation occurred.
+# 2026-09-10 — MOD-07 payslip delivery/employee notification baseline
+
+- User-authorized extension: preserve the existing ten fields; add per-row selection, selected count, clear/select-all-list actions, batch `Gửi phiếu lương`, and an employee notification that opens the employee's own published payslip.
+- Security decision: publish a monthly snapshot in `payroll_entries`; employees may SELECT only their own published rows. Read acknowledgement uses a dedicated RPC so employees are never granted UPDATE access to payroll amounts.
+- Red contract: `node scripts/test-payslip-delivery-notifications.mjs` fails with `ENOENT src/pages/MyPayslipsPage.tsx`, proving the selection/delivery/employee page is absent before implementation.
+# 2026-09-10 — Payslip delivery/notification implementation batch
+
+- Added Admin search/checkbox toolbar, selected count, clear selection, select all currently listed employees, branch-level selection, and durable batch publication. Publishing snapshots the same ten effective values already displayed and resets unread state for each selected recipient.
+- Added employee notification bell/dropdown with realtime + 30-second reconciliation, exact-period handoff, and `MyPayslipsPage` for published own rows only.
+- Extended the still-unapplied migration with publication/read timestamps, own-published SELECT RLS, and narrow `mark_own_payslip_viewed` RPC. Employees receive no UPDATE policy on payroll amounts.
+- Focused tests Passed: `PAYSLIP_DELIVERY_NOTIFICATIONS_OK`, `ADMIN_PAYSLIP_CONTRACT_OK`, and TypeScript.
+# 2026-09-10 — Payslip delivery security/UI regression batch
+
+- Updated the authoritative permission matrix for the new `manager-payroll` Admin route and `my-payslips` employee route.
+- Passed together: delivery notification contract, original Admin payslip contract, `AUTH_STATIC_OK (24 routes)`, UI button contract (`290` total / `279` reachable), TypeScript, and diff check.
+- No existing payroll field, KPI formula, attendance formula, production row, or deployed schema was changed during verification.
+# 2026-09-10 — Payslip delivery final local verification
+
+- Final production build Passed: 731 modules, lazy chunks `PayrollPage-PJR8-gg1.js` and `MyPayslipsPage-B6czi-Fx.js`, plus `PRODUCTION_SUPABASE_BUNDLE_OK (index-D93VeaK7.js; revenue-Bj_DXLf6.js)`.
+- In-app Browser connection is unavailable, so signed-in checkbox/menu/mobile visual verification remains pending; no alternate browser backend was substituted under the active Browser skill.
+- Migration remains unapplied. No payroll row was published, no employee notification was sent, and no production/deployment mutation occurred.
+
+# 2026-09-10 — Payslip checkbox visual fix
+
+- Confirmed from the supplied UI screenshot: the payroll row checkbox inherited the global input `min-height: 50px` and padding, which rendered a pale vertical rectangle around the intended square control.
+- Scoped payroll checkboxes now reset sizing to `18px × 18px`, remove inherited padding/background/shadow, and preserve the green native check state. No selection or payroll behavior changed.
+- Focused delivery contract, TypeScript, and whitespace validation passed.
+- Final production build passed with 731 modules and `PRODUCTION_SUPABASE_BUNDLE_OK`; the in-app Browser remained unavailable, so no signed-in visual claim was made.
+
+# 2026-09-12 — MOD-07 revoke/delete validation
+
+- Passed: test-payslip-revoke-delete.mjs (mocked real adapter execution: non-Admin rejection, LAN/unsaved rejection, revoke retains salary data, exact-entry deletion, error propagation, save returns ID/publication metadata), original Admin/delivery contracts, timesheet KPI/late regression.
+- TypeScript build completed before Vite hit the known sandbox esbuild directory-read restriction; retry requested. Browser permission matrix is running separately.
+- Revoke/delete employee reconciliation and signed-in database RLS behavior still require isolated live QA after the unapplied payslip migration and frontend release. No production mutation.
+
+- Final build passed with 731 modules and PRODUCTION_SUPABASE_BUNDLE_OK; permission matrix passed 144 role/page checks. Revoke/delete database integration and signed-in visual QA remain pending.

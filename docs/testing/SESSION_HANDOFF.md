@@ -1,5 +1,13 @@
 # Session Handoff
 
+## 2026-09-10 — BUG-141/142 local handoff
+
+- Active modules: MOD-06 attendance and MOD-07 KPI/commission.
+- Completed locally: `Xem công` shows the signed-in staff/shift leader's monthly `Thưởng KPI`, using the same day + week composition as the management column and filtering every source back to the current account. Open shifts no longer contribute to `Đi trễ`; the existing late calculation runs after check-out.
+- Passed: `node scripts/test-my-timesheet-kpi-and-late.mjs`, KPI clarity, attendance duration, TypeScript, diff check and the 728-module production build (`MyTimesheetPage-DLlQ-syf.js`; bundle guard `index-DuCRtBTK.js` + `revenue-8F_j3M4k.js`).
+- Changed: `src/lib/attendance.ts`, `src/lib/commission.ts`, `src/pages/MyTimesheetPage.tsx`, `src/styles.css`, `scripts/test-my-timesheet-kpi-and-late.mjs`, and testing trackers.
+- Remaining: signed-in phone verification and deployment only if explicitly requested. No migration/schema/API-contract/production-data action occurred.
+
 ## 2026-09-08 — BUG-140 local handoff
 
 - Production evidence: Trần Minh Lý at Gold Coast has an open attendance for the approved 07:00–14:30 registration (check-in 09:44), but retry reports the schedule is unapproved/not the next operational shift.
@@ -765,3 +773,63 @@ Last updated: 2026-07-15
 - Latest verification: `ATTENDANCE_STORAGE_CLEANUP_SAFETY_OK`, cleanup script syntax, and diff check passed.
 - Current blocker: no `SUPABASE_ACCESS_TOKEN`/service-role credential is available and the in-app Browser reports unavailable. CLI project linking metadata alone cannot retrieve API keys. No Storage or business-data mutation occurred.
 - Exact next action: owner runs `npx supabase login` locally or connects a signed-in Supabase Dashboard tab. Then run `node scripts/cleanup-attendance-selfies-month.mjs 2026-07`, review the counts/bytes, rerun with `--execute`, confirm `protectedRemoved: 0`, and verify Auth health/login recovery. Do not delete or alter attendance rows; do not touch any August-referenced path.
+# 2026-09-10 — Active: Admin Phiếu lương
+
+- Active module: MOD-07 Payroll/KPI. Requested UI: Admin-only `Phiếu lương` below `Báo cáo`, branch-grouped employee list, `Xem chi tiết`, and ten named payroll values.
+- Baseline evidence: payroll tables/config and attendance/KPI sources exist, but current source has no payroll page or route renderer. `src/lib/payroll.ts` was deleted in prior repository history.
+- Last command: `node scripts/test-admin-payslip-contract.mjs` — expected red, failed because `src/pages/PayrollPage.tsx` does not exist.
+- Existing modified attendance/KPI files are user-owned and must be preserved. Next exact action: add an isolated payroll data/page module, Admin route/menu guard, additive migration, then execute focused test, TypeScript, build and relevant role regression.
+# 2026-09-10 — Admin Phiếu lương implementation verified by contract/typecheck
+
+- Changed: `src/pages/PayrollPage.tsx`, `src/lib/payroll.ts`, `src/App.tsx`, `src/components/AppShell.tsx`, `src/styles.css`, `supabase/migrations/20260910_admin_payslips.sql`, and focused contract `scripts/test-admin-payslip-contract.mjs`.
+- Focused contract and TypeScript pass. The additive migration remains unapplied; no Supabase/business-data/deployment write occurred.
+- Next exact action: run role/navigation regressions and production build, then Browser-skill verification if an in-app session is available. Fix only implementation defects and preserve existing payroll/KPI formulas.
+# 2026-09-10 — Regression note
+
+- `test-fixed-sidebar-navigation.mjs` is stale against the pre-existing `Thi đua nhân viên` sidebar label (expects `KPI nhân viên`) and failed before evaluating the new feature. Do not rename the user-owned current label merely to satisfy this test. Remaining regressions/build must run separately.
+# 2026-09-10 — Regression/build status
+
+- Button contract passed and includes all four new PayrollPage controls as reachable. Two legacy scripts are stale against existing SUP MT/sidebar/KPI source and remain unrelated failures.
+- Production build reached Vite after CSS + TypeScript, then sandbox denied esbuild access while resolving `vite.config.ts`; rerun with elevated sandbox permission. No production write occurred.
+# 2026-09-10 — Admin Phiếu lương final local handoff
+
+- Final results: `ADMIN_PAYSLIP_CONTRACT_OK`; TypeScript passed; UI button contract passed; final 730-module production build passed with lazy asset `PayrollPage-D0DOYXG5.js` and bundle guard `index-FrLs9b42.js` / `revenue-B-HgIwpX.js`.
+- In-app Browser is unavailable in this session, so no signed-in visual claim. Additive migration `20260910_admin_payslips.sql` is created but unapplied; the page can read legacy payroll rows before migration, while saving the new monthly fields correctly reports that migration is required.
+- Existing unrelated worktree changes and stale sidebar/SUP MT/KPI regressions were preserved. No deploy, migration application, or production-data write occurred.
+- Exact next action for release: review/apply the single payroll migration, deploy the verified frontend, then sign in as Admin to check desktop/mobile list, branch filter, detail modal, and one isolated save/read-back; verify a manager/non-Admin is redirected and cannot read/write payroll tables.
+# 2026-09-10 — Active: payslip batch delivery and employee notification
+
+- Requested extension preserves all existing payslip fields and adds checkbox selection, selected count, clear/select-all-list, batch send, notification badge/dropdown, and an own-payslip employee route.
+- Red test `test-payslip-delivery-notifications.mjs` currently fails because `MyPayslipsPage.tsx` is absent. Next: extend the unapplied payslip migration/data adapter, implement Admin selection/publish, AppShell notification, and own-payslip page; then run focused/security/build checks.
+# 2026-09-10 — Payslip delivery implementation verified
+
+- Implemented Admin selection/search/batch-send, employee unread notification, exact clicked-period navigation, and own-payslip detail. Existing ten fields and salary/KPI/attendance calculations are unchanged.
+- Security: employee RLS is published-own-row SELECT only; viewed acknowledgement goes through a self-ownership RPC. Notification refreshes by realtime and a bounded 30-second fallback.
+- Focused delivery + original payslip contracts and TypeScript pass. Next: button/authorization regression, final build, Browser check if available, and final tracker update. Migration remains unapplied; no real notification or payroll row was sent.
+# 2026-09-10 — Payslip delivery regression status
+
+- Focused delivery/original feature contracts, 24-route static authorization matrix, 290-control button audit, TypeScript and diff check all pass. Permission matrix now explicitly models Admin-only send and staff/shift-leader/cashier own-published read.
+- Next exact action: production build and in-app Browser attempt, then record final local handoff. Migration remains unapplied and no employee has actually been notified.
+# 2026-09-10 — Payslip batch delivery final local handoff
+
+- Complete locally: Admin search + row/branch checkboxes, selected count, clear/select-all-list, batch `Gửi phiếu lương`; employee bell badge/dropdown with exact-month click-through; own published payslip list/detail; realtime plus 30-second notification reconciliation.
+- Security remains two-layered: Admin-only publication, own-published SELECT RLS, and narrow `mark_own_payslip_viewed` RPC with no employee UPDATE policy over payroll values.
+- Passed: both payslip contracts, 24-route static authorization, 290-control button audit, TypeScript/diff check, and final 731-module build (`PayrollPage-PJR8-gg1.js`, `MyPayslipsPage-B6czi-Fx.js`, bundle guard `index-D93VeaK7.js` / `revenue-Bj_DXLf6.js`).
+- Browser is unavailable, so signed-in visual QA is pending. Migration `20260910_admin_payslips.sql` remains unapplied; no real publish/notification, Supabase row, deployment, or production mutation occurred.
+- Next exact action for release: review/apply only the payslip migration, deploy the verified frontend, publish one isolated QA employee's payslip, verify unread badge → exact month → viewed state, then verify a second employee and non-Admin cannot read that row.
+
+# 2026-09-10 — Payslip checkbox frame fix
+
+- Removed the unwanted tall inherited input frame around payroll row/select-all checkboxes while retaining the compact green square checkbox.
+- Focused contract, TypeScript, and diff check pass. Next: run the final production build and attempt Browser-skill visual verification if the in-app Browser is available.
+- Final production build passed (731 modules; `PayrollPage-CyjjeFV-.js`; `PRODUCTION_SUPABASE_BUNDLE_OK`). The Browser attempt returned unavailable, so signed-in visual QA remains pending.
+
+# 2026-09-12 — Admin payslip correction actions
+
+- User authorized adding revoke/delete for incorrect payslips. Revoke clears publication/viewed metadata and retains salary fields; delete targets one saved payroll entry by ID only. Existing Admin RLS already permits both; no migration or permission change needed.
+- Detail actions require confirmation, block concurrent save/send/removal, and update local state only after successful database read-back. Save now retains the returned ID/publication state so freshly saved payslips can be removed.
+- Employee detail reconciles every 30 seconds and on focus/visibility, removing revoked/deleted entries; salary, attendance and KPI formulas remain unchanged.
+- Validation pending. No production writes, deployment or staging performed.
+
+- Final 2026-09-12 validation: revoke/delete adapter test, original Admin/delivery/timesheet contracts, 144 browser route/role checks, TypeScript and diff check passed. Elevated production build passed: 731 modules; PayrollPage-SClmdik0.js, MyPayslipsPage-DwjOvR4b.js; PRODUCTION_SUPABASE_BUNDLE_OK (index-BHF5XFw3.js).
+- Next: apply the previously unapplied payslip migration and release frontend under deployment authorization, then use an isolated employee to verify cancel/revoke/re-publish/delete and cross-employee RLS. No production writes/deploy or git add/commit performed in this change.

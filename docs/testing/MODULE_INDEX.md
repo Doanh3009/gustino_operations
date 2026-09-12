@@ -1,6 +1,6 @@
 # Business Module Index
 
-Last updated: 2026-08-26. This is the source-backed inventory and remains subject to discovery refinement.
+Last updated: 2026-09-10. This is the source-backed inventory and remains subject to discovery refinement.
 
 | ID | Module | Primary source evidence | Risk | Status |
 |---|---|---|---|---|
@@ -9,8 +9,8 @@ Last updated: 2026-08-26. This is the source-backed inventory and remains subjec
 | MOD-03 | Branch configuration and lifecycle | `lib/branches.ts`, `AdminPage.tsx`, branch migrations | High | In progress — static controls checked; BUG-031 closed; live integration pending |
 | MOD-04 | Employee/account administration | `AdminPage.tsx`, `manage-employee`, profile migrations | Critical | In progress — isolated lifecycle passes; BUG-102 deleted-detail blank state fixed locally; signed-in permanent-delete/Edge verification pending |
 | MOD-05 | Scheduling and registrations | `AttendancePage.tsx`, schedule migrations | High | In progress — static controls/date guard checked; business/integration pending |
-| MOD-06 | Attendance, selfie, geotag, adjustments | `lib/attendance*.ts`, attendance pages/components/migrations | Critical | In progress — selectable evidence-safe photo filters, staff `Đi trễ` drill-down and completed-shift duration pass locally; BUG-128 correction context/branch filter is deployed; BUG-125 schema decision plus signed-in/multi-device physical QA remain pending |
-| MOD-07 | Payroll, KPI, commission | `lib/payroll.ts`, `lib/commission.ts`, admin/records pages, migrations | High | In progress — BUG-127 Thi đua discoverability and concise monthly/daily/source XLSX deployed/live-marker verified without formula changes; signed-in visual and desktop-Excel review pending |
+| MOD-06 | Attendance, selfie, geotag, adjustments | `lib/attendance*.ts`, attendance pages/components/migrations | Critical | In progress — open shifts no longer count as late and completed shifts retain the check-in/start/grace calculation locally; selectable photo filters and staff late drill-down pass; signed-in/multi-device physical QA remains pending |
+| MOD-07 | Payroll, KPI, commission | `lib/payroll.ts`, `lib/commission.ts`, `PayrollPage.tsx`, `MyPayslipsPage.tsx`, admin/records pages, migrations | High | In progress — Admin batch selection/send plus employee own-payslip notification/read flow passes focused, 24-route authorization, button, TypeScript and production-build checks locally; additive migration and signed-in visual review pending |
 | MOD-08 | Shift opening/closing and bag handover | `lib/shiftLedger.ts`, `operationalShiftAssignment.ts`, `ShiftHandoverPage.tsx`, close RPC migrations | Critical | In progress — BUG-100 explicit owner guard and BUG-101 custom/all-day coverage are production verified; two-leader LAN flow passes, signed-in Ca 1/Ca 2 finalization and n8n/device confirmation pending |
 | MOD-09 | Sales/POS receipts and staff history | `SalesPage.tsx`, `lib/salesReceipts.ts`, POS migrations | Critical | In progress — BUG-137 mobile menu/bill/history redesign passes focused regressions/build locally; signed-in 360/390px visual QA and deploy pending; BUG-038 DB timezone remains blocked |
 | MOD-10 | Inventory movements and stock reports | `InventoryPage.tsx`, focused inventory in `AdminPage.tsx`, `lib/store.ts`, inventory migrations | Critical | In progress — BUG-055/057/060/061 deployed; numeric clarity and period-wide sale-out/handover live; visual/workbook verification pending |
@@ -34,3 +34,5 @@ Last updated: 2026-08-26. This is the source-backed inventory and remains subjec
 - MOD-20: scoped overflow hardening, mobile-header logo removal and competition-table tablet/card treatment passed source/type regressions; Browser is unavailable for visual verification.
 
 Priority rationale: MOD-02 is first because authorization failures can expose or mutate cross-role/cross-branch business data and invalidate every downstream module test.
+
+- 2026-09-12 MOD-07: Added authorized Admin revoke/delete detail actions and employee reconciliation. Automated adapter and payroll/KPI regressions pass; 144 route/role checks pass. Signed-in database revoke/delete and visual QA remain pending; see test-cases/MOD-07-payslip-revoke-delete.md.

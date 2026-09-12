@@ -17,6 +17,7 @@ import { burstGuard } from '../lib/browser'
 import { shouldUseLanApi, supabase, uniqueChannelName } from '../lib/supabase'
 import { ATTENDANCE_OUTBOX_EVENT, inspectAttendanceOutbox } from '../lib/attendanceOutbox'
 import { pendingHandoverReportForToday, REPORT_PENDING_EVENT, type HandoverReportRequest } from '../lib/handoverReportRequest'
+import { fetchOwnPublishedPayslips, PAYSLIP_VIEWED_EVENT, type PayrollEntry } from '../lib/payroll'
 import type { AppUser } from '../types'
 import { AppFooter } from './AppFooter'
 
@@ -27,6 +28,7 @@ export type Page =
   | 'sales'
   | 'my-records'
   | 'my-timesheet'
+  | 'my-payslips'
   | 'report-archive'
   | 'restaurant'
   | 'report'
@@ -39,6 +41,7 @@ export type Page =
   | 'manager-business'
   | 'manager-inventory'
   | 'manager-attendance'
+  | 'manager-payroll'
   | 'manager-requests'
   | 'admin-accounts'
   | 'control'
@@ -76,6 +79,7 @@ const ADMIN_NAV: NavItem[] = [
   { id: 'attendance', label: 'Lịch đăng ký ca', icon: <IconClock />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'management', section: 'commission', label: 'Thi đua nhân viên', icon: <IconChart />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'report-archive', label: 'Báo cáo', icon: <IconReport />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'manager-payroll', label: 'Phiếu lương', icon: <IconPayroll />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'control', label: 'Cài đặt', icon: <IconSettings />, canShow: (user) => canUseAdmin(user.role) },
 ]
 
@@ -188,6 +192,7 @@ const EN_NAV_LABELS: Partial<Record<Page, { label: string; shortLabel?: string }
   'manager-inventory': { label: 'Inventory' },
   attendance: { label: 'Schedule', shortLabel: 'Schedule' },
   'manager-attendance': { label: 'Timesheets', shortLabel: 'Time' },
+  'manager-payroll': { label: 'Payslips', shortLabel: 'Payslips' },
   'report-archive': { label: 'Report archive', shortLabel: 'Reports' },
   'manager-requests': { label: 'Orders', shortLabel: 'Orders' },
   'admin-accounts': { label: 'People', shortLabel: 'People' },
@@ -197,6 +202,7 @@ const EN_NAV_LABELS: Partial<Record<Page, { label: string; shortLabel?: string }
   sales: { label: 'Sales' },
   'my-records': { label: 'History & reports', shortLabel: 'History' },
   'my-timesheet': { label: 'My timesheet', shortLabel: 'Timesheet' },
+  'my-payslips': { label: 'My payslips', shortLabel: 'Payslips' },
   handover: { label: 'Shift handover', shortLabel: 'Handover' },
   inventory: { label: 'Inventory' },
   report: { label: 'Close shift' },
@@ -215,6 +221,8 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   const attendanceReminderRequestRef = useRef(0)
   const [reportPending, setReportPending] = useState<HandoverReportRequest | null>(null)
   const [reportReminderDismissed, setReportReminderDismissed] = useState(false)
+  const [payslipNotifications, setPayslipNotifications] = useState<PayrollEntry[]>([])
+  const [payslipNotificationOpen, setPayslipNotificationOpen] = useState(false)
   const baseNav = user.role === 'admin'
     ? ADMIN_NAV
     : user.role === 'supmt'
@@ -235,7 +243,52 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
     }
     return item.section ? (currentSection || 'revenue') === item.section : true
   }
-  const activeLabel = visibleNav.find(isActive)?.label || 'GUSTINO'
+
+  useEffect(() => {
+    if (!['staff', 'shift_leader', 'cashier'].includes(user.role)) {
+      setPayslipNotifications([])
+      return
+    }
+    let active = true
+    const refreshPayslips = () => void fetchOwnPublishedPayslips(user).then((rows) => {
+      if (active) setPayslipNotifications(rows)
+    }).catch(() => undefined)
+    refreshPayslips()
+    const payslipTimer = window.setInterval(refreshPayslips, 30000)
+    window.addEventListener(PAYSLIP_VIEWED_EVENT, refreshPayslips)
+    const client = user.authToken ? null : supabase
+    const channel = client?.channel(uniqueChannelName(`payslip-notification:${user.id}`))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payroll_entries', filter: `employee_id=eq.${user.id}` }, refreshPayslips)
+      .subscribe()
+    return () => {
+      active = false
+      window.clearInterval(payslipTimer)
+      window.removeEventListener(PAYSLIP_VIEWED_EVENT, refreshPayslips)
+      if (client && channel) void client.removeChannel(channel)
+    }
+  }, [user.id, user.role, user.authToken])
+
+  const unreadPayslips = payslipNotifications.filter((entry) => !entry.employeeViewedAt)
+  const payslipNotification = (
+    <div className="payslip-notification">
+      <button type="button" className="payslip-notification-button" aria-label={`Thông báo phiếu lương${unreadPayslips.length ? `, ${unreadPayslips.length} chưa xem` : ''}`} aria-expanded={payslipNotificationOpen} onClick={(event) => { event.stopPropagation(); setPayslipNotificationOpen((open) => !open) }}>
+        <IconBell />
+        {unreadPayslips.length > 0 && <b>{unreadPayslips.length > 9 ? '9+' : unreadPayslips.length}</b>}
+      </button>
+      {payslipNotificationOpen && <div className="payslip-notification-menu" onClick={(event) => event.stopPropagation()}>
+        <header><strong>Thông báo</strong><small>{unreadPayslips.length} chưa xem</small></header>
+        {payslipNotifications.slice(0, 6).map((entry) => <button type="button" key={entry.id || entry.period} className={entry.employeeViewedAt ? '' : 'unread'} onClick={() => {
+          try { sessionStorage.setItem('gustino:selected-payslip-period', entry.period) } catch { /* private mode */ }
+          setPayslipNotificationOpen(false)
+          onNavigate('my-payslips')
+        }}>
+          <span aria-hidden="true">▤</span><span><strong>Bạn đã nhận được phiếu lương</strong><small>Phiếu lương tháng {entry.period.slice(5)}/{entry.period.slice(0, 4)} · Bấm để xem</small></span>
+        </button>)}
+        {!payslipNotifications.length && <p>Chưa có thông báo phiếu lương.</p>}
+      </div>}
+    </div>
+  )
+  const activeLabel = page === 'my-payslips' ? 'Phiếu lương của tôi' : visibleNav.find(isActive)?.label || 'GUSTINO'
   const navKey = (item: NavItem) => `${item.id}:${item.section || ''}`
   const operationGuide = OPERATION_GUIDE_ITEMS.filter((item) => item.canShow(user))
   const showOperationGuide = false
@@ -383,7 +436,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   useEffect(() => setReportReminderDismissed(false), [reportPending?.shiftId, reportPending?.sequence])
 
   return (
-    <div className={`app-shell${sidebarOpen ? ' mobile-sidebar-open' : ''}${canOpenAdminConsole(user.role) && (page === 'management' || page === 'control') ? ' management-workspace' : ''}${user.role === 'manager' ? ' legacy-manager-workspace' : ''}${page === 'sales' ? ' pos-workspace' : ''}`} onClick={() => { setMenuOpen(false); setSidebarOpen(false) }}>
+    <div className={`app-shell${sidebarOpen ? ' mobile-sidebar-open' : ''}${canOpenAdminConsole(user.role) && (page === 'management' || page === 'control') ? ' management-workspace' : ''}${user.role === 'manager' ? ' legacy-manager-workspace' : ''}${page === 'sales' ? ' pos-workspace' : ''}`} onClick={() => { setMenuOpen(false); setSidebarOpen(false); setPayslipNotificationOpen(false) }}>
       {/* ===== DESKTOP LEFT SIDEBAR ===== */}
       <aside className="app-sidebar" onClick={(event) => event.stopPropagation()}>
         {/* Brand */}
@@ -428,6 +481,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
       <header className="crm-desktop-header">
         <div className="crm-header-title"><small>GUSTINO / Quản trị</small><strong>{activeLabel}</strong></div>
         <div className="crm-header-actions">
+          {['staff', 'shift_leader', 'cashier'].includes(user.role) && payslipNotification}
           <span className="crm-header-avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : initials}</span>
           <span className="crm-header-account"><strong>{shownName}</strong><small>{roleLabel(user.role, lang)}</small></span>
         </div>
@@ -442,6 +496,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
           <span className="mh-title">{activeLabel}</span>
         </div>
         <div className="mh-right">
+          {['staff', 'shift_leader', 'cashier'].includes(user.role) && payslipNotification}
           <button
             className={`mh-avatar${menuOpen ? ' open' : ''}`}
             onClick={(e) => { e.stopPropagation(); setMenuOpen(!menuOpen) }}
@@ -608,6 +663,10 @@ function IconClock() {
       <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
     </svg>
   )
+}
+
+function IconBell() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 00-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>
 }
 
 function IconClipboard() {

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { AppUser, WorkShift } from '../types'
 import { localDateKey } from '../lib/dates'
+import { calculatePersonalKpiReward, type PersonalKpiRewardSummary } from '../lib/commission'
+import { fetchSalesReceiptsRange } from '../lib/salesReceipts'
+import { fetchBagAllocations } from '../lib/shiftLedger'
 import {
   buildAttendanceDetailRows,
   fetchAttendanceRecords,
@@ -12,13 +15,14 @@ import {
 
 // Trang Xem công (#my-timesheet): nhân viên xem tháng này mình làm những ngày nào,
 // mỗi ngày mấy giờ — dạng lịch tháng bấm từng ngày, ưu tiên màn hình điện thoại.
-// Chỉ đọc dữ liệu của CHÍNH MÌNH; không có thông tin lương.
+// Chỉ đọc dữ liệu của CHÍNH MÌNH; Thưởng KPI là đúng cột thưởng ngày/tuần của bảng Thi đua.
 
 interface Props {
   user: AppUser
 }
 
 const WEEKDAY_LABELS = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN']
+const EMPTY_KPI_REWARD: PersonalKpiRewardSummary = { revenue: 0, dailyBonus: 0, weeklyBonus: 0, reward: 0, achievedDays: 0 }
 
 const DAY_STATUS_LABELS: Record<AttendanceDetailRow['status'], string> = {
   completed: 'Đã hoàn thành',
@@ -76,6 +80,7 @@ export function MyTimesheetPage({ user }: Props) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [rows, setRows] = useState<AttendanceDetailRow[]>([])
+  const [kpiReward, setKpiReward] = useState<PersonalKpiRewardSummary>(EMPTY_KPI_REWARD)
   const [selectedDate, setSelectedDate] = useState(todayKey)
   const [showLateDetails, setShowLateDetails] = useState(false)
 
@@ -86,14 +91,24 @@ export function MyTimesheetPage({ user }: Props) {
       const { from, to } = monthBounds(month)
       // Mọi lệnh đọc phải có hạn chót cứng: supabase-js không tự timeout, một
       // request treo sẽ giữ màn hình ở "Đang tải…" vĩnh viễn (BUG-106/§36).
-      const [workShifts, registrations, records] = await Promise.all([
+      const canEarnKpi = user.role === 'staff' || user.role === 'shift_leader'
+      const [workShifts, registrations, records, rewardSources] = await Promise.all([
         withAttendanceReadDeadline(() => fetchWorkShifts(user), 'khung ca').catch(() => [] as WorkShift[]),
         withAttendanceReadDeadline(() => fetchShiftRegistrations(user, { userId: user.id, from, to }), 'ca đã đăng ký'),
         withAttendanceReadDeadline(() => fetchAttendanceRecords(user, { userId: user.id, from, to }), 'công đã chấm'),
+        canEarnKpi
+          ? Promise.all([
+              withAttendanceReadDeadline(() => fetchBagAllocations(user, { branchId: user.branchId }), 'doanh thu phát túi'),
+              withAttendanceReadDeadline(() => fetchSalesReceiptsRange(user, { branchIds: [user.branchId], from, to }), 'doanh thu POS'),
+            ])
+          : Promise.resolve(null),
       ])
       const grace = new Map(workShifts.map((shift) => [shift.id, shift.graceMinutes]))
       setRows(buildAttendanceDetailRows(registrations, records, grace)
         .filter((row) => row.userId === user.id))
+      setKpiReward(rewardSources
+        ? calculatePersonalKpiReward(user, rewardSources[0], rewardSources[1], from, to)
+        : EMPTY_KPI_REWARD)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu công.')
     } finally {
@@ -198,6 +213,13 @@ export function MyTimesheetPage({ user }: Props) {
         <article><small>Ngày có làm</small><strong>{summary.daysWorked}</strong></article>
         <article><small>Ngày công</small><strong>{summary.workDays}</strong></article>
         <article><small>Số ca</small><strong>{summary.shifts}</strong></article>
+        {(user.role === 'staff' || user.role === 'shift_leader') && (
+          <article className={kpiReward.reward > 0 ? 'earned' : ''}>
+            <small>Thưởng KPI</small>
+            <strong>{formatMoney(kpiReward.reward)}</strong>
+            <span>Thưởng ngày/tuần đã đạt</span>
+          </article>
+        )}
         <button
           type="button"
           className={summary.late ? 'tsheet-summary-late warn' : 'tsheet-summary-late'}
@@ -301,4 +323,8 @@ export function MyTimesheetPage({ user }: Props) {
       )}
     </div>
   )
+}
+
+function formatMoney(value: number) {
+  return `${Math.round(value).toLocaleString('vi-VN')}đ`
 }

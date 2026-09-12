@@ -2,6 +2,7 @@ import { isMissingTable, userHeaders } from './core'
 import { configuredProductPrice } from './constants'
 import { shouldUseLanApi, supabase } from './supabase'
 import type { AppUser, BagAllocation, CommissionRule, EmploymentType, Role } from '../types'
+import type { SalesReceipt } from './salesReceipts'
 
 export const DEFAULT_REVENUE_TARGET = 2000000
 export const DEFAULT_COMMISSION_RATE = 2
@@ -129,6 +130,91 @@ export function weeklyKpiBonus(achievedDays: number, perfectWeekDays: number) {
   if (perfectWeekDays >= 6) return 200000
   if (achievedDays >= 5) return 100000
   return 0
+}
+
+export interface PersonalKpiRewardSummary {
+  revenue: number
+  dailyBonus: number
+  weeklyBonus: number
+  reward: number
+  achievedDays: number
+}
+
+/**
+ * Tính đúng phần đang hiển thị ở cột "Thưởng KPI": thưởng ngày + thưởng tuần,
+ * không cộng thưởng tháng. Dữ liệu luôn được khóa lại theo chính tài khoản để
+ * cả LAN (trả dữ liệu chi nhánh) và Supabase (RLS trả dữ liệu cá nhân) cho cùng kết quả.
+ */
+export function calculatePersonalKpiReward(
+  user: Pick<AppUser, 'id' | 'name' | 'role' | 'branchId' | 'employmentType' | 'positionTitle'>,
+  allocations: BagAllocation[],
+  receipts: SalesReceipt[],
+  from: string,
+  to: string,
+): PersonalKpiRewardSummary {
+  const dailyRevenue = new Map<string, number>()
+  const matchesName = (value: string) => normalizeName(value) === normalizeName(user.name)
+  const inRange = (date: string) => date >= from && date <= to
+  const addRevenue = (date: string, revenue: number) => {
+    if (!inRange(date) || revenue <= 0) return
+    dailyRevenue.set(date, (dailyRevenue.get(date) || 0) + revenue)
+  }
+
+  allocations.forEach((allocation) => {
+    if (allocation.branchId !== user.branchId) return
+    if (allocation.employeeId ? allocation.employeeId !== user.id : !matchesName(allocation.employeeName)) return
+    const date = allocation.businessDate || allocation.settledAt?.slice(0, 10) || allocation.issuedAt.slice(0, 10)
+    const quantity = soldBagQuantity(allocation)
+    addRevenue(date, productSaleValues(allocation.productId, quantity).revenue)
+  })
+
+  receipts.forEach((receipt) => {
+    if (receipt.branchId !== user.branchId) return
+    if (receipt.sellerId ? receipt.sellerId !== user.id : !matchesName(receipt.sellerName)) return
+    // Dòng đã gắn allocation đã được tính ở trên; chỉ cộng POS trực tiếp để
+    // không nhân đôi doanh thu, giống hệt bảng Thi đua của quản lý.
+    const directRevenue = receipt.lines
+      .filter((line) => !line.allocationId)
+      .reduce((sum, line) => sum + line.total, 0)
+    addRevenue(receipt.businessDate, directRevenue)
+  })
+
+  let dailyBonus = 0
+  let achievedDays = 0
+  const weeks = new Map<string, number>()
+  dailyRevenue.forEach((revenue, date) => {
+    const target = employeePeriodRevenueTarget(
+      user.branchId,
+      user.role,
+      user.employmentType,
+      user.positionTitle,
+      date,
+      date,
+    )
+    const progress = revenue / Math.max(1, target) * 100
+    dailyBonus += dailyKpiBonus(progress, user.role, user.employmentType, user.positionTitle)
+    if (progress >= 100) {
+      achievedDays += 1
+      const start = weekStart(date)
+      weeks.set(start, (weeks.get(start) || 0) + 1)
+    }
+  })
+  let weeklyBonus = 0
+  weeks.forEach((days) => { weeklyBonus += weeklyKpiBonus(days, days) })
+  return {
+    revenue: Array.from(dailyRevenue.values()).reduce((sum, value) => sum + value, 0),
+    dailyBonus,
+    weeklyBonus,
+    reward: dailyBonus + weeklyBonus,
+    achievedDays,
+  }
+}
+
+function weekStart(value: string) {
+  const date = new Date(`${value}T00:00:00`)
+  const day = date.getDay() || 7
+  date.setDate(date.getDate() - day + 1)
+  return date.toISOString().slice(0, 10)
 }
 
 function isFullCalendarMonth(from: string, to: string) {

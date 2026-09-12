@@ -187,3 +187,22 @@
 - July is defined by `check_in_time` converted through the fixed UTC+7 month boundary. Orphan bucket objects are eligible only when their Storage `created_at` is within the same boundary and no attendance row references them.
 - Any object path referenced by a non-July row is excluded even if it is also referenced by July. Verification must prove the complete pre-existing protected set remains present after deletion.
 - Production mutation is deferred until owner-level Supabase access is available; the HTTP 402 restriction prevents ordinary Admin authentication.
+# 2026-09-10 — Employee KPI reward and lateness finalization
+
+- The owner's direct instruction authorizes employees to see their own existing `Thưởng KPI` column value. Reuse the established daily + weekly reward rules, exclude allocation-linked POS lines to avoid duplication, and do not add monthly bonus or change thresholds.
+- An attendance record with no check-out is still `Đang làm` and must contribute zero to the late count/detail. After check-out, lateness is finalized from actual check-in versus scheduled start minus the configured grace period. No stored attendance timestamp is rewritten.
+# 2026-09-10 — DEC-Admin-Payslip-01
+
+- The request explicitly authorizes a new Admin-only payroll-slip workflow and the persistence needed for missing monthly employee values.
+- Reuse authoritative values where present: `payroll_fixed` for configured salary/allowances, attendance reports for work days/overtime, and the existing daily+weekly KPI reward logic. Do not invent a net-pay or overtime-pay formula; Admin-entered monthly overrides fill values that have no authoritative source.
+- Keep the change additive and scoped to payroll tables/routes. Do not alter attendance, KPI thresholds, employment workflow, or unrelated role permissions.
+# 2026-09-10 — DEC-Admin-Payslip-02 delivery and notification
+
+- `Gửi phiếu lương` means publish the selected employees' effective monthly values as durable snapshots. The existing ten displayed fields/formulas remain unchanged.
+- A published row doubles as the notification source, avoiding a second mutable notification record. `published_at` creates the notification; `employee_viewed_at` controls unread state.
+- Employee access is own-row + published-only. Viewing is acknowledged only through `mark_own_payslip_viewed`, a narrow security-definer RPC; no employee UPDATE policy is added to payroll data.
+
+# 2026-09-12 — Authorized payslip revoke/delete
+
+- Direct user request authorizes Admin revoke/delete. Revoke retains salary values by clearing existing publication metadata; delete removes only the selected saved payroll_entries ID after explicit UI confirmation. No new schema, formula, or role rule.
+- Saved employee list remains a roster: deleting a slip does not delete employee/attendance/configuration records. The employee can have a new slip created later.

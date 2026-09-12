@@ -34,6 +34,8 @@ const OrdersPage = lazyWithReload(() => import('./pages/OrdersPage').then((modul
 const ManagerDashboardPage = lazyWithReload(() => import('./pages/ManagerDashboardPage').then((module) => ({ default: module.ManagerDashboardPage })))
 const ControlCenterPage = lazyWithReload(() => import('./pages/ControlCenterPage').then((module) => ({ default: module.ControlCenterPage })))
 const MyTimesheetPage = lazyWithReload(() => import('./pages/MyTimesheetPage').then((module) => ({ default: module.MyTimesheetPage })))
+const PayrollPage = lazyWithReload(() => import('./pages/PayrollPage').then((module) => ({ default: module.PayrollPage })))
+const MyPayslipsPage = lazyWithReload(() => import('./pages/MyPayslipsPage').then((module) => ({ default: module.MyPayslipsPage })))
 
 function App() {
   const lang = useLang()
@@ -487,6 +489,7 @@ function App() {
         {page === 'sales' && <SalesPage user={user} onNavigate={navigate} />}
         {page === 'my-records' && <MyRecordsPage user={user} onNavigate={navigate} />}
         {page === 'my-timesheet' && <MyTimesheetPage user={user} />}
+        {page === 'my-payslips' && <MyPayslipsPage user={user} />}
         {page === 'report-archive' && <ReportArchivePage user={user} />}
         {page === 'restaurant' && <RestaurantPage user={user} movements={movements} />}
         {page === 'report' && <ReportPage user={user} movements={movements} onNavigate={navigate} onOpenInventory={openInventory} onRefresh={refreshMovements} />}
@@ -515,6 +518,7 @@ function App() {
         {page === 'manager-business' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="commission" focused onNavigate={navigate} />}
         {page === 'manager-inventory' && canUseManagement(user.role) && <ManagementPage user={user} initialSection="inventory" focused onNavigate={navigate} />}
         {page === 'manager-attendance' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="attendance" focused onNavigate={navigate} />}
+        {page === 'manager-payroll' && user.role === 'admin' && <PayrollPage user={user} />}
         {page === 'manager-requests' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="requests" focused onNavigate={navigate} />}
         {page === 'admin-accounts' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="accounts" focused onNavigate={navigate} />}
         {page === 'control' && canUseAdmin(user.role) && <ControlCenterPage user={user} />}
@@ -572,6 +576,7 @@ function pageFromHash(): Page {
     'sales',
     'my-records',
     'my-timesheet',
+    'my-payslips',
     'report-archive',
     'restaurant',
     'report',
@@ -584,6 +589,7 @@ function pageFromHash(): Page {
     'manager-business',
     'manager-inventory',
     'manager-attendance',
+    'manager-payroll',
     'manager-requests',
     'admin-accounts',
     'control',
@@ -631,6 +637,7 @@ function canAccessPage(user: AppUser, page: Page) {
   if (page === 'my-records') return user.role === 'staff' || user.role === 'shift_leader'
   // Xem công: nhân viên/ca trưởng xem lịch công của chính mình (SUP MT xem được nếu tồn tại).
   if (page === 'my-timesheet') return user.role === 'staff' || user.role === 'shift_leader' || user.role === 'supmt'
+  if (page === 'my-payslips') return user.role === 'staff' || user.role === 'shift_leader' || user.role === 'cashier'
   if (page === 'report-archive') return canUseManagement(user.role)
   if (page === 'report') return canUseOperations(user.role)
   if (page === 'inventory') return canUseOperations(user.role)
@@ -640,6 +647,7 @@ function canAccessPage(user: AppUser, page: Page) {
   // SUP MT vào cùng trang Quản trị với admin, nhưng ManagementPage khóa mọi thao tác ghi.
   if (page === 'management') return canOpenAdminConsole(user.role)
   if (page === 'manager-attendance') return canUseAdmin(user.role)
+  if (page === 'manager-payroll') return canUseAdmin(user.role)
   if (page === 'manager-requests') return canUseAdmin(user.role)
   if (['manager-revenue', 'manager-business', 'manager-inventory'].includes(page)) return user.role === 'manager'
   if (page === 'admin-accounts') return canUseAdmin(user.role)

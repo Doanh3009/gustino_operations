@@ -2141,6 +2141,16 @@ export interface AttendanceDetailRow {
   note: string
 }
 
+export function completedShiftLateMinutes(
+  checkIn: Date | undefined,
+  checkOut: Date | undefined,
+  scheduledStart: Date,
+  graceMinutes: number,
+) {
+  if (!checkIn || !checkOut) return 0
+  return Math.max(0, Math.round((checkIn.getTime() - scheduledStart.getTime()) / 60000) - graceMinutes)
+}
+
 export function buildAttendanceDetailRows(
   registrations: ShiftRegistration[],
   records: AttendanceRecord[],
@@ -2158,9 +2168,9 @@ export function buildAttendanceDetailRows(
     const checkIn = record ? new Date(record.checkInTime) : undefined
     const checkOut = record?.checkOutTime ? new Date(record.checkOutTime) : undefined
     const grace = graceMinutesByShift.get(registration.shiftId || '') ?? 5
-    const lateMinutes = checkIn
-      ? Math.max(0, Math.round((checkIn.getTime() - scheduledStart.getTime()) / 60000) - grace)
-      : 0
+    // Chỉ chốt một lượt đi trễ sau khi ca đã kết thúc. Trong lúc nhân viên vẫn
+    // đang làm, bản ghi chưa hoàn chỉnh và không được đưa vào tổng/chi tiết trễ.
+    const lateMinutes = completedShiftLateMinutes(checkIn, checkOut, scheduledStart, grace)
     const status: AttendanceDetailRow['status'] = record
       ? checkOut ? 'completed' : 'working'
       : now > scheduledEnd ? 'absent' : 'scheduled'

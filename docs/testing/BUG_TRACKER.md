@@ -1129,3 +1129,23 @@ Check-in **không kiểm tra khoảng cách tới chi nhánh**, chỉ yêu cầu
 - Safety implementation: `scripts/cleanup-attendance-selfies-month.mjs` defaults to dry-run; defines July by the UTC+7 interval `[2026-06-30T17:00:00Z, 2026-07-31T17:00:00Z)`, removes target paths from the candidate set if any non-July attendance row references them, and verifies after deletion that the complete pre-existing protected set is unchanged.
 - Blocker evidence: the linked repository contains the project ref but no Supabase access token/service-role credential; the in-app Browser is unavailable. Because Auth itself is restricted, an ordinary Admin session cannot be created to perform even the read-only inventory. No Storage object or attendance row has been deleted or modified.
 - Unblock condition: the owner logs in with `npx supabase login` on this machine (or connects an authenticated Supabase Dashboard tab in the in-app Browser). Then run dry-run, review counts/bytes, execute, and verify protected August paths plus Auth health.
+# BUG-141/142 — Staff KPI reward visibility and premature lateness (2026-09-10)
+
+- Status: Fixed locally — signed-in mobile visual verification and deployment pending.
+- Evidence: `MyTimesheetPage` loaded only attendance and had no KPI reward field. Management's `Thưởng KPI` is `dailyBonus + weeklyBonus`, excluding linked POS lines and monthly bonus. Separately, `buildAttendanceDetailRows` calculated `lateMinutes` from check-in even when `checkOutTime` was null, reproducing the screenshot where a current `Đang làm` shift appeared in `Đi trễ`.
+- Fix: the employee timesheet now computes the viewed month's reward from only the signed-in account's allocation/direct-POS sources using the existing thresholds. Lateness is zero until check-out; completed shifts retain the existing scheduled-start/grace calculation.
+- Verification: focused functional/source regressions, TypeScript, diff check and 728-module production build passed. No persistence, formula threshold, schema, permission, or production data changed.
+
+# 2026-09-10 — Payslip checkbox inherited input frame
+
+- Severity: Low. Status: Fixed locally.
+- Evidence: the supplied screenshot shows a pale vertical rectangle around the green row checkbox; source inspection confirms the checkbox inherited the global input minimum height and padding.
+- Fix: a payroll-scoped checkbox reset enforces an `18px × 18px` border box with zero padding and no inherited frame/shadow. Selection behavior and the green checked state are unchanged.
+- Verification: focused payslip-delivery contract, TypeScript, and diff check passed.
+- Final 731-module production build passed; in-app Browser visual verification is pending because no Browser session is available.
+
+# 2026-09-12 — Payroll save metadata loss (fixed locally)
+
+- Evidence: saveDetail previously replaced the saved row with the request object, which omitted persisted ID and published/viewed timestamps. This hid sent state after save and would prevent new revoke/delete actions from locating a freshly saved slip.
+- Targeted fix: upsertPayrollEntry returns the database row via select/single; UI stores its mapped ID and publication state. Payload and salary formulas unchanged.
+- Verification: test-payslip-revoke-delete.mjs exercises save returning ID/publishedAt; original payroll and delivery contracts plus TypeScript pass. Real signed-in read-back remains pending.

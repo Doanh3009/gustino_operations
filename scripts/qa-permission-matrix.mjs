@@ -24,13 +24,14 @@ function canAccess(role, page) {
   if (page === 'my-records') return role === 'staff' || role === 'shift_leader'
   // Xem công (thay trang Bảng lương đã gỡ): nhân viên/ca trưởng + giám sát SUP MT.
   if (page === 'my-timesheet') return ['staff', 'shift_leader', 'supmt'].includes(role)
+  if (page === 'my-payslips') return ['staff', 'shift_leader', 'cashier'].includes(role)
   if (page === 'report-archive') return canUseManagement(role)
   if (page === 'inventory') return canUseOperations(role)
   // Admin theo dõi đơn ở trang Quản trị, không lập phiếu đặt hàng của chi nhánh.
   if (page === 'orders') return role !== 'admin' && (canUseManagement(role) || canUseOperations(role))
   if (page === 'management') return canOpenAdminConsole(role)
-  // Đồng bộ App.tsx/AppShell: hai route vận hành nhân sự/đơn hàng này chỉ admin.
-  if (page === 'manager-attendance' || page === 'manager-requests') return canUseAdmin(role)
+  // Đồng bộ App.tsx/AppShell: ba route vận hành nhân sự/lương/đơn hàng này chỉ admin.
+  if (page === 'manager-attendance' || page === 'manager-payroll' || page === 'manager-requests') return canUseAdmin(role)
   if (managerSections.includes(page)) return role === 'manager'
   if (page === 'admin-accounts') return canUseAdmin(role)
   if (page === 'control') return canUseAdmin(role)
@@ -61,9 +62,9 @@ function expectedFinal(role, page) {
 }
 
 const allPages = [
-  'launcher', 'dashboard', 'today', 'sales', 'my-records', 'my-timesheet', 'report-archive', 'restaurant',
+  'launcher', 'dashboard', 'today', 'sales', 'my-records', 'my-timesheet', 'my-payslips', 'report-archive', 'restaurant',
   'report', 'inventory', 'handover', 'orders', 'attendance', 'management',
-  ...managerSections, 'manager-attendance', 'manager-requests',
+  ...managerSections, 'manager-attendance', 'manager-payroll', 'manager-requests',
   'admin-accounts', 'control', 'kitchen',
 ]
 
