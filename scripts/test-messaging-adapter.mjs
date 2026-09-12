@@ -30,4 +30,12 @@ await assert.rejects(adapter.fetchMessageContacts(employee), /SQL/)
 response = { data: null, error: { message: 'denied' } }
 await assert.rejects(adapter.sendEmployeeMessage(employee, adminContact, 'test'), /denied/)
 console.log('MESSAGING_ADAPTER_OK')
+const shell = readFileSync('src/components/AppShell.tsx', 'utf8')
+const employeeMenus = shell.slice(shell.indexOf('const SUPMT_NAV:'), shell.indexOf('const OPERATION_GUIDE_ITEMS:'))
+assert.ok(!employeeMenus.includes("id: 'messages'"), 'Nhân viên không có Tin nhắn ở sidebar.')
+assert.match(shell, /const messageShortcut = user\.role !== 'admin'/)
+assert.match(shell, /className="crm-header-actions">\s*\{messageShortcut\}/)
+assert.match(shell, /className="mh-right">\s*\{messageShortcut\}/)
+assert.match(shell, /onNavigate\('messages'\)/)
+console.log('MESSAGING_HEADER_SHORTCUT_OK')
 delete globalThis.__messageClient

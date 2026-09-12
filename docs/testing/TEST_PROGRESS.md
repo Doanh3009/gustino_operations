@@ -810,3 +810,10 @@ MOD-06/MOD-08/MOD-10/MOD-13/MOD-17 are now the user-prioritized implementation/t
 - UI history preserves older loaded rows after send and does not re-enable exhausted older pagination during polling. Final build after this targeted adjustment pending.
 
 - Final messaging build/typecheck passes: 733 modules, PRODUCTION_SUPABASE_BUNDLE_OK index-BXrkQCvW.js. All isolated DB security/adapter/existing regressions and source button audit passed. Supabase install/release and signed-in visual/realtime QA pending.
+
+# 2026-09-12 — Messaging shortcut placement
+
+- Passed MESSAGING_HEADER_SHORTCUT_OK: non-Admin menus omit messages; desktop/mobile header both render shortcut beside bell and navigate to messages. Adapter, payslip/nav regressions and UI_BUTTON_CONTRACT_OK pass; diff check pass.
+- UI-only adjustment; no database test rerun needed because SQL/services unchanged. Full build pending; signed-in phone visual verification pending. No deploy.
+
+- Header shortcut final build/typecheck passes (733 modules; production bundle guard). Phone visual verification pending; no deployment.

@@ -18890,6 +18890,8 @@ body { background: #f7f8f5; font-size: 14px; }
 .my-payslip-confirmation>button{justify-self:end}
 .my-payslip-month-filter{align-items:flex-end;flex-wrap:wrap}
 .my-payslip-month-filter>button{min-height:44px}
+.message-header-button{box-sizing:border-box;min-height:38px;max-height:38px;flex:0 0 38px;line-height:1}
+.message-header-button[aria-pressed="true"]{background:#e9f3e1;border-color:#89a96b;color:#386b2f}
 .messages-page{max-width:1200px;margin:0 auto;padding:24px;color:#17233d;min-width:0}
 .messages-heading h1{margin:0 0 8px}.messages-heading p{margin:0 0 20px;color:#64748b}
 .messages-workspace{display:grid;grid-template-columns:260px minmax(0,1fr);height:min(720px,calc(100dvh - 180px));min-height:400px;border:1px solid #dfe5e9;border-radius:12px;overflow:hidden;background:#fff}

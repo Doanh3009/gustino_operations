@@ -23,3 +23,8 @@ Date: 2026-09-12. State: In progress (local implementation verified; production 
 Commands: node scripts/test-messaging-adapter.mjs; scripts/test-messaging-postgres.ps1 (fresh localhost temporary cluster, stopped in finally); node scripts/test-ui-button-contract.mjs; npm.cmd run build.
 
 Migration: supabase/migrations/20260912140000_admin_employee_messages.sql. Not applied to Supabase. No production business rows or existing business permissions modified.
+
+## Header shortcut correction (2026-09-12)
+
+- User requires non-Admin messaging entry beside bell rather than sidebar. Source/header contract passed; Admin menu preserved. Both headers render same compact shortcut, closes open menus and opens Messages.
+- Adapter/payslip/nav/button regressions pass. Physical phone alignment and signed-in click pending; database behavior unchanged.

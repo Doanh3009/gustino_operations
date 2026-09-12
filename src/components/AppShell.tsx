@@ -89,7 +89,6 @@ const ADMIN_NAV: NavItem[] = [
 // hệ thống, chỉ khác là mọi thao tác ghi bị khóa trong ManagementPage. Hai mục cuối
 // là việc của chính họ: chấm công và xem bảng công cá nhân.
 const SUPMT_NAV: NavItem[] = [
-  { id: 'messages', label: 'Tin nhắn', icon: <IconClipboard />, canShow: () => true },
   { id: 'management', section: 'revenue', label: 'Doanh thu', icon: <IconChart />, canShow: () => true },
   { id: 'management', section: 'overview', label: 'Tổng quan', icon: <IconDashboard />, canShow: () => true },
   { id: 'management', section: 'attendance', label: 'Chấm công NV', shortLabel: 'Công NV', icon: <IconClock />, canShow: () => true },
@@ -102,7 +101,6 @@ const SUPMT_NAV: NavItem[] = [
 ]
 
 const MANAGER_NAV: NavItem[] = [
-  { id: 'messages', label: 'Tin nhắn', icon: <IconClipboard />, canShow: () => true },
   { id: 'dashboard', label: 'Doanh thu', icon: <IconDashboard />, canShow: () => true },
   { id: 'manager-business', label: 'Kinh doanh', icon: <IconChart />, canShow: () => true },
   { id: 'manager-inventory', label: 'Kho', icon: <IconBox />, canShow: () => true },
@@ -110,7 +108,6 @@ const MANAGER_NAV: NavItem[] = [
 ]
 
 const NAV_ITEMS: NavItem[] = [
-  { id: 'messages', label: 'Tin nhắn', icon: <IconClipboard />, canShow: () => true },
   {
     id: 'management',
     label: 'Tổng hợp',
@@ -310,7 +307,14 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
       </div>}
     </div>
   )
-  const activeLabel = page === 'my-payslips' ? 'Phiếu lương của tôi' : visibleNav.find(isActive)?.label || 'GUSTINO'
+  const messageShortcut = user.role !== 'admin' && <button type="button" className="payslip-notification-button message-header-button" aria-label={lang === 'en' ? 'Messages' : 'Tin nhắn'} title={lang === 'en' ? 'Messages' : 'Tin nhắn'} aria-pressed={page === 'messages'} onClick={(event) => {
+    event.stopPropagation()
+    setMenuOpen(false)
+    setSidebarOpen(false)
+    setPayslipNotificationOpen(false)
+    onNavigate('messages')
+  }}><IconMessage /></button>
+  const activeLabel = page === 'messages' ? (lang === 'en' ? 'Messages' : 'Tin nhắn') : page === 'my-payslips' ? 'Phiếu lương của tôi' : visibleNav.find(isActive)?.label || 'GUSTINO'
   const navKey = (item: NavItem) => `${item.id}:${item.section || ''}`
   const operationGuide = OPERATION_GUIDE_ITEMS.filter((item) => item.canShow(user))
   const showOperationGuide = false
@@ -503,6 +507,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
       <header className="crm-desktop-header">
         <div className="crm-header-title"><small>GUSTINO / Quản trị</small><strong>{activeLabel}</strong></div>
         <div className="crm-header-actions">
+          {messageShortcut}
           {['staff', 'shift_leader', 'cashier'].includes(user.role) && payslipNotification}
           <span className="crm-header-avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : initials}</span>
           <span className="crm-header-account"><strong>{shownName}</strong><small>{roleLabel(user.role, lang)}</small></span>
@@ -518,6 +523,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
           <span className="mh-title">{activeLabel}</span>
         </div>
         <div className="mh-right">
+          {messageShortcut}
           {['staff', 'shift_leader', 'cashier'].includes(user.role) && payslipNotification}
           <button
             className={`mh-avatar${menuOpen ? ' open' : ''}`}
@@ -689,6 +695,10 @@ function IconClock() {
 
 function IconBell() {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 00-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>
+}
+
+function IconMessage() {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 11.5a8.5 8.5 0 01-8.5 8.5H4l-3 3v-11.5A8.5 8.5 0 019.5 3h3a8.5 8.5 0 018.5 8.5Z" /><path d="M7 9h8M7 13h5" /></svg>
 }
 
 function IconClipboard() {

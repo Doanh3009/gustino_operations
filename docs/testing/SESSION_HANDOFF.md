@@ -908,3 +908,11 @@ Last updated: 2026-07-15
 - Final MOD-21 local validation: MESSAGING_ADAPTER_OK; MESSAGING_POSTGRES_SECURITY_OK (fresh isolated PostgreSQL actual RLS/RPC/grants/broadcast/history); existing payroll regressions; UI_BUTTON_CONTRACT_OK; TypeScript and final 733-module production build pass (PRODUCTION_SUPABASE_BUNDLE_OK index-BXrkQCvW.js).
 - Temporary PostgreSQL test clusters are stopped. No Supabase SQL application, deploy or business-data writes. New messaging SQL file requires installation; previously linked CLI privilege 403 remains the release access limitation.
 - Exact next action: owner applies only 20260912140000_admin_employee_messages.sql, release verified frontend under deployment authorization, then signed-in Admin+two employees verify private bidirectional chat, broadcast and realtime/mobile. Do not bulk replay migration history.
+
+# 2026-09-12 — Employee messaging header shortcut
+
+- User requests message icon beside bell instead of employee sidebar. Removed messages entries from non-Admin menus, retained Admin sidebar and added non-Admin shortcut immediately before bell in desktop/mobile headers. Shortcut closes menus and opens existing messages route; title and accessible active state retained.
+- Shared compact 38px flex sizing preserves one-row mobile actions; no API/database/message permission changes.
+- Adapter/header shortcut, payslip/navigation and button contracts plus diff check passed. Build pending; no deployment/data action.
+
+- Final employee message-shortcut validation: adapter/header/nav/button tests and TypeScript/full 733-module build pass; PRODUCTION_SUPABASE_BUNDLE_OK index-qvYGyilw.js. No SQL/schema/service changes, deployment or staging. Next: authorized frontend release and signed-in phone icon/bell/avatar alignment and message navigation verification.
