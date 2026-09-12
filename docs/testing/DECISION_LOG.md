@@ -211,3 +211,9 @@
 
 - Direct request authorizes a separate confirmation timestamp and narrow RPC, independent of automatic viewed status. It records acknowledgement only; does not assert payment or alter salary calculations.
 - Confirmation applies to current publication timestamp; repeat click retains first time. Re-publish/revoke reset confirmation. New migration adds nullable metadata only and preserves existing rows/fields.
+
+# 2026-09-12 — Messaging authorization scope
+
+- Implements direct user request for Admin↔employee only. Non-Admin includes all existing employee roles; contacts and send permissions come from authenticated profile at the database, independently of UI.
+- Admin-only broadcast creates one private message per active non-Admin; employee peers never exposed to employees. Text-only chat, 2000-character limit, older history in 50-row pages; no attachments or unrelated workflow changes.
+- Separate additive message table/functions/RLS. No existing business-table permissions or historical salary/attendance data changed.

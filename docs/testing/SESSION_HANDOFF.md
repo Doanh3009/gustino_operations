@@ -895,3 +895,16 @@ Last updated: 2026-07-15
 - Delivery/month/nav and original Admin contracts plus diff check pass. Build pending; phone visual verification pending; no deploy.
 
 - Final visible month selector build/typecheck passed: 731 modules; PRODUCTION_SUPABASE_BUNDLE_OK index-aaurvF9B.js. Existing contracts and diff check passed. No deploy/schema/data mutation. Next: release frontend under authorization and verify selector visible before focus on phone.
+
+# 2026-09-12 — Admin/employee messaging implementation
+
+- User authorizes Admin messaging every employee, employee messaging Admin only. Implemented Messages route/menu for all current roles, restricted contacts RPC, private history with older-page cursor, text compose, Admin broadcast with confirmation, realtime + 10-second page polling and read acknowledgement.
+- New SQL 20260912140000_admin_employee_messages.sql creates a separate message table/RLS and narrow RPCs. Sender comes from auth.uid; inactive/self/employee-to-employee/Admin-to-Admin recipients rejected; only participants SELECT, no client INSERT/UPDATE/DELETE grants. No existing business rows modified.
+- Frontend LAN explicitly reports unsupported instead of pretending cloud messages are saved. Migration unapplied; previous CLI project access was 403. No deployment/data action.
+- Next: typecheck, targeted messaging adapter/security regressions, existing payroll/nav regressions and production build. Signed-in DB/UI/multi-account integration requires owner-applied SQL and authorized release.
+
+- Messaging database security integration passed on fresh isolated PostgreSQL; temporary database stopped. Source button contract passed (MessagesPage four reachable controls). Full final build pending; no production apply/deploy.
+
+- Final MOD-21 local validation: MESSAGING_ADAPTER_OK; MESSAGING_POSTGRES_SECURITY_OK (fresh isolated PostgreSQL actual RLS/RPC/grants/broadcast/history); existing payroll regressions; UI_BUTTON_CONTRACT_OK; TypeScript and final 733-module production build pass (PRODUCTION_SUPABASE_BUNDLE_OK index-BXrkQCvW.js).
+- Temporary PostgreSQL test clusters are stopped. No Supabase SQL application, deploy or business-data writes. New messaging SQL file requires installation; previously linked CLI privilege 403 remains the release access limitation.
+- Exact next action: owner applies only 20260912140000_admin_employee_messages.sql, release verified frontend under deployment authorization, then signed-in Admin+two employees verify private bidirectional chat, broadcast and realtime/mobile. Do not bulk replay migration history.

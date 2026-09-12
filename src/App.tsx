@@ -36,6 +36,7 @@ const ControlCenterPage = lazyWithReload(() => import('./pages/ControlCenterPage
 const MyTimesheetPage = lazyWithReload(() => import('./pages/MyTimesheetPage').then((module) => ({ default: module.MyTimesheetPage })))
 const PayrollPage = lazyWithReload(() => import('./pages/PayrollPage').then((module) => ({ default: module.PayrollPage })))
 const MyPayslipsPage = lazyWithReload(() => import('./pages/MyPayslipsPage').then((module) => ({ default: module.MyPayslipsPage })))
+const MessagesPage = lazyWithReload(() => import('./pages/MessagesPage').then((module) => ({ default: module.MessagesPage })))
 
 function App() {
   const lang = useLang()
@@ -490,6 +491,7 @@ function App() {
         {page === 'my-records' && <MyRecordsPage user={user} onNavigate={navigate} />}
         {page === 'my-timesheet' && <MyTimesheetPage user={user} />}
         {page === 'my-payslips' && <MyPayslipsPage user={user} />}
+        {page === 'messages' && <MessagesPage user={user} />}
         {page === 'report-archive' && <ReportArchivePage user={user} />}
         {page === 'restaurant' && <RestaurantPage user={user} movements={movements} />}
         {page === 'report' && <ReportPage user={user} movements={movements} onNavigate={navigate} onOpenInventory={openInventory} onRefresh={refreshMovements} />}
@@ -577,6 +579,7 @@ function pageFromHash(): Page {
     'my-records',
     'my-timesheet',
     'my-payslips',
+    'messages',
     'report-archive',
     'restaurant',
     'report',
@@ -631,6 +634,7 @@ function latestMovementStamp(items: StockMovement[], fallback: string) {
 
 function canAccessPage(user: AppUser, page: Page) {
   if (page === 'launcher') return true
+  if (page === 'messages') return true
   if (page === 'attendance') return user.role !== 'kitchen' && user.role !== 'manager' && user.role !== 'cashier'
   if (page === 'dashboard') return user.role === 'manager'
   if (page === 'sales') return canUseSales(user.role)

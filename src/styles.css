@@ -18890,6 +18890,15 @@ body { background: #f7f8f5; font-size: 14px; }
 .my-payslip-confirmation>button{justify-self:end}
 .my-payslip-month-filter{align-items:flex-end;flex-wrap:wrap}
 .my-payslip-month-filter>button{min-height:44px}
+.messages-page{max-width:1200px;margin:0 auto;padding:24px;color:#17233d;min-width:0}
+.messages-heading h1{margin:0 0 8px}.messages-heading p{margin:0 0 20px;color:#64748b}
+.messages-workspace{display:grid;grid-template-columns:260px minmax(0,1fr);height:min(720px,calc(100dvh - 180px));min-height:400px;border:1px solid #dfe5e9;border-radius:12px;overflow:hidden;background:#fff}
+.messages-contacts{padding:14px;border-right:1px solid #dfe5e9;min-width:0;overflow:auto}
+.messages-contact-list{display:grid;gap:6px;margin-top:12px}.messages-contact-list>button{display:grid;gap:5px;width:100%;padding:12px;border:0;border-radius:8px;background:#f8fafc;text-align:left;color:#17233d;cursor:pointer}.messages-contact-list>button.active{background:#e9f3e1;color:#386b2f}.messages-contact-list small{color:#64748b}
+.messages-mobile-contact{display:none}.messages-conversation{display:flex;flex-direction:column;min-width:0;min-height:0}.messages-conversation>header{padding:16px;border-bottom:1px solid #e5eaf0}
+.messages-history{flex:1;overflow:auto;min-height:0;padding:16px;display:flex;flex-direction:column;gap:12px;overscroll-behavior:contain}.message-bubble{align-self:flex-start;max-width:85%;padding:10px 14px;border-radius:12px;background:#f1f5f9;min-width:0}.message-bubble.own{align-self:flex-end;background:#e9f3e1}.message-bubble p{white-space:pre-wrap;overflow-wrap:anywhere;margin:0 0 5px}.message-bubble small{font-size:11px;color:#64748b}.messages-load-older{align-self:center}
+.messages-composer{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:12px;padding:14px;border-top:1px solid #e5eaf0}.messages-composer>p{grid-column:1/-1;margin:0}.messages-draft-label{display:grid;gap:6px;font-size:12px;font-weight:700;min-width:0}.messages-draft-label textarea{min-height:70px;max-height:160px;resize:vertical;box-sizing:border-box}
+@media(max-width:640px){.messages-page{padding:16px 12px}.messages-workspace{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);height:calc(100dvh - 220px);min-height:420px}.messages-contacts{border-right:0;border-bottom:1px solid #dfe5e9;padding:10px}.messages-contacts>input,.messages-contact-list{display:none}.messages-mobile-contact{display:grid;gap:5px;font-size:12px;font-weight:700}.messages-mobile-contact select{box-sizing:border-box;min-width:0}.messages-composer{grid-template-columns:minmax(0,1fr)}.messages-composer>button{justify-self:end}.message-bubble{max-width:90%}}
 @media(max-width:640px){.my-payslip-confirmation>button{width:100%}}
 
 @media (max-width: 900px) {

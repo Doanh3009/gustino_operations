@@ -29,6 +29,7 @@ export type Page =
   | 'my-records'
   | 'my-timesheet'
   | 'my-payslips'
+  | 'messages'
   | 'report-archive'
   | 'restaurant'
   | 'report'
@@ -80,6 +81,7 @@ const ADMIN_NAV: NavItem[] = [
   { id: 'management', section: 'commission', label: 'Thi đua nhân viên', icon: <IconChart />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'report-archive', label: 'Báo cáo', icon: <IconReport />, canShow: (user) => canUseAdmin(user.role) },
   { id: 'manager-payroll', label: 'Phiếu lương', icon: <IconPayroll />, canShow: (user) => canUseAdmin(user.role) },
+  { id: 'messages', label: 'Tin nhắn', icon: <IconClipboard />, canShow: () => true },
   { id: 'control', label: 'Cài đặt', icon: <IconSettings />, canShow: (user) => canUseAdmin(user.role) },
 ]
 
@@ -87,6 +89,7 @@ const ADMIN_NAV: NavItem[] = [
 // hệ thống, chỉ khác là mọi thao tác ghi bị khóa trong ManagementPage. Hai mục cuối
 // là việc của chính họ: chấm công và xem bảng công cá nhân.
 const SUPMT_NAV: NavItem[] = [
+  { id: 'messages', label: 'Tin nhắn', icon: <IconClipboard />, canShow: () => true },
   { id: 'management', section: 'revenue', label: 'Doanh thu', icon: <IconChart />, canShow: () => true },
   { id: 'management', section: 'overview', label: 'Tổng quan', icon: <IconDashboard />, canShow: () => true },
   { id: 'management', section: 'attendance', label: 'Chấm công NV', shortLabel: 'Công NV', icon: <IconClock />, canShow: () => true },
@@ -99,6 +102,7 @@ const SUPMT_NAV: NavItem[] = [
 ]
 
 const MANAGER_NAV: NavItem[] = [
+  { id: 'messages', label: 'Tin nhắn', icon: <IconClipboard />, canShow: () => true },
   { id: 'dashboard', label: 'Doanh thu', icon: <IconDashboard />, canShow: () => true },
   { id: 'manager-business', label: 'Kinh doanh', icon: <IconChart />, canShow: () => true },
   { id: 'manager-inventory', label: 'Kho', icon: <IconBox />, canShow: () => true },
@@ -106,6 +110,7 @@ const MANAGER_NAV: NavItem[] = [
 ]
 
 const NAV_ITEMS: NavItem[] = [
+  { id: 'messages', label: 'Tin nhắn', icon: <IconClipboard />, canShow: () => true },
   {
     id: 'management',
     label: 'Tổng hợp',
@@ -210,6 +215,7 @@ const EN_NAV_LABELS: Partial<Record<Page, { label: string; shortLabel?: string }
   'my-records': { label: 'History & reports', shortLabel: 'History' },
   'my-timesheet': { label: 'My timesheet', shortLabel: 'Timesheet' },
   'my-payslips': { label: 'My payslips', shortLabel: 'Payslips' },
+  messages: { label: 'Messages', shortLabel: 'Messages' },
   handover: { label: 'Shift handover', shortLabel: 'Handover' },
   inventory: { label: 'Inventory' },
   report: { label: 'Close shift' },

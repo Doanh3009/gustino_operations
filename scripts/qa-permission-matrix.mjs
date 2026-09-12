@@ -17,6 +17,7 @@ const canOpenAdminConsole = (r) => ['admin', 'supmt'].includes(r)
 const managerSections = ['manager-revenue', 'manager-business', 'manager-inventory']
 
 function canAccess(role, page) {
+  if (page === 'messages') return true
   if (page === 'launcher') return true
   if (page === 'attendance') return role !== 'kitchen' && role !== 'manager' && role !== 'cashier'
   if (page === 'dashboard') return role === 'manager'
@@ -62,6 +63,7 @@ function expectedFinal(role, page) {
 }
 
 const allPages = [
+  'messages',
   'launcher', 'dashboard', 'today', 'sales', 'my-records', 'my-timesheet', 'my-payslips', 'report-archive', 'restaurant',
   'report', 'inventory', 'handover', 'orders', 'attendance', 'management',
   ...managerSections, 'manager-attendance', 'manager-payroll', 'manager-requests',

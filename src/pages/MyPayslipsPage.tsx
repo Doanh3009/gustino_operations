@@ -115,7 +115,7 @@ export function MyPayslipsPage({ user }: { user: AppUser }) {
       </div>
     </header>
     {error && <p className="error-banner" role="alert">{error}</p>}
-    {loading ? <p className="empty-copy">Đang tải phiếu lương…</p> : !filteredEntries.length ? <div className="my-payslips-empty"><span aria-hidden="true">▤</span><h2>{period ? `Chưa có phiếu lương tháng ${period.slice(5)}/${period.slice(0, 4)}` : 'Chưa có phiếu lương'}</h2><p>Phiếu lương sẽ xuất hiện tại đây sau khi Admin gửi.</p></div> : <div className="my-payslips-layout">
+    {loading ? <p className="empty-copy">Đang tải phiếu lương…</p> : !filteredEntries.length ? <div className="my-payslips-empty"><span aria-hidden="true">▤</span><h2>{period ? `Chưa có phiếu lương tháng ${period.slice(5)}/${period.slice(0, 4)}` : 'Chưa có phiếu lương'}</h2><p>Phiếu lương tháng này đang được cập nhật. Vui lòng quay lại sau.</p></div> : <div className="my-payslips-layout">
       <aside className="my-payslips-list" aria-label="Danh sách phiếu lương">
         {filteredEntries.map((entry) => <button type="button" key={entry.id || entry.period} className={selected?.id === entry.id ? 'active' : ''} onClick={() => openEntry(entry)}>
           <span><strong>Tháng {entry.period.slice(5)}/{entry.period.slice(0, 4)}</strong><small>{entry.publishedAt ? `Gửi ngày ${formatDateTime(entry.publishedAt)}` : ''}</small></span>

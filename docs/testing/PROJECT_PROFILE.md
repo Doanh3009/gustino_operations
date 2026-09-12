@@ -60,3 +60,5 @@ Last updated: 2026-07-22
 ## Repository state warning
 
 The worktree already contained many modified and untracked application, migration, script, artifact, and data files before Testing Mode started. They are treated as user-owned and must not be reverted or overwritten.
+
+- 2026-09-12 local discovery: text messaging uses MessagesPage, lib/messages, employee_messages and four dedicated RPCs. Admin directory is all active non-Admins; other roles only see active Admins. Database owns sender identity and rejects employee-peer/broadcast mutation. Messaging is Supabase-only, with explicit unsupported LAN errors. New migration not applied; no production state claimed.

@@ -791,3 +791,22 @@ MOD-06/MOD-08/MOD-10/MOD-13/MOD-17 are now the user-prioritized implementation/t
 - Full build pending; signed-in phone visibility/native selector QA pending; no deployment/data mutation.
 
 - Visible month selector final build/typecheck and production bundle guard passed (731 modules). Phone visual verification pending; no deploy.
+
+# 2026-09-12 — Messaging adapter batch
+
+- Passed MESSAGING_ADAPTER_OK: six employee roles cannot target employees/broadcast, Admin cannot target self/Admin, whitespace/oversized content rejected before query, valid employee→Admin/Admin→employee/broadcast payloads, LAN and missing SQL errors surfaced.
+- Existing payroll/nav/month/confirmation/unread/revoke/viewed regressions and diff check passed. TypeScript passed. Isolated PostgreSQL security test running; migration not applied to Supabase.
+
+# 2026-09-12 — Messaging build/security harness
+
+- Full TypeScript/Vite build passed with 733 modules and PRODUCTION_SUPABASE_BUNDLE_OK (index-bq1ExmGv.js).
+- First isolated PostgreSQL test did not reach fixture execution: native pg_ctl invocation held the PowerShell pipeline until server stopped. Exact temporary cluster stopped successfully; runner now uses hidden Start-Process/Wait and is being rerun. This was a harness failure, not a production/app/database bug.
+- Supabase migration remains unapplied. No production writes/deploy.
+
+# 2026-09-12 — Messaging PostgreSQL verification
+
+- Passed MESSAGING_POSTGRES_SECURITY_OK on a fresh localhost-only PostgreSQL 17 fixture. Actual migration syntax/install, restricted contact scopes, employee-to-employee/broadcast rejection, direct spoofed INSERT/UPDATE/DELETE denial, other-employee/unrelated-Admin read isolation, inactive recipient rejection, broadcast scope, own read acknowledgement and 50-row composite-cursor history all pass.
+- Temporary cluster was stopped by runner finally; no linked/cloud connection. Two prior harness startup failures were resolved with WaitForExit for pg_ctl rather than waiting its PostgreSQL descendants.
+- UI history preserves older loaded rows after send and does not re-enable exhausted older pagination during polling. Final build after this targeted adjustment pending.
+
+- Final messaging build/typecheck passes: 733 modules, PRODUCTION_SUPABASE_BUNDLE_OK index-BXrkQCvW.js. All isolated DB security/adapter/existing regressions and source button audit passed. Supabase install/release and signed-in visual/realtime QA pending.
