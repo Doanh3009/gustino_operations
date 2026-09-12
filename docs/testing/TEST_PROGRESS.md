@@ -777,3 +777,10 @@ MOD-06/MOD-08/MOD-10/MOD-13/MOD-17 are now the user-prioritized implementation/t
 - Desktop/mobile both use shared visibleNav sidebar. Existing monthly published-own payslip list is reused; no schema/access changes. Signed-in mobile/menu click pending because Browser unavailable; build pending.
 
 - Final Lương menu build/typecheck and production bundle guard passed (731 modules). Phone/desktop signed-in menu check pending; no deployment.
+
+# 2026-09-12 — Employee month filter validation
+
+- Passed EMPLOYEE_PAYSLIP_MONTH_FILTER_OK: explicit month input/reset, list/detail use same filtered rows, no out-of-period fallback and initial notification period sets filter.
+- Existing payroll/navigation/confirmation/unread and adapter regressions pass; diff check pass. Full build pending. Browser unavailable in previous attempt; signed-in mobile/native-month picker QA pending. No schema/database/deploy action.
+
+- Employee month-filter final build/typecheck passed (731 modules; PRODUCTION_SUPABASE_BUNDLE_OK). Physical phone/native picker verification pending; no deployment.

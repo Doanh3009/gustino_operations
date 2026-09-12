@@ -37,3 +37,8 @@ No real payroll rows were modified. Migration/deployment remain pending.
 
 - Passed source contract: Lương entry immediately follows Chấm công, opens my-payslips for existing authorized staff/shift_leader/cashier roles.
 - Existing monthly list/detail/viewed/confirmation tests remain green. Signed-in desktop/mobile sidebar click and own monthly row access remain pending.
+
+## Employee month filter (2026-09-12)
+
+- Passed contract: month input, reset, filtered list/detail, notification period preservation.
+- Pending signed-in UI: pick month with slip / without slip / reset all; refresh retains month and no hidden slip is marked viewed; phone picker/layout.

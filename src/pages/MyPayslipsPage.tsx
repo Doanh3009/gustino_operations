@@ -5,6 +5,7 @@ import type { AppUser } from '../types'
 export function MyPayslipsPage({ user }: { user: AppUser }) {
   const [entries, setEntries] = useState<PayrollEntry[]>([])
   const [selectedId, setSelectedId] = useState('')
+  const [period, setPeriod] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [confirming, setConfirming] = useState(false)
@@ -32,6 +33,7 @@ export function MyPayslipsPage({ user }: { user: AppUser }) {
         requestedPeriod = sessionStorage.getItem('gustino:selected-payslip-period') || ''
         sessionStorage.removeItem('gustino:selected-payslip-period')
       } catch { /* private mode */ }
+      if (requestedPeriod) setPeriod(requestedPeriod)
       const first = rows.find((entry) => entry.period === requestedPeriod) || rows[0]
       if (first?.id) {
         setSelectedId(first.id)
@@ -57,7 +59,8 @@ export function MyPayslipsPage({ user }: { user: AppUser }) {
     }
   }, [user.id, user.role, user.authToken])
 
-  const selected = entries.find((entry) => entry.id === selectedId) || entries[0]
+  const filteredEntries = period ? entries.filter((entry) => entry.period === period) : entries
+  const selected = filteredEntries.find((entry) => entry.id === selectedId) || filteredEntries[0]
 
   useEffect(() => {
     setViewedError('')
@@ -94,11 +97,17 @@ export function MyPayslipsPage({ user }: { user: AppUser }) {
   }
 
   return <section className="my-payslips-page">
-    <header className="payslip-header"><div><span className="eyebrow dark">THÔNG TIN CÁ NHÂN</span><h1>Phiếu lương của tôi</h1></div></header>
+    <header className="payslip-header">
+      <div><span className="eyebrow dark">THÔNG TIN CÁ NHÂN</span><h1>Phiếu lương của tôi</h1></div>
+      <div className="payslip-filters my-payslip-month-filter">
+        <label>Tháng<input type="month" value={period} disabled={confirming} onChange={(event) => { setPeriod(event.target.value); setSelectedId(''); setConfirmationError('') }} /></label>
+        <button type="button" className="secondary-button" disabled={!period || confirming} onClick={() => { setPeriod(''); setSelectedId(''); setConfirmationError('') }}>Tất cả tháng</button>
+      </div>
+    </header>
     {error && <p className="error-banner" role="alert">{error}</p>}
-    {loading ? <p className="empty-copy">Đang tải phiếu lương…</p> : !entries.length ? <div className="my-payslips-empty"><span aria-hidden="true">▤</span><h2>Chưa có phiếu lương</h2><p>Phiếu lương sẽ xuất hiện tại đây sau khi Admin gửi.</p></div> : <div className="my-payslips-layout">
+    {loading ? <p className="empty-copy">Đang tải phiếu lương…</p> : !filteredEntries.length ? <div className="my-payslips-empty"><span aria-hidden="true">▤</span><h2>{period ? `Chưa có phiếu lương tháng ${period.slice(5)}/${period.slice(0, 4)}` : 'Chưa có phiếu lương'}</h2><p>Phiếu lương sẽ xuất hiện tại đây sau khi Admin gửi.</p></div> : <div className="my-payslips-layout">
       <aside className="my-payslips-list" aria-label="Danh sách phiếu lương">
-        {entries.map((entry) => <button type="button" key={entry.id || entry.period} className={selected?.id === entry.id ? 'active' : ''} onClick={() => openEntry(entry)}>
+        {filteredEntries.map((entry) => <button type="button" key={entry.id || entry.period} className={selected?.id === entry.id ? 'active' : ''} onClick={() => openEntry(entry)}>
           <span><strong>Tháng {entry.period.slice(5)}/{entry.period.slice(0, 4)}</strong><small>{entry.publishedAt ? `Gửi ngày ${formatDateTime(entry.publishedAt)}` : ''}</small></span>
           {!entry.employeeViewedAt && <i>Chưa xem</i>}
         </button>)}

@@ -18888,6 +18888,8 @@ body { background: #f7f8f5; font-size: 14px; }
 .my-payslip-confirmation{display:grid;gap:12px;margin-top:20px;padding-top:18px;border-top:1px solid #e5eaf0}
 .my-payslip-confirmation>p{margin:0}
 .my-payslip-confirmation>button{justify-self:end}
+.my-payslip-month-filter{align-items:flex-end;flex-wrap:wrap}
+.my-payslip-month-filter>button{min-height:44px}
 @media(max-width:640px){.my-payslip-confirmation>button{width:100%}}
 
 @media (max-width: 900px) {

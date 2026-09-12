@@ -879,3 +879,11 @@ Last updated: 2026-07-15
 - Passed navigation placement/role contract, original Admin/delivery and confirmation/viewed/revoke/delete adapter regressions; diff check passed. Build pending; no deploy/database action.
 
 - Final Lương menu validation: contracts/adapters and full TypeScript/Vite build passed (731 modules; PRODUCTION_SUPABASE_BUNDLE_OK index-32K9Hul7.js). No database/schema/deploy/git staging action. Next: authorized frontend release and signed-in employee monthly-menu verification.
+
+# 2026-09-12 — Employee payslip month filter
+
+- User requests explicit month filtering in Lương. Added month input and Tất cả tháng reset, shared responsive filter styling, scoped list/detail to the chosen month and period-specific empty state.
+- Notification initial navigation sets the requested filter month; viewed acknowledgement only runs for the displayed filtered slip. Refresh retains chosen month. No salary/data/schema/access changes.
+- Passed monthly/navigation/delivery/confirmation/unread contracts, Admin and adapter regressions; diff check passed. Full build pending. No production action.
+
+- Final employee month-filter validation: monthly/navigation/Admin/delivery/unread/confirmation contracts and adapters pass; full TypeScript/Vite build and production bundle guard pass (731 modules; MyPayslipsPage-DZlpCHr6.js; index-CpCNCfAc.js). No deploy/database/staging action. Next: authorized frontend release and signed-in month filter/empty/reset/notification checks.
