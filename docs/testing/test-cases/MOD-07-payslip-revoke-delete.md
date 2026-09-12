@@ -14,3 +14,26 @@
 | Route permissions | Existing role access retained | Passed: 144 role/page checks |
 
 No real payroll rows were modified. Migration/deployment remain pending.
+
+## 2026-09-12 — Save outcome visibility
+
+- Confirmed source bug: outcome banners outside dialog are covered by modal backdrop.
+- Admin contract now verifies success/status and error/alert live inside sticky dialog footer; Passed. Delivery and revoke/delete adapter regressions Passed.
+- Visual check of actual save success/failure on desktop/mobile remains pending because in-app Browser is unavailable. No database mutation.
+
+## Employee confirmation (2026-09-12)
+
+- Passed adapter: own published slip confirms via RPC/server timestamp; other employee/Admin/unpublished rejected; missing RPC/error is failure, never false success.
+- Passed contract: helper sentence removed, footer confirmation button, SQL ownership + publication timestamp guard, idempotent timestamp; publish/revoke clear confirmation.
+- Pending isolated DB: confirm twice preserves first timestamp; other employee cannot confirm; revoked/re-published older version rejected; existing salary fields unchanged.
+
+## Viewed notification cleanup (2026-09-12)
+
+- Passed adapter: missing RPC is error/no event; successful own acknowledgement emits entry ID/timestamp.
+- Passed source contract: badge and dropdown share unread set, stale reads cannot overwrite newer shell refresh, selected fallback slip also acknowledged, failure visible.
+- Pending signed-in DB/phone: badge decreases and row disappears after open/navigation; own published slips still reopen; other employee cannot mark viewed; refresh retains state.
+
+## Employee Lương menu (2026-09-12)
+
+- Passed source contract: Lương entry immediately follows Chấm công, opens my-payslips for existing authorized staff/shift_leader/cashier roles.
+- Existing monthly list/detail/viewed/confirmation tests remain green. Signed-in desktop/mobile sidebar click and own monthly row access remain pending.

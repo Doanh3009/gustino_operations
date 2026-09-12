@@ -206,3 +206,8 @@
 
 - Direct user request authorizes Admin revoke/delete. Revoke retains salary values by clearing existing publication metadata; delete removes only the selected saved payroll_entries ID after explicit UI confirmation. No new schema, formula, or role rule.
 - Saved employee list remains a roster: deleting a slip does not delete employee/attendance/configuration records. The employee can have a new slip created later.
+
+# 2026-09-12 — Explicit employee payslip acknowledgement
+
+- Direct request authorizes a separate confirmation timestamp and narrow RPC, independent of automatic viewed status. It records acknowledgement only; does not assert payment or alter salary calculations.
+- Confirmation applies to current publication timestamp; repeat click retains first time. Re-publish/revoke reset confirmation. New migration adds nullable metadata only and preserves existing rows/fields.

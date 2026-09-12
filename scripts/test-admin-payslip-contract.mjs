@@ -29,6 +29,9 @@ for (const label of [
 
 assert.match(page, /fetchEmployees[\s\S]*fetchAttendanceRecords[\s\S]*calculatePersonalKpiReward/, 'Phiếu lương phải tái sử dụng dữ liệu nhân viên, chấm công và KPI.')
 assert.match(page, /Xem chi tiết/, 'Danh sách nhân viên phải có nút Xem chi tiết.')
+const detailFooter = page.slice(page.indexOf('<footer>'), page.indexOf('</footer>'))
+assert.match(detailFooter, /error &&[\s\S]*role="alert"/, 'Lỗi phải hiện trong footer dialog, không bị backdrop che.')
+assert.match(detailFooter, /feedback &&[\s\S]*role="status"/, 'Kết quả lưu phải hiện trong footer dialog.')
 assert.match(page, /branchId/, 'Danh sách phải hỗ trợ nhóm/lọc theo chi nhánh.')
 assert.match(payroll, /from\('payroll_entries'\)/, 'Dữ liệu phiếu lương phải lưu bền vững trong payroll_entries.')
 assert.match(payroll, /user\.role !== 'admin'/, 'Lớp dữ liệu phải chặn ghi/xem phiếu lương ngoài Admin.')

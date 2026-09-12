@@ -44,5 +44,44 @@ assert.ok(page.includes('window.confirm(message)'))
 assert.ok(page.includes('Thu hồi phiếu lương'))
 assert.ok(page.includes('Xóa phiếu lương'))
 console.log('PAYSLIP_REVOKE_DELETE_OK')
+let rpcCalls = 0
+query.rpc = async (name, args) => {
+  rpcCalls++
+  assert.equal(name, 'confirm_own_payslip')
+  assert.deepEqual(args, { p_entry_id: 'p1', p_published_at: '2026-09-12' })
+  return response
+}
+const employee = { id: 'e1', role: 'staff' }
+const ownEntry = { id: 'p1', employeeId: 'e1', publishedAt: '2026-09-12' }
+await assert.rejects(payroll.confirmOwnPayslip(admin, ownEntry), /chính mình/)
+await assert.rejects(payroll.confirmOwnPayslip(employee, { ...ownEntry, employeeId: 'e2' }), /chính mình/)
+await assert.rejects(payroll.confirmOwnPayslip(employee, { ...ownEntry, publishedAt: undefined }), /thu hồi/)
+assert.equal(rpcCalls, 0)
+response = { data: '2026-09-12T12:00:00Z', error: null }
+assert.equal(await payroll.confirmOwnPayslip(employee, ownEntry), response.data)
+response = { data: null, error: { code: 'PGRST202' } }
+await assert.rejects(payroll.confirmOwnPayslip(employee, ownEntry), /migration/)
+response = { data: null, error: new Error('revoked') }
+await assert.rejects(payroll.confirmOwnPayslip(employee, ownEntry), /revoked/)
+console.log('PAYSLIP_CONFIRMATION_ADAPTER_OK')
+const events = []
+globalThis.window = { dispatchEvent: event => events.push(event) }
+globalThis.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options?.detail } }
+query.rpc = async (name, args) => {
+  assert.equal(name, 'mark_own_payslip_viewed')
+  assert.deepEqual(args, { p_entry_id: 'p1' })
+  return response
+}
+response = { data: null, error: { code: 'PGRST202' } }
+await assert.rejects(payroll.markOwnPayslipViewed(employee, 'p1'), /SQL/)
+assert.equal(events.length, 0)
+response = { data: null, error: null }
+await payroll.markOwnPayslipViewed(employee, 'p1')
+assert.equal(events.length, 1)
+assert.equal(events[0].detail.entryId, 'p1')
+assert.ok(events[0].detail.viewedAt)
+delete globalThis.window
+delete globalThis.CustomEvent
+console.log('PAYSLIP_VIEWED_ACKNOWLEDGEMENT_OK')
 delete globalThis.__payrollQuery
 

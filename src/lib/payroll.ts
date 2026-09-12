@@ -19,6 +19,7 @@ export interface PayrollEntry {
   note: string
   publishedAt?: string
   employeeViewedAt?: string
+  employeeConfirmedAt?: string
 }
 
 export interface PayrollFixedConfig {
@@ -63,6 +64,7 @@ function mapEntry(row: any): PayrollEntry {
     note: row.note || '',
     publishedAt: row.published_at || undefined,
     employeeViewedAt: row.employee_viewed_at || undefined,
+    employeeConfirmedAt: row.employee_confirmed_at || undefined,
   }
 }
 
@@ -133,6 +135,7 @@ export async function publishPayrollEntries(user: AppUser, entries: PayrollEntry
     published_at: publishedAt,
     published_by: user.id,
     employee_viewed_at: null,
+    employee_confirmed_at: null,
   })), { onConflict: 'employee_id,period' }).select('*')
   if (!error) return (data || []).map(mapEntry)
   if (missingPayrollColumn(error)) throw new Error('Chưa cài migration phiếu lương 20260910 trên Supabase.')
@@ -162,6 +165,7 @@ export async function revokePayrollEntry(user: AppUser, entryId: string): Promis
     published_at: null,
     published_by: null,
     employee_viewed_at: null,
+    employee_confirmed_at: null,
     updated_by: user.id,
     updated_at: new Date().toISOString(),
   }).eq('id', entryId).select('*').single()
@@ -183,8 +187,21 @@ export async function markOwnPayslipViewed(user: AppUser, entryId: string): Prom
   if (shouldUseLanApi(user) || !supabase) return
   const { error } = await supabase.rpc('mark_own_payslip_viewed', { p_entry_id: entryId })
   if (error) {
-    if (missingPayrollColumn(error)) return
+    if (missingPayrollColumn(error) || error.code === 'PGRST202') throw new Error('Chưa cài SQL ghi nhận đã xem phiếu lương trên Supabase.')
     throw error
   }
-  window.dispatchEvent(new CustomEvent(PAYSLIP_VIEWED_EVENT))
+  window.dispatchEvent(new CustomEvent(PAYSLIP_VIEWED_EVENT, { detail: { entryId, viewedAt: new Date().toISOString() } }))
+}
+
+export async function confirmOwnPayslip(user: AppUser, entry: PayrollEntry): Promise<string> {
+  if (!['shift_leader', 'staff', 'cashier'].includes(user.role) || entry.employeeId !== user.id) throw new Error('Chỉ được xác nhận phiếu lương của chính mình.')
+  if (!entry.id || !entry.publishedAt) throw new Error('Phiếu lương chưa được gửi hoặc đã thu hồi.')
+  if (shouldUseLanApi(user) || !supabase) throw new Error('Môi trường LAN chưa hỗ trợ xác nhận phiếu lương.')
+  const { data, error } = await supabase.rpc('confirm_own_payslip', { p_entry_id: entry.id, p_published_at: entry.publishedAt })
+  if (error) {
+    if (missingPayrollColumn(error) || error.code === 'PGRST202') throw new Error('Chưa cài migration xác nhận phiếu lương trên Supabase.')
+    throw error
+  }
+  if (typeof data !== 'string' || !data) throw new Error('Không nhận được kết quả xác nhận phiếu lương.')
+  return data
 }

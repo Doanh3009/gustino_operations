@@ -113,6 +113,7 @@ export function PayrollPage({ user }: { user: AppUser }) {
       note: row.entry?.note || '',
     })
     setFeedback('')
+    setError('')
   }
 
   function toggleSelected(employeeId: string) {
@@ -161,6 +162,7 @@ export function PayrollPage({ user }: { user: AppUser }) {
     if (!selected) return
     setSaving(true)
     setError('')
+    setFeedback('')
     try {
       const value = (key: keyof Draft) => draft[key].trim() === '' ? null : Number(draft[key])
       const next: PayrollEntry = {
@@ -186,7 +188,7 @@ export function PayrollPage({ user }: { user: AppUser }) {
       setEntries((current) => [...current.filter((entry) => entry.employeeId !== next.employeeId), saved])
       setFeedback('Đã lưu phiếu lương theo tháng.')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Không thể lưu phiếu lương.')
+      setError(reason instanceof Error ? reason.message : (reason as { message?: string } | null)?.message || 'Không thể lưu phiếu lương.')
     } finally {
       setSaving(false)
     }
@@ -232,8 +234,8 @@ export function PayrollPage({ user }: { user: AppUser }) {
         <label>Chi nhánh<select value={branchId} onChange={(event) => { setBranchId(event.target.value); setSelectedId('') }}><option value="">Tất cả chi nhánh</option>{visibleBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
       </div>
     </header>
-    {error && <p className="error-banner" role="alert">{error}</p>}
-    {feedback && <p className="success-banner" role="status">{feedback}</p>}
+    {!selected && error && <p className="error-banner" role="alert">{error}</p>}
+    {!selected && feedback && <p className="success-banner" role="status">{feedback}</p>}
     <div className="payslip-toolbar">
       <label className="payslip-search"><span aria-hidden="true">⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Tìm kiếm" aria-label="Tìm nhân viên" /></label>
       <span className="payslip-selected-count">Đã chọn <b>{selectedIds.length}</b></span>
@@ -280,6 +282,8 @@ export function PayrollPage({ user }: { user: AppUser }) {
           <label className="payslip-input payslip-note">Ghi chú<textarea value={draft.note} onChange={(event) => setDraft((value) => ({ ...value, note: event.target.value }))} placeholder="Ghi chú cho kỳ lương này" /></label>
         </div>
         <footer>
+          {error && <p className="error-banner payslip-detail-feedback" role="alert">{error}</p>}
+          {feedback && <p className="success-banner payslip-detail-feedback" role="status">{feedback}</p>}
           {selected.entry?.publishedAt && <button type="button" className="secondary-button" disabled={saving || publishing || removing} onClick={() => void removeDetail('revoke')}>Thu hồi phiếu lương</button>}
           {selected.entry?.id && <button type="button" className="secondary-button" disabled={saving || publishing || removing} onClick={() => void removeDetail('delete')}>Xóa phiếu lương</button>}
           <button type="button" className="secondary-button" onClick={() => setSelectedId('')}>Đóng</button>

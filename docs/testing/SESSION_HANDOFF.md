@@ -849,3 +849,33 @@ Last updated: 2026-07-15
 - Source verification and diff check pending; in-app Browser was unavailable in the preceding connection attempt, so physical phone visual verification is pending. No deploy/staging.
 
 - Final password-label result: PostCSS syntax/layout checks and diff check passed. Next: phone check after frontend release; no deploy or staging performed.
+
+# 2026-09-12 — Payslip save feedback visibility
+
+- Active MOD-07: move save success/error into dialog footer so user sees result while detail stays open; reset stale messages and retain actual database error message. Targeted validation pending; no deploy/database writes.
+
+- Final save-feedback fix validation: Admin footer contract, delivery and revoke/delete tests pass; full TypeScript/Vite build passes (731 modules, PayrollPage-BCpA7SYC.js, PRODUCTION_SUPABASE_BUNDLE_OK index-CRudRnMT.js). No deploy/database write. Next: authorized frontend release and signed-in success/failure visual verification.
+
+# 2026-09-12 — Employee payslip confirmation
+
+- User authorizes removing privacy helper sentence and adding employee confirmation button at end of payslip.
+- Implemented separate employee_confirmed_at metadata via ownership/publication-version guarded confirm_own_payslip RPC; no broad employee UPDATE permission. Confirmation is idempotent and timestamp returned by database. Re-publish/revoke clear confirmation for the new publication.
+- Added standalone migration 20260912120000_employee_payslip_confirmation.sql; requires original payslip publication migration. Existing salary/attendance/history values are untouched by migration. Migration not applied: CLI previously returned project privilege 403.
+- UI shows confirmation/error at end, prevents repeat clicks, and displays confirmed timestamp on reload. Next: adapter/contracts/build validation; no deploy or database writes.
+
+- Final employee confirmation validation: adapter + UI/SQL contracts + existing Admin/delivery/revoke tests passed; TypeScript/full build passed (731 modules, MyPayslipsPage-Du89gPAd.js, PRODUCTION_SUPABASE_BUNDLE_OK index-CB0IsErE.js). Migration 20260912120000_employee_payslip_confirmation.sql created but not applied. No deployment/data write. Next: apply confirmation migration after base payslip schema, release frontend, verify own/other employee and stale/revoked publication RPC behavior in isolated QA.
+
+# 2026-09-12 — Unread notification cleanup
+
+- User authorizes removing viewed payslips from badge and dropdown. Original payslip list retains published slips for reopening. Added standalone viewed-RPC installer for column-only database setup; no migration application or deploy.
+- Adapter/notification regressions and full build pending. Database missing-RPC diagnosis remains unconfirmed until owner response; source dropdown/swallowed-error defects confirmed.
+
+- Final unread-cleanup validation: original Admin/delivery plus confirmation/revoke/delete/viewed adapter and unread contracts pass; full TypeScript/Vite build passes (731 modules, MyPayslipsPage-BQ4Ngr8X.js, PRODUCTION_SUPABASE_BUNDLE_OK index-DARv_Tm-.js). Installer SQL created, unapplied; no deploy/database mutation. Next: owner applies viewed-RPC SQL, authorized frontend release, signed-in badge/dropdown verification.
+
+# 2026-09-12 — Employee salary menu
+
+- Direct request: add Lương immediately below Chấm công in employee navigation, independently of bell.
+- Added my-payslips menu entry for existing authorized staff/shift_leader/cashier roles. Shared sidebar renders it for desktop/mobile; opens existing monthly published-own payslip list/detail with confirmation. No permission/schema/payroll changes.
+- Passed navigation placement/role contract, original Admin/delivery and confirmation/viewed/revoke/delete adapter regressions; diff check passed. Build pending; no deploy/database action.
+
+- Final Lương menu validation: contracts/adapters and full TypeScript/Vite build passed (731 modules; PRODUCTION_SUPABASE_BUNDLE_OK index-32K9Hul7.js). No database/schema/deploy/git staging action. Next: authorized frontend release and signed-in employee monthly-menu verification.

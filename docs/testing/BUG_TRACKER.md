@@ -1160,3 +1160,15 @@ Check-in **không kiểm tra khoảng cách tới chi nhánh**, chỉ yêu cầu
 
 - Evidence: owner phone screenshot shows 'Hiện mật khẩu' on two lines; CSS uses fit-content flex label with wrapping enabled.
 - Fix: .login-card .password-visibility uses full width and nowrap. Existing checkbox dimensions and showPassword handler preserved; no auth logic changes.
+
+# 2026-09-12 — Hidden payslip save outcome (fixed locally)
+
+- Confirmed source defect: error/success banners were rendered outside the dialog, obscured by its backdrop while saveDetail kept it open.
+- Fix: render outcome inside sticky dialog footer next to save controls, show page outcome only when dialog closed, clear old feedback before retry/open, retain Supabase object message on save failure. No data/schema/payroll changes.
+- Next: original payroll/delivery/revoke regressions, TypeScript and production build. No production action.
+
+# 2026-09-12 — Payslip notification remains after viewing
+
+- Confirmed source: dropdown maps all published payslips, including viewed rows; employee page swallowed viewed-RPC failures. User confirms badge and dropdown both remain. Missing mark_own_payslip_viewed is plausible after applying only column SQL, not yet confirmed by database response.
+- Fix: dropdown and empty state use unread only, success event updates shell immediately and versions overlapping reads, employee selected-slip effect records viewed status including fallback selection, and failures are visible rather than swallowed/treated as success.
+- Separate additive-install SQL 20260912123000_payslip_viewed_acknowledgement.sql creates existing ownership/published guarded RPC without modifying history or policies. Not applied.

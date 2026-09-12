@@ -163,6 +163,13 @@ const NAV_ITEMS: NavItem[] = [
     canShow: (user) => user.role !== 'kitchen' && user.role !== 'cashier',
   },
   {
+    id: 'my-payslips',
+    label: 'Lương',
+    shortLabel: 'Lương',
+    icon: <IconPayroll />,
+    canShow: (user) => user.role === 'staff' || user.role === 'shift_leader' || user.role === 'cashier',
+  },
+  {
     id: 'kitchen',
     label: 'Đặt bếp',
     icon: <IconKitchen />,
@@ -250,12 +257,21 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
       return
     }
     let active = true
-    const refreshPayslips = () => void fetchOwnPublishedPayslips(user).then((rows) => {
-      if (active) setPayslipNotifications(rows)
+    let requestVersion = 0
+    const refreshPayslips = () => {
+      const version = ++requestVersion
+      void fetchOwnPublishedPayslips(user).then((rows) => {
+      if (active && version === requestVersion) setPayslipNotifications(rows)
     }).catch(() => undefined)
+    }
+    const onPayslipViewed = (event: Event) => {
+      const detail = (event as CustomEvent<{ entryId: string; viewedAt: string }>).detail
+      if (detail?.entryId) setPayslipNotifications((current) => current.map((entry) => entry.id === detail.entryId ? { ...entry, employeeViewedAt: detail.viewedAt } : entry))
+      refreshPayslips()
+    }
     refreshPayslips()
     const payslipTimer = window.setInterval(refreshPayslips, 30000)
-    window.addEventListener(PAYSLIP_VIEWED_EVENT, refreshPayslips)
+    window.addEventListener(PAYSLIP_VIEWED_EVENT, onPayslipViewed)
     const client = user.authToken ? null : supabase
     const channel = client?.channel(uniqueChannelName(`payslip-notification:${user.id}`))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'payroll_entries', filter: `employee_id=eq.${user.id}` }, refreshPayslips)
@@ -263,7 +279,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
     return () => {
       active = false
       window.clearInterval(payslipTimer)
-      window.removeEventListener(PAYSLIP_VIEWED_EVENT, refreshPayslips)
+      window.removeEventListener(PAYSLIP_VIEWED_EVENT, onPayslipViewed)
       if (client && channel) void client.removeChannel(channel)
     }
   }, [user.id, user.role, user.authToken])
@@ -277,14 +293,14 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
       </button>
       {payslipNotificationOpen && <div className="payslip-notification-menu" onClick={(event) => event.stopPropagation()}>
         <header><strong>Thông báo</strong><small>{unreadPayslips.length} chưa xem</small></header>
-        {payslipNotifications.slice(0, 6).map((entry) => <button type="button" key={entry.id || entry.period} className={entry.employeeViewedAt ? '' : 'unread'} onClick={() => {
+        {unreadPayslips.slice(0, 6).map((entry) => <button type="button" key={entry.id || entry.period} className="unread" onClick={() => {
           try { sessionStorage.setItem('gustino:selected-payslip-period', entry.period) } catch { /* private mode */ }
           setPayslipNotificationOpen(false)
           onNavigate('my-payslips')
         }}>
           <span aria-hidden="true">▤</span><span><strong>Bạn đã nhận được phiếu lương</strong><small>Phiếu lương tháng {entry.period.slice(5)}/{entry.period.slice(0, 4)} · Bấm để xem</small></span>
         </button>)}
-        {!payslipNotifications.length && <p>Chưa có thông báo phiếu lương.</p>}
+        {!unreadPayslips.length && <p>Không có thông báo phiếu lương chưa xem.</p>}
       </div>}
     </div>
   )

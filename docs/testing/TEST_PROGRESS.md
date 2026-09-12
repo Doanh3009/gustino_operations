@@ -747,3 +747,33 @@ MOD-06/MOD-08/MOD-10/MOD-13/MOD-17 are now the user-prioritized implementation/t
 - Mobile bell fix final: full CSS/TypeScript/Vite build and production bundle guard pass (731 modules). Signed-in iPhone visual check remains pending; no deployment.
 
 - Login password label verification: PostCSS parse and scoped flex/full-width/nowrap checks passed (LOGIN_PASSWORD_LABEL_CSS_OK); git diff --check passed. Phone visual verification remains pending; no full rebuild for this isolated CSS adjustment.
+
+# 2026-09-12 — Payslip dialog outcome regression
+
+- Passed: Admin contract (now asserts error/success are rendered inside detail footer), delivery contract, revoke/delete behavioral adapter test, diff check.
+- Confirmed bug/fix recorded in BUG_TRACKER.md: page banners were hidden behind modal backdrop; sticky footer now presents save outcome and clears stale success before retry.
+- Production build pending; Browser unavailable in preceding connection. No deployment or database mutation.
+
+- Final save-feedback build passed: 731 modules, TypeScript, production Supabase bundle guard. Signed-in visual and database-save checks pending; no deployment.
+
+# 2026-09-12 — Employee confirmation validation
+
+- Passed: confirmation adapter exercises ownership/role rejection, unpublished rejection, exact ID/publication RPC parameters, server timestamp, missing migration/error propagation. Delivery/confirmation contract checks removed text, footer button, ownership/version/idempotency SQL guards. Existing Admin and revoke/delete regressions pass; diff check pass.
+- Database RPC integration remains pending: Supabase CLI account previously returned 403; migration is created, not applied. No production mutation.
+
+- Employee confirmation final build/typecheck passed (731 modules; production bundle guard passed). Database RPC and signed-in phone QA pending; no migration application/deploy.
+
+# 2026-09-12 — Viewed notification validation
+
+- Passed adapter: missing viewed RPC rejects and emits no success; successful viewed RPC emits exact entry/timestamp event. Existing confirmation/revoke/delete tests pass.
+- Passed contracts: unread-only dropdown/empty state, stale shell read guard and visible viewed error; original Admin/delivery contracts and diff check pass.
+- Build pending. Isolated database acknowledgement and physical phone badge disappearance remain pending; no deploy/migration/data write.
+
+- Unread-cleanup final TypeScript/build passed: 731 modules and production bundle guard. Signed-in acknowledgement/badge verification pending.
+
+# 2026-09-12 — Employee Lương navigation validation
+
+- Passed: EMPLOYEE_SALARY_NAVIGATION_OK (entry directly after Chấm công; same roles as existing my-payslips route), original Admin/delivery, unread/confirmation contracts and viewed/confirmation/revoke/delete adapters; diff check pass.
+- Desktop/mobile both use shared visibleNav sidebar. Existing monthly published-own payslip list is reused; no schema/access changes. Signed-in mobile/menu click pending because Browser unavailable; build pending.
+
+- Final Lương menu build/typecheck and production bundle guard passed (731 modules). Phone/desktop signed-in menu check pending; no deployment.

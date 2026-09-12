@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { fetchOwnPublishedPayslips, markOwnPayslipViewed, type PayrollEntry } from '../lib/payroll'
+import { confirmOwnPayslip, fetchOwnPublishedPayslips, markOwnPayslipViewed, type PayrollEntry } from '../lib/payroll'
 import type { AppUser } from '../types'
 
 export function MyPayslipsPage({ user }: { user: AppUser }) {
@@ -7,6 +7,9 @@ export function MyPayslipsPage({ user }: { user: AppUser }) {
   const [selectedId, setSelectedId] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [confirming, setConfirming] = useState(false)
+  const [confirmationError, setConfirmationError] = useState('')
+  const [viewedError, setViewedError] = useState('')
 
   useEffect(() => {
     let active = true
@@ -32,9 +35,6 @@ export function MyPayslipsPage({ user }: { user: AppUser }) {
       const first = rows.find((entry) => entry.period === requestedPeriod) || rows[0]
       if (first?.id) {
         setSelectedId(first.id)
-        if (!first.employeeViewedAt) void markOwnPayslipViewed(user, first.id).then(() => {
-          if (active) setEntries((current) => current.map((entry) => entry.id === first.id ? { ...entry, employeeViewedAt: new Date().toISOString() } : entry))
-        }).catch(() => undefined)
       }
       setLoading(false)
     }).catch((reason) => {
@@ -59,17 +59,42 @@ export function MyPayslipsPage({ user }: { user: AppUser }) {
 
   const selected = entries.find((entry) => entry.id === selectedId) || entries[0]
 
+  useEffect(() => {
+    setViewedError('')
+    if (!selected?.id || selected.employeeViewedAt) return
+    let active = true
+    const entry = selected
+    void markOwnPayslipViewed(user, entry.id!).then(() => {
+      if (active) setEntries((current) => current.map((item) => item.id === entry.id && item.publishedAt === entry.publishedAt ? { ...item, employeeViewedAt: new Date().toISOString() } : item))
+    }).catch((reason) => {
+      if (active) setViewedError(reason instanceof Error ? reason.message : 'Không thể ghi nhận đã xem phiếu lương. Thông báo chưa được xóa.')
+    })
+    return () => { active = false }
+  }, [user.id, selected?.id, selected?.publishedAt, selected?.employeeViewedAt])
+
   function openEntry(entry: PayrollEntry) {
     if (!entry.id) return
     setSelectedId(entry.id)
-    if (entry.employeeViewedAt) return
-    void markOwnPayslipViewed(user, entry.id).then(() => {
-      setEntries((current) => current.map((item) => item.id === entry.id ? { ...item, employeeViewedAt: new Date().toISOString() } : item))
-    }).catch(() => undefined)
+    setConfirmationError('')
+  }
+
+  async function confirmSelected() {
+    if (!selected || confirming || selected.employeeConfirmedAt) return
+    const entry = selected
+    setConfirming(true)
+    setConfirmationError('')
+    try {
+      const confirmedAt = await confirmOwnPayslip(user, entry)
+      setEntries((current) => current.map((item) => item.id === entry.id && item.publishedAt === entry.publishedAt ? { ...item, employeeConfirmedAt: confirmedAt } : item))
+    } catch (reason) {
+      setConfirmationError(reason instanceof Error ? reason.message : (reason as { message?: string } | null)?.message || 'Không thể xác nhận phiếu lương.')
+    } finally {
+      setConfirming(false)
+    }
   }
 
   return <section className="my-payslips-page">
-    <header className="payslip-header"><div><span className="eyebrow dark">THÔNG TIN CÁ NHÂN</span><h1>Phiếu lương của tôi</h1><p>Chỉ bạn và Admin hệ thống có thể xem các phiếu lương này.</p></div></header>
+    <header className="payslip-header"><div><span className="eyebrow dark">THÔNG TIN CÁ NHÂN</span><h1>Phiếu lương của tôi</h1></div></header>
     {error && <p className="error-banner" role="alert">{error}</p>}
     {loading ? <p className="empty-copy">Đang tải phiếu lương…</p> : !entries.length ? <div className="my-payslips-empty"><span aria-hidden="true">▤</span><h2>Chưa có phiếu lương</h2><p>Phiếu lương sẽ xuất hiện tại đây sau khi Admin gửi.</p></div> : <div className="my-payslips-layout">
       <aside className="my-payslips-list" aria-label="Danh sách phiếu lương">
@@ -93,6 +118,13 @@ export function MyPayslipsPage({ user }: { user: AppUser }) {
           <PayslipValue label="Lương thực lãnh" value={selected.netSalary} prominent />
         </div>
         {selected.note && <p className="my-payslip-note"><b>Ghi chú:</b> {selected.note}</p>}
+        <footer className="my-payslip-confirmation">
+          {viewedError && <p className="error-banner" role="alert">{viewedError}</p>}
+          {confirmationError && <p className="error-banner" role="alert">{confirmationError}</p>}
+          {selected.employeeConfirmedAt
+            ? <p className="success-banner" role="status">Đã xác nhận phiếu lương · {formatDateTime(selected.employeeConfirmedAt)}</p>
+            : <button type="button" className="primary-button" disabled={confirming || !selected.id} onClick={() => void confirmSelected()}>{confirming ? 'Đang xác nhận…' : 'Xác nhận phiếu lương'}</button>}
+        </footer>
       </article>}
     </div>}
   </section>

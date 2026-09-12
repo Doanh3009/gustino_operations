@@ -36,3 +36,5 @@ Last updated: 2026-09-10. This is the source-backed inventory and remains subjec
 Priority rationale: MOD-02 is first because authorization failures can expose or mutate cross-role/cross-branch business data and invalidate every downstream module test.
 
 - 2026-09-12 MOD-07: Added authorized Admin revoke/delete detail actions and employee reconciliation. Automated adapter and payroll/KPI regressions pass; 144 route/role checks pass. Signed-in database revoke/delete and visual QA remain pending; see test-cases/MOD-07-payslip-revoke-delete.md.
+
+- 2026-09-12 MOD-07 extension: employee confirms own current published slip using separate timestamp/RPC. Adapter and UI/security contracts pass; full build pending. New confirmation migration unapplied; isolated database/phone confirmation QA pending.

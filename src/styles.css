@@ -18884,6 +18884,11 @@ body { background: #f7f8f5; font-size: 14px; }
   accent-color: #3aa878;
 }
 .payslip-detail>footer{flex-wrap:wrap}
+.payslip-detail-feedback{flex:0 0 100%;box-sizing:border-box;margin:0}
+.my-payslip-confirmation{display:grid;gap:12px;margin-top:20px;padding-top:18px;border-top:1px solid #e5eaf0}
+.my-payslip-confirmation>p{margin:0}
+.my-payslip-confirmation>button{justify-self:end}
+@media(max-width:640px){.my-payslip-confirmation>button{width:100%}}
 
 @media (max-width: 900px) {
   .mh-right > .payslip-notification { flex: 0 0 38px; }
