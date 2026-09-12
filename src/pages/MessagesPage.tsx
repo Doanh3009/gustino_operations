@@ -19,6 +19,7 @@ export function MessagesPage({ user }: { user: AppUser }) {
   const endRef = useRef<HTMLDivElement>(null)
   const conversationRef = useRef('')
   const historyContactRef = useRef('')
+  const refreshInboxRef = useRef<(() => void) | null>(null)
   conversationRef.current = contactId
   const contact = contacts.find((item) => item.id === contactId)
   const broadcast = user.role === 'admin' && contactId === '*'
@@ -26,13 +27,42 @@ export function MessagesPage({ user }: { user: AppUser }) {
 
   useEffect(() => {
     let active = true
+    let reading = false
+    let pending = false
+    let initial = true
     setLoading(true)
-    void fetchMessageContacts(user).then((rows) => {
+    const refreshInbox = () => {
+      if (reading) { pending = true; return }
+      reading = true
+      void fetchMessageContacts(user).then((rows) => {
       if (!active) return
       setContacts(rows)
-      setContactId(rows[0]?.id || '')
-    }).catch((reason) => { if (active) setError(reason.message) }).finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
+      if (initial) { setContactId(rows[0]?.id || ''); initial = false }
+    }).catch((reason) => { if (active) setError(reason.message) }).finally(() => {
+      reading = false
+      if (active) {
+        setLoading(false)
+        if (pending) { pending = false; refreshInbox() }
+      }
+    })
+    }
+    refreshInboxRef.current = refreshInbox
+    refreshInbox()
+    const timer = window.setInterval(refreshInbox, 10000)
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshInbox() }
+    document.addEventListener('visibilitychange', onVisible)
+    const client = shouldUseLanApi(user) ? null : supabase
+    const channel = client?.channel(uniqueChannelName(`message-inbox:${user.id}`))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_messages', filter: `recipient_id=eq.${user.id}` }, refreshInbox)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_messages', filter: `sender_id=eq.${user.id}` }, refreshInbox)
+      .subscribe()
+    return () => {
+      active = false
+      refreshInboxRef.current = null
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+      if (client && channel) void client.removeChannel(channel)
+    }
   }, [user.id, user.authToken])
 
   useEffect(() => {
@@ -59,7 +89,10 @@ export function MessagesPage({ user }: { user: AppUser }) {
           setHasOlder(rows.length === 50)
           initializeHistory = false
         }
-        if (document.visibilityState === 'visible' && rows.some((message) => message.recipient_id === user.id && !message.read_at)) await markMessagesRead(user, contactId)
+        if (document.visibilityState === 'visible' && rows.some((message) => message.recipient_id === user.id && !message.read_at)) {
+          await markMessagesRead(user, contactId)
+          refreshInboxRef.current?.()
+        }
       }).catch((reason) => { if (active) setError(reason.message) }).finally(() => { reading = false })
     }
     refresh()
@@ -109,6 +142,7 @@ export function MessagesPage({ user }: { user: AppUser }) {
     setFeedback('')
     try {
       const count = await sendEmployeeMessage(user, broadcast ? null : contact!, draft)
+      refreshInboxRef.current?.()
       setDraft('')
       if (broadcast) setFeedback(`Đã gửi tin nhắn cho ${count} nhân viên.`)
       else setReload((current) => current + 1)
@@ -129,7 +163,11 @@ export function MessagesPage({ user }: { user: AppUser }) {
         <div className="messages-contact-list">
           {loading && <p>Đang tải danh sách…</p>}
           {user.role === 'admin' && contacts.length > 0 && <button type="button" className={broadcast ? 'active' : ''} disabled={sending} onClick={() => chooseContact('*')}>Tất cả nhân viên<small>Gửi thông báo chung</small></button>}
-          {visibleContacts.map((item) => <button type="button" key={item.id} className={contactId === item.id ? 'active' : ''} disabled={sending} onClick={() => chooseContact(item.id)}>{item.name}<small>{item.role === 'admin' ? 'Admin hệ thống' : 'Nhân viên'}</small></button>)}
+          {visibleContacts.map((item) => <button type="button" key={item.id} className={`${contactId === item.id ? 'active' : ''}${item.unread_count ? ' unread' : ''}`} disabled={sending} onClick={() => chooseContact(item.id)}>
+            <span className="messages-contact-title"><strong>{item.name}</strong>{Boolean(item.unread_count) && <b className="messages-unread-count" aria-label={`${item.unread_count} tin chưa đọc`}>{Number(item.unread_count) > 99 ? '99+' : item.unread_count}</b>}</span>
+            <small className="messages-contact-preview">{item.latest_message ? `${item.latest_sender_id === user.id ? 'Bạn: ' : ''}${item.latest_message}` : 'Chưa có tin nhắn'}</small>
+            {item.latest_at && <time className="messages-contact-time" dateTime={item.latest_at}>{formatTime(item.latest_at)}</time>}
+          </button>)}
           {!loading && !visibleContacts.length && <p>Không có người nhận phù hợp.</p>}
         </div>
       </aside>

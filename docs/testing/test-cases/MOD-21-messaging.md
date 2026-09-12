@@ -28,3 +28,9 @@ Migration: supabase/migrations/20260912140000_admin_employee_messages.sql. Not a
 
 - User requires non-Admin messaging entry beside bell rather than sidebar. Source/header contract passed; Admin menu preserved. Both headers render same compact shortcut, closes open menus and opens Messages.
 - Adapter/payslip/nav/button regressions pass. Physical phone alignment and signed-in click pending; database behavior unchanged.
+
+## Inbox preview/latest order (2026-09-12)
+
+- Adapter/source checks passed: metadata endpoint, last-message preview, unread badge, refresh after send/read and via realtime/polling/visibility.
+- Database checks added: conversation with newer message sorts ahead of alphabetical-first employee, preview is latest body, own incoming unread count clears on read, another employee's preview does not leak. Integration pending.
+- Signed-in desktop/mobile visual/realtime verification pending; migration unapplied.

@@ -35,6 +35,8 @@ insert into public.profiles values
   if ($LASTEXITCODE -ne 0) { throw 'QA fixture failed.' }
   & "$pgBin/psql.exe" @argsForPsql -f 'supabase/migrations/20260912140000_admin_employee_messages.sql'
   if ($LASTEXITCODE -ne 0) { throw 'Messaging migration failed.' }
+  & "$pgBin/psql.exe" @argsForPsql -f 'supabase/migrations/20260912150000_messaging_inbox_preview.sql'
+  if ($LASTEXITCODE -ne 0) { throw 'Messaging inbox migration failed.' }
   & "$pgBin/psql.exe" @argsForPsql -f 'scripts/test-messaging-security.sql'
   if ($LASTEXITCODE -ne 0) { throw 'Messaging security integration failed.' }
   Write-Output 'MESSAGING_POSTGRES_SECURITY_OK'

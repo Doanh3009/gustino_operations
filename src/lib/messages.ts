@@ -1,7 +1,10 @@
 import { shouldUseLanApi, supabase } from './supabase'
 import type { AppUser, Role } from '../types'
 
-export interface MessageContact { id: string; name: string; role: Role; branch_id: string | null }
+export interface MessageContact {
+  id: string; name: string; role: Role; branch_id: string | null
+  latest_message?: string | null; latest_at?: string | null; latest_sender_id?: string | null; unread_count?: number
+}
 export interface EmployeeMessage { id: string; sender_id: string; recipient_id: string; body: string; created_at: string; read_at: string | null }
 
 function clientFor(user: AppUser) {
@@ -15,7 +18,7 @@ function fail(error: { code?: string; message?: string }): never {
 }
 
 export async function fetchMessageContacts(user: AppUser): Promise<MessageContact[]> {
-  const { data, error } = await clientFor(user).rpc('messaging_contacts')
+  const { data, error } = await clientFor(user).rpc('messaging_inbox')
   if (error) fail(error)
   return data || []
 }

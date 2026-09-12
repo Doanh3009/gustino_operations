@@ -66,3 +66,24 @@ do $$ declare accepted boolean := false; begin
   if accepted then raise exception 'Anonymous read allowed'; end if;
 end $$;
 reset role;
+
+-- Inbox preview/order/unread metadata is private and uses the latest message.
+insert into public.employee_messages(sender_id,recipient_id,body,created_at) values
+('00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000011','Older latest preview','2098-01-01'),
+('00000000-0000-0000-0000-000000000012','00000000-0000-0000-0000-000000000001','Employee B new preview','2099-01-01');
+set role authenticated;
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000001',false);
+do $$ declare first_id uuid; begin
+  select id into first_id from public.messaging_inbox() limit 1;
+  if first_id <> '00000000-0000-0000-0000-000000000012'::uuid then raise exception 'Inbox not ordered by latest message'; end if;
+  if not exists (select 1 from public.messaging_inbox() where id=first_id and latest_message='Employee B new preview' and unread_count=1) then raise exception 'Inbox preview/unread mismatch'; end if;
+  perform public.mark_employee_messages_read(first_id);
+  if exists (select 1 from public.messaging_inbox() where id=first_id and unread_count <> 0) then raise exception 'Read count not cleared'; end if;
+end $$;
+select set_config('request.jwt.claim.sub','00000000-0000-0000-0000-000000000011',false);
+do $$ begin
+  if (select count(*) from public.messaging_inbox()) <> 2 then raise exception 'Employee inbox contact scope wrong'; end if;
+  if exists (select 1 from public.messaging_inbox() where latest_message='Employee B new preview') then raise exception 'Inbox preview leaks another employee'; end if;
+  if not exists (select 1 from public.messaging_inbox() where latest_message='Older latest preview') then raise exception 'Own preview missing'; end if;
+end $$;
+reset role;

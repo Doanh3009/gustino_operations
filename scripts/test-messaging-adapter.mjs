@@ -38,4 +38,12 @@ assert.match(shell, /className="crm-header-actions">\s*\{messageShortcut\}/)
 assert.match(shell, /className="mh-right">\s*\{messageShortcut\}/)
 assert.match(shell, /onNavigate\('messages'\)/)
 console.log('MESSAGING_HEADER_SHORTCUT_OK')
+response = { data: [{ id: 'e2', latest_message: 'latest', unread_count: 2 }], error: null }
+assert.deepEqual(await adapter.fetchMessageContacts(admin), response.data)
+assert.equal(calls.at(-1)[0], 'messaging_inbox')
+const page = readFileSync('src/pages/MessagesPage.tsx', 'utf8')
+assert.ok(page.includes('item.latest_message'))
+assert.ok(page.includes('messages-unread-count'))
+assert.ok(page.includes('refreshInboxRef.current?.()'))
+console.log('MESSAGING_INBOX_PREVIEW_OK')
 delete globalThis.__messageClient

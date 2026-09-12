@@ -817,3 +817,13 @@ MOD-06/MOD-08/MOD-10/MOD-13/MOD-17 are now the user-prioritized implementation/t
 - UI-only adjustment; no database test rerun needed because SQL/services unchanged. Full build pending; signed-in phone visual verification pending. No deploy.
 
 - Header shortcut final build/typecheck passes (733 modules; production bundle guard). Phone visual verification pending; no deployment.
+
+# 2026-09-12 — Inbox preview verification batch
+
+- Passed MESSAGING_INBOX_PREVIEW_OK adapter/source checks: read messaging_inbox metadata, render latest-message preview and unread badge, refresh after send/read. Existing header/payslip/navigation regressions pass; diff check pass.
+- Database integration running on fresh isolated PostgreSQL: original message permissions/history plus new inbox ordering/preview/unread-clear and cross-employee privacy assertions. Final build pending.
+- New read-only inbox RPC requires applying 20260912150000_messaging_inbox_preview.sql after original message migration; not installed on Supabase, no production writes/deploy.
+
+- Inbox database integration passed including new preview/order/unread/privacy checks; original sender/contact/read/history security also passed. Temporary test database stopped. Full build pending, no deploy or Supabase migration application.
+
+- Inbox-preview final build/typecheck and production bundle guard passed (733 modules). Database security/inbox tests passed on isolated cluster; signed-in UI/realtime pending.

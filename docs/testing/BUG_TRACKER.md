@@ -1178,3 +1178,9 @@ Check-in **không kiểm tra khoảng cách tới chi nhánh**, chỉ yêu cầu
 - Source evidence: period='' represents all months but input type=month renders no textual value for it; user reports field visible only on interaction.
 - Fix: native select always displays explicit all-month/month-year option, with recent 24 calendar periods and fetched slip periods. No slip/history writes.
 - Delivery/month/navigation and Admin contracts pass; build pending. Physical-phone visual check remains pending.
+
+# 2026-09-12 — Admin inbox lacked preview/latest ordering (fixed locally)
+
+- Evidence: original messaging_contacts orders full_name, MessagesPage loaded contacts once and rendered only employee role. New incoming messages could not reorder/preview in inbox.
+- Fix: new read-only messaging_inbox RPC joins permitted contacts to own latest/unread metadata and orders timestamp/UUID descending. UI renders preview/time/unread and refreshes realtime/polling/send/read while preserving selected conversation.
+- Verified: actual isolated PostgreSQL inbox ordering, preview/unread-clear and other-employee privacy assertions pass with original messaging security/history; adapter/header/payslip contracts pass. Supabase migration/visual check pending; no production data changed.

@@ -916,3 +916,12 @@ Last updated: 2026-07-15
 - Adapter/header shortcut, payslip/navigation and button contracts plus diff check passed. Build pending; no deployment/data action.
 
 - Final employee message-shortcut validation: adapter/header/nav/button tests and TypeScript/full 733-module build pass; PRODUCTION_SUPABASE_BUNDLE_OK index-qvYGyilw.js. No SQL/schema/service changes, deployment or staging. Next: authorized frontend release and signed-in phone icon/bell/avatar alignment and message navigation verification.
+
+# 2026-09-12 — Admin inbox preview/latest ordering
+
+- User reports new employee messages do not move conversation up and rows show only role. Replaced contacts read with read-only messaging_inbox summary: latest message/time/sender + recipient unread count, ordered by latest timestamp/ID.
+- UI renders preview, Bạn prefix for own last message, time and unread badge. Inbox refreshes realtime, 10-second fallback, on visibility/send/read and coalesces pending refreshes without changing selected thread.
+- New 20260912150000_messaging_inbox_preview.sql adds read-only RPC using existing contact restriction + message RLS; no existing data writes or permission expansion. Unapplied; no deploy.
+- Adapter/UI contracts pass; DB integration and final build pending.
+
+- Final inbox-preview validation: adapter/header/payslip contracts + actual isolated PostgreSQL original/new security/order/preview/unread/history tests pass; TypeScript/full 733-module build passes (MessagesPage-CdXZOBBm.js; PRODUCTION_SUPABASE_BUNDLE_OK index-CCPVOh-K.js). Temporary database stopped. No Supabase apply/deploy/staging. Exact next action: owner applies only 20260912150000_messaging_inbox_preview.sql after original message schema, release verified frontend, signed-in Admin receives new peer message and verifies preview/order/unread without losing selected thread.
