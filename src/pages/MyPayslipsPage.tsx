@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { confirmOwnPayslip, fetchOwnPublishedPayslips, markOwnPayslipViewed, type PayrollEntry } from '../lib/payroll'
 import type { AppUser } from '../types'
+import { localDateKey } from '../lib/dates'
 
 export function MyPayslipsPage({ user }: { user: AppUser }) {
   const [entries, setEntries] = useState<PayrollEntry[]>([])
@@ -60,6 +61,12 @@ export function MyPayslipsPage({ user }: { user: AppUser }) {
   }, [user.id, user.role, user.authToken])
 
   const filteredEntries = period ? entries.filter((entry) => entry.period === period) : entries
+  const [year, month] = localDateKey().slice(0, 7).split('-').map(Number)
+  const recentPeriods = Array.from({ length: 24 }, (_, offset) => {
+    const date = new Date(year, month - 1 - offset, 1)
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+  })
+  const periodOptions = Array.from(new Set([...recentPeriods, ...entries.map((entry) => entry.period)])).sort().reverse()
   const selected = filteredEntries.find((entry) => entry.id === selectedId) || filteredEntries[0]
 
   useEffect(() => {
@@ -100,7 +107,10 @@ export function MyPayslipsPage({ user }: { user: AppUser }) {
     <header className="payslip-header">
       <div><span className="eyebrow dark">THÔNG TIN CÁ NHÂN</span><h1>Phiếu lương của tôi</h1></div>
       <div className="payslip-filters my-payslip-month-filter">
-        <label>Tháng<input type="month" value={period} disabled={confirming} onChange={(event) => { setPeriod(event.target.value); setSelectedId(''); setConfirmationError('') }} /></label>
+        <label>Tháng<select value={period} disabled={confirming} onChange={(event) => { setPeriod(event.target.value); setSelectedId(''); setConfirmationError('') }}>
+          <option value="">Tất cả tháng</option>
+          {periodOptions.map((value) => <option key={value} value={value}>Tháng {value.slice(5)}/{value.slice(0, 4)}</option>)}
+        </select></label>
         <button type="button" className="secondary-button" disabled={!period || confirming} onClick={() => { setPeriod(''); setSelectedId(''); setConfirmationError('') }}>Tất cả tháng</button>
       </div>
     </header>

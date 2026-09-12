@@ -1172,3 +1172,9 @@ Check-in **không kiểm tra khoảng cách tới chi nhánh**, chỉ yêu cầu
 - Confirmed source: dropdown maps all published payslips, including viewed rows; employee page swallowed viewed-RPC failures. User confirms badge and dropdown both remain. Missing mark_own_payslip_viewed is plausible after applying only column SQL, not yet confirmed by database response.
 - Fix: dropdown and empty state use unread only, success event updates shell immediately and versions overlapping reads, employee selected-slip effect records viewed status including fallback selection, and failures are visible rather than swallowed/treated as success.
 - Separate additive-install SQL 20260912123000_payslip_viewed_acknowledgement.sql creates existing ownership/published guarded RPC without modifying history or policies. Not applied.
+
+# 2026-09-12 — Blank month selector (fixed locally)
+
+- Source evidence: period='' represents all months but input type=month renders no textual value for it; user reports field visible only on interaction.
+- Fix: native select always displays explicit all-month/month-year option, with recent 24 calendar periods and fetched slip periods. No slip/history writes.
+- Delivery/month/navigation and Admin contracts pass; build pending. Physical-phone visual check remains pending.

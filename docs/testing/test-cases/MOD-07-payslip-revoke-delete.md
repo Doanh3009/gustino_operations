@@ -42,3 +42,8 @@ No real payroll rows were modified. Migration/deployment remain pending.
 
 - Passed contract: month input, reset, filtered list/detail, notification period preservation.
 - Pending signed-in UI: pick month with slip / without slip / reset all; refresh retains month and no hidden slip is marked viewed; phone picker/layout.
+
+## Visible month value (2026-09-12)
+
+- Passed contract: selector renders explicit all-month option and selected MM/YYYY label, replacing empty native month input. Existing filtered-list/detail/notification checks pass.
+- Pending phone UI: value visible before focus, open/choose period, reset all; no data mutation.

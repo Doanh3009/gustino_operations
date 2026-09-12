@@ -784,3 +784,10 @@ MOD-06/MOD-08/MOD-10/MOD-13/MOD-17 are now the user-prioritized implementation/t
 - Existing payroll/navigation/confirmation/unread and adapter regressions pass; diff check pass. Full build pending. Browser unavailable in previous attempt; signed-in mobile/native-month picker QA pending. No schema/database/deploy action.
 
 - Employee month-filter final build/typecheck passed (731 modules; PRODUCTION_SUPABASE_BUNDLE_OK). Physical phone/native picker verification pending; no deployment.
+
+# 2026-09-12 — Visible month selector regression
+
+- Passed monthly selector contract now requires select and explicit all-month option; existing filter/detail/notification tests and original Admin contract pass. Diff check pass.
+- Full build pending; signed-in phone visibility/native selector QA pending; no deployment/data mutation.
+
+- Visible month selector final build/typecheck and production bundle guard passed (731 modules). Phone visual verification pending; no deploy.

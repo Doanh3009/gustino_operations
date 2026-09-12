@@ -887,3 +887,11 @@ Last updated: 2026-07-15
 - Passed monthly/navigation/delivery/confirmation/unread contracts, Admin and adapter regressions; diff check passed. Full build pending. No production action.
 
 - Final employee month-filter validation: monthly/navigation/Admin/delivery/unread/confirmation contracts and adapters pass; full TypeScript/Vite build and production bundle guard pass (731 modules; MyPayslipsPage-DZlpCHr6.js; index-CpCNCfAc.js). No deploy/database/staging action. Next: authorized frontend release and signed-in month filter/empty/reset/notification checks.
+
+# 2026-09-12 — Visible employee month filter value
+
+- User reports month input blank until interaction. Source initializes period='' for all months; native month input has no visible all-month label.
+- Replaced native month input with select showing explicit Tất cả tháng / Tháng MM/YYYY. Options include recent 24 calendar months and all fetched slip periods; existing filter/reset/notification behavior retained. No data/access/schema changes.
+- Delivery/month/nav and original Admin contracts plus diff check pass. Build pending; phone visual verification pending; no deploy.
+
+- Final visible month selector build/typecheck passed: 731 modules; PRODUCTION_SUPABASE_BUNDLE_OK index-aaurvF9B.js. Existing contracts and diff check passed. No deploy/schema/data mutation. Next: release frontend under authorization and verify selector visible before focus on phone.
