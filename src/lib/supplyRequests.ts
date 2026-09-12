@@ -153,21 +153,26 @@ export async function createSupplyRequests(
   })))
   if (error) throw new Error(error.message)
 }
-export async function fetchSupplyRequests(user: AppUser, branchIds: string[]): Promise<SupplyRequest[]> {
+export async function fetchSupplyRequests(user: AppUser, branchIds: string[], options: { activeOnly?: boolean } = {}): Promise<SupplyRequest[]> {
   const authorizedBranchIds = Array.from(new Set(branchIds.filter(Boolean)))
   if (!authorizedBranchIds.length) return []
   if (shouldUseLanApi(user)) {
     const params = new URLSearchParams()
     params.set('branchIds', authorizedBranchIds.join(','))
-    return supplyApi<SupplyRequest[]>(user, `?${params.toString()}`)
+    const rows = await supplyApi<SupplyRequest[]>(user, `?${params.toString()}`)
+    return options.activeOnly ? rows.filter((row) => row.status === 'pending' || row.status === 'acknowledged') : rows
   }
-  const rows = await fetchAllSupplyRequestRows((from, to) => supabase!
+  const rows = await fetchAllSupplyRequestRows((from, to) => {
+    let query = supabase!
     .from('supply_requests')
     .select('*')
     .in('branch_id', authorizedBranchIds)
     .order('created_at', { ascending: false })
     .order('id', { ascending: false })
-    .range(from, to))
+    .range(from, to)
+    if (options.activeOnly) query = query.in('status', ['pending', 'acknowledged'])
+    return query
+  })
   return rows.map(mapSupplyRequest)
 }
 

@@ -17,6 +17,7 @@ import {
   fetchScheduleEntries,
   fetchSchedulePeople,
   fetchShiftRegistrations,
+  createAttendanceReadContext,
   fetchWorkShifts,
   findAttendanceRecordForRegistration,
   flushAttendanceOutbox,
@@ -127,12 +128,13 @@ export function AttendancePage({ user, movements, onNavigate }: { user: AppUser;
               : {}
         // Mỗi lệnh đọc phải có hạn chót cứng: một request treo không được phép
         // giữ màn chấm công ở trạng thái quay vòng vĩnh viễn (xem BUG-111).
+        const readContext = createAttendanceReadContext()
         const results = await Promise.allSettled([
-          needs.has('shifts') ? withAttendanceReadDeadline(() => fetchWorkShifts(user), 'khung ca') : Promise.resolve(undefined),
-          needs.has('registrations') ? withAttendanceReadDeadline(() => fetchShiftRegistrations(user, attendanceFilters), 'ca đã đăng ký') : Promise.resolve(undefined),
-          needs.has('records') ? withAttendanceReadDeadline(() => fetchAttendanceRecords(user, attendanceFilters), 'chấm công') : Promise.resolve(undefined),
-          needs.has('employees') ? withAttendanceReadDeadline(() => fetchEmployees(user), 'nhân sự') : Promise.resolve(undefined),
-          needs.has('schedulePeople') ? withAttendanceReadDeadline(() => fetchSchedulePeople(user), 'danh sách lịch') : Promise.resolve(undefined),
+          needs.has('shifts') ? withAttendanceReadDeadline(() => fetchWorkShifts(user, readContext), 'khung ca') : Promise.resolve(undefined),
+          needs.has('registrations') ? withAttendanceReadDeadline(() => fetchShiftRegistrations(user, { ...attendanceFilters, readContext }), 'ca đã đăng ký') : Promise.resolve(undefined),
+          needs.has('records') ? withAttendanceReadDeadline(() => fetchAttendanceRecords(user, { ...attendanceFilters, readContext }), 'chấm công') : Promise.resolve(undefined),
+          needs.has('employees') ? withAttendanceReadDeadline(() => fetchEmployees(user, { readContext }), 'nhân sự') : Promise.resolve(undefined),
+          needs.has('schedulePeople') ? withAttendanceReadDeadline(() => fetchSchedulePeople(user, readContext), 'danh sách lịch') : Promise.resolve(undefined),
         ])
         const [nextShifts, nextRegistrations, nextRecords, nextEmployees, nextSchedulePeople] = results
         if (nextShifts.status === 'fulfilled' && nextShifts.value) setShifts(nextShifts.value)

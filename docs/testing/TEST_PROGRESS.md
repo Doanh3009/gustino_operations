@@ -827,3 +827,61 @@ MOD-06/MOD-08/MOD-10/MOD-13/MOD-17 are now the user-prioritized implementation/t
 - Inbox database integration passed including new preview/order/unread/privacy checks; original sender/contact/read/history security also passed. Temporary test database stopped. Full build pending, no deploy or Supabase migration application.
 
 - Inbox-preview final build/typecheck and production bundle guard passed (733 modules). Database security/inbox tests passed on isolated cluster; signed-in UI/realtime pending.
+
+
+## 2026-09-12 - Supabase egress review only
+
+- Source inventory completed; see SUPABASE_EGRESS_REVIEW_2026-09-12.md. User requested review before changes; no app/SQL/config/deploy edits.
+- Source-confirmed excess refresh: Admin per-event whole-section, Report per-event whole-ledger, Today new sessions array triggers full snapshot history. Attendance branches/employees reads fan out. No fixed 2-3-second cloud timer or proven infinite effect loop found.
+- Static review only; no runtime egress/regression/production tests claimed. Preserve full stock/revenue/payroll inputs.
+- Next: user reviews diff fragments, then implement approved minimal changes and run targeted regression/request-count and byte measurements in isolation.
+
+
+## 2026-09-12 - Egress fix 1
+
+- Today operations polling changed from unconditional visible 8s to visible 60s only while Realtime is not SUBSCRIBED. LAN has no socket and retains fallback. Rejoin/focus/online reconciliation retained. Validation pending; next Kitchen active/history split. No production writes.
+
+
+## Egress fixes 1-2 validation
+- Kitchen activeOnly server filter pending+acknowledged; history query gated by explicit open control; status mutation removes terminal rows from active. Targeted kitchen/delivery results recorded in command output. Today legacy realtime-reminders static test fails because it demands continuous polling, contrary to direct user request; do not restore polling to satisfy it. Behavior test pending. Next semantic Today snapshot dependency.
+
+
+## Egress fix 3
+- Today snapshot dependency is a sorted serialized session-content key, so identical refreshed arrays do not refetch. Snapshot query scoped to viewed day; direct report Realtime/focus/rejoin reconciliation preserves independent report changes. Validation pending; next Admin debounce.
+
+
+## Egress fixes 3-4
+- Today content-key/day-only snapshots and Admin 400ms debounce implemented. Admin existing single-flight/queued reconciliation preserved; debounce cleanup cancels stale scope work. Focused regression commands executed; next Report payload/fallback handling.
+
+
+## Egress fix 5
+- Report operation-day full payload updates finalized locally; DELETE/incomplete payload falls back to 400ms debounce. Joined/computed ledger callbacks share one 400ms debounced read to preserve receipts items/profile joins and formulas. Cleanup cancels both queues. Regression executed; next branches request context.
+
+
+## Egress fix 6
+- Added per-flow AttendanceReadContext and scoped in-flight branches dedupe; Admin/Attendance/Sales/Report refresh batches and nested schedule-people use shared context. Context lasts one flow; next flow re-reads current branches, no stale TTL. TypeScript passed. Behavior regression executing; final regression/build next.
+
+
+## Egress validation batch
+- SUPABASE_EGRESS_REFRESH_OK: actual effects/adapters under isolated timers/socket/query doubles verify no Today polling while connected, 60s disconnect fallback, hidden suppression, equal session content, history-open gating, server active filter, 400ms Report/Admin burst coalescing and cancellation, direct snapshot/day payload updates, per-flow/new-scope branches reads.
+- Kitchen bell/delivery, shift-close-report, Today recovery, competition realtime and sales/report regressions pass; TypeScript passes. Legacy attendance-next-day static regression also failed; baseline comparison running to distinguish pre-existing failures.
+- Initial build blocked by sandbox/esbuild parent directory access; elevated local build requested. No production writes/deploy.
+
+
+## 2026-09-12 - Egress regression evidence
+- Actual behavior harness SUPABASE_EGRESS_REFRESH_OK passed after handling absent/partial payloads safely. Report complete snapshots and operation-day payloads now update local state without follow-up reads; joined/DELETE/partial ledger events debounce400ms.
+- attendance-realtime-next-day produced identical nine failures on HEAD baseline; unrelated existing failure, not introduced. Legacy realtime-reminders requires literal8000 polling contrary to new authorized behavior; old test preserved and conflict documented in test-cases/MOD-20-supabase-egress-refresh.md.
+- No production bytes/UI/multi-device claim. Build in progress. Next final build and diff-check, then deliver savings estimates and limitations.
+
+
+## 2026-09-12 - Egress fixes final local handoff
+- All six authorized changes implemented. Final SUPABASE_EGRESS_REFRESH_OK and diff-check pass; TypeScript and elevated full production build pass (733 modules; PRODUCTION_SUPABASE_BUNDLE_OK index-AqLpUzXF.js). Six relevant existing regressions pass. Legacy continuous-polling contract conflicts with explicit request; attendance-next-day nine failures are identical against HEAD baseline. No test expectations overwritten.
+- Changed application files: TodayPage, KitchenPage, AdminPage, ReportPage, AttendancePage, SalesPage, lib/attendance, lib/supplyRequests. Added isolated behavior regression and MOD-20-supabase-egress-refresh.md case/estimate record; tracking updated throughout.
+- Expected savings are per-flow request/row estimates, not measured production egress. Kitchen history still loads permitted full scope only while opened (and realtime updates while open); LAN server contract unchanged and active filtering local. No Supabase/schema/deploy/data write occurred.
+- Next exact action: authorized frontend release, then signed-in two-device validation and request/byte before-after measurement including socket disconnect/rejoin, history close/open, scope changes, and stock/POS/report/attendance reliability. Existing separate timers outside the six requested targets remain for a later reviewed batch.
+
+
+## 2026-09-12 - Egress four-item status recheck
+- Confirmed current source already contains all four prior fixes: Admin400ms debounce; Report local full snapshot/day updates plus400ms joined/partial/DELETE ledger fallback; Today sorted session-content dependency and exact-day snapshot read; per-flow scoped AttendanceReadContext across Admin/Attendance/Sales/Report and nested schedule helpers. No application edits needed this turn.
+- Reran SUPABASE_EGRESS_REFRESH_OK, SHIFT_CLOSE_REPORT_REALTIME_OK, MANAGEMENT_DAILY_COMPETITION_REALTIME_OK and TODAY_SHIFT_OPEN_RECOVERY_OK: all pass. Previous full build passed; no code changed since that build.
+- Remaining joined/partial ledger reads intentionally preserve item/profile joins and aggregation correctness; full replacement with payload-only reconstruction is not necessary for requested minimum debounce. No production deploy performed; next review release file scope, build with production public Supabase env and guard, deploy existing Vercel project, validate two-device Realtime and response bytes.

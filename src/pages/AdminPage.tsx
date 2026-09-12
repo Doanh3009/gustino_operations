@@ -9,6 +9,7 @@ import {
   fetchAttendanceRecords,
   fetchEmployees,
   fetchShiftRegistrations,
+  createAttendanceReadContext,
   fetchWorkShifts,
   ensureDefaultWorkShifts,
   isAttendanceAutoClosedError,
@@ -24,7 +25,7 @@ import { canOpenAdminConsole, employeePositionLabel, isBranchlessRole, isReadOnl
 import { useLang } from '../lib/i18n'
 import { PRODUCTS, getPackingOptionsByOutput, getProducts, productById } from '../lib/constants'
 import { branchName as configuredBranchName, syncConfiguredBranchRows, useConfiguredBranches, writeConfiguredBranchRows, type ConfigBranch } from '../lib/branches'
-import { downloadBlob, shareOrDownloadBlob } from '../lib/browser'
+import { burstGuard, downloadBlob, shareOrDownloadBlob } from '../lib/browser'
 import { calculateStock, ensureOperationDay, fetchInventoryReports, fetchMovements, fetchReportSnapshots, stockAdjustmentDeltas, sumStockAdjustments, type StockAdjustment } from '../lib/store'
 import { QUANTITY_DECIMALS, formatStockAmount } from '../lib/inventoryEntry'
 import { supabase, uniqueChannelName } from '../lib/supabase'
@@ -532,6 +533,7 @@ export function ManagementPage({ user, initialSection, focused = false, onNaviga
     if (showLoading) setLoading(true)
     const run = (async () => {
       try {
+      const readContext = createAttendanceReadContext()
       const managedBranchIds = permittedBranchIds(user)
       const refreshContext = managementRefreshContextRef.current
       const dataNeeds = managementDataNeeds(refreshContext.activeSection, refreshContext.focused)
@@ -551,10 +553,10 @@ export function ManagementPage({ user, initialSection, focused = false, onNaviga
         nextReportSnapshots,
         nextSalesReceipts,
       ] = await Promise.all([
-        dataNeeds.has('employees') ? fetchEmployees(user, { includeInactive: true }) : Promise.resolve(employees),
-        dataNeeds.has('shifts') ? fetchWorkShifts(user) : Promise.resolve(shifts),
-        dataNeeds.has('registrations') ? fetchShiftRegistrations(user, { from: receiptFrom, to: receiptTo }) : Promise.resolve(registrations),
-        dataNeeds.has('records') ? fetchAttendanceRecords(user, { from: receiptFrom, to: receiptTo }) : Promise.resolve(records),
+        dataNeeds.has('employees') ? fetchEmployees(user, { includeInactive: true, readContext }) : Promise.resolve(employees),
+        dataNeeds.has('shifts') ? fetchWorkShifts(user, readContext) : Promise.resolve(shifts),
+        dataNeeds.has('registrations') ? fetchShiftRegistrations(user, { from: receiptFrom, to: receiptTo, readContext }) : Promise.resolve(registrations),
+        dataNeeds.has('records') ? fetchAttendanceRecords(user, { from: receiptFrom, to: receiptTo, readContext }) : Promise.resolve(records),
         dataNeeds.has('adjustments') ? fetchAttendanceAdjustments(user, { from: receiptFrom, to: receiptTo }) : Promise.resolve(attendanceAdjustments),
         dataNeeds.has('movements') ? Promise.all(managedBranchIds.map((id) => fetchMovements(id, user))).then((items) => items.flat()) : Promise.resolve(movements),
         dataNeeds.has('inventoryReports') ? Promise.all(managedBranchIds.map((id) => fetchInventoryReports(id, user))).then((items) => items.flat()) : Promise.resolve(inventoryReports),
@@ -658,14 +660,16 @@ export function ManagementPage({ user, initialSection, focused = false, onNaviga
       }
     }
     const channel = client.channel(uniqueChannelName(`admin-live:${user.id}`))
+    const reloadSoon = burstGuard(() => void refresh(false), 400)
     managementRealtimeTables(activeSection, focused).forEach((table) => {
-      channel.on('postgres_changes', { event: '*', schema: 'public', table }, () => void refresh(false))
+      channel.on('postgres_changes', { event: '*', schema: 'public', table }, reloadSoon)
     })
     channel.subscribe()
     return () => {
       window.clearInterval(timer)
       window.removeEventListener('focus', refreshWhenActive)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
+      reloadSoon.cancel()
       void client.removeChannel(channel)
     }
   }, [user.id, user.authToken, from, to, activeSection, focused])

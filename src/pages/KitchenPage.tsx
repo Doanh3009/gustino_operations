@@ -3,6 +3,7 @@ import { branchName as configuredBranchName } from '../lib/branches'
 import { permittedBranchIds } from '../lib/attendance'
 import { T, useLang } from '../lib/i18n'
 import { supabase, uniqueChannelName } from '../lib/supabase'
+import { burstGuard } from '../lib/browser'
 import {
   fetchSupplyRequests,
   formatSupplyRequestDelivery as formatRequestedDelivery,
@@ -24,6 +25,10 @@ export function KitchenPage({ user }: Props) {
   const lang = useLang()
   const tx = T[lang]
   const [requests, setRequests] = useState<SupplyRequest[]>([])
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyRequests, setHistoryRequests] = useState<SupplyRequest[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyRevision, setHistoryRevision] = useState(0)
   const [loading, setLoading] = useState(true)
   const [feedback, setFeedback] = useState('')
   const [busyId, setBusyId] = useState('')
@@ -39,7 +44,7 @@ export function KitchenPage({ user }: Props) {
   )
 
   const refresh = useCallback(async () => {
-    const nextRequests = await fetchSupplyRequests(user, branchIds)
+    const nextRequests = await fetchSupplyRequests(user, branchIds, { activeOnly: true })
     const pendingIds = new Set(nextRequests.filter((item) => item.status === 'pending').map((item) => item.id))
     const newest = initialized.current
       ? nextRequests.find((item) => item.status === 'pending' && !seenPendingIds.current.has(item.id))
@@ -54,7 +59,7 @@ export function KitchenPage({ user }: Props) {
   useEffect(() => {
     let active = true
     setLoading(true)
-    fetchSupplyRequests(user, branchIds)
+    fetchSupplyRequests(user, branchIds, { activeOnly: true })
       .then((items) => {
         if (!active) return
         setRequests(items)
@@ -68,6 +73,17 @@ export function KitchenPage({ user }: Props) {
   }, [branchIds, tx.kitchenLoadError, user])
 
   useEffect(() => {
+    if (!historyOpen) return
+    let active = true
+    setHistoryLoading(true)
+    fetchSupplyRequests(user, branchIds)
+      .then((items) => { if (active) setHistoryRequests(items) })
+      .catch((reason) => { if (active) setFeedback(reason instanceof Error ? reason.message : tx.kitchenLoadError) })
+      .finally(() => { if (active) setHistoryLoading(false) })
+    return () => { active = false }
+  }, [historyOpen, historyRevision, branchIds, user, tx.kitchenLoadError])
+
+  useEffect(() => {
     const timer = window.setInterval(() => void refresh().catch(() => {}), 8000)
     return () => window.clearInterval(timer)
   }, [refresh])
@@ -75,16 +91,21 @@ export function KitchenPage({ user }: Props) {
   useEffect(() => {
     if (!supabase) return
     const client = supabase
+    const reloadSoon = burstGuard(() => {
+      void refresh().catch(() => {})
+      if (historyOpen) setHistoryRevision((revision) => revision + 1)
+    }, 400)
     const channel = client
       .channel(uniqueChannelName(`kitchen-orders-${user.id}`))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'supply_requests' }, () => {
-        void refresh().catch(() => {})
+        reloadSoon()
       })
       .subscribe()
     return () => {
+      reloadSoon.cancel()
       void client.removeChannel(channel)
     }
-  }, [refresh, user.id])
+  }, [refresh, user.id, historyOpen])
 
   useEffect(() => {
     const hasPending = requests.some((item) => item.status === 'pending')
@@ -117,10 +138,12 @@ export function KitchenPage({ user }: Props) {
       setRequests((items) => {
         const nextItems = items.map((item) =>
           item.id === request.id ? { ...item, status, updatedAt: new Date().toISOString() } : item,
-        )
+        ).filter((item) => item.status === 'pending' || item.status === 'acknowledged')
         if (!nextItems.some((item) => item.status === 'pending')) stopKitchenBell()
         return nextItems
       })
+      setHistoryRequests((items) => items.map((item) => item.id === request.id
+        ? { ...item, status, updatedAt: new Date().toISOString() } : item))
       if (status === 'acknowledged' || status === 'cancelled' || status === 'fulfilled') stopKitchenBell()
       setFeedback(status === 'acknowledged'
         ? tx.kitchenAcceptedFeedback
@@ -137,8 +160,8 @@ export function KitchenPage({ user }: Props) {
   const isManager = user.role === 'manager' || user.role === 'admin'
   const pending = requests.filter((item) => item.status === 'pending')
   const acknowledged = requests.filter((item) => item.status === 'acknowledged')
-  const fulfilled = requests.filter((item) => item.status === 'fulfilled')
-  const cancelled = requests.filter((item) => item.status === 'cancelled')
+  const fulfilled = historyRequests.filter((item) => item.status === 'fulfilled')
+  const cancelled = historyRequests.filter((item) => item.status === 'cancelled')
   const cancelFeedback = lang === 'en' ? 'Kitchen order cancelled.' : 'Đã hủy đơn đặt bếp.'
   const cancelLabel = lang === 'en' ? 'Cancel order' : 'Hủy đơn'
   const cancelledTitle = lang === 'en' ? 'Cancelled' : 'Đã hủy'
@@ -149,7 +172,7 @@ export function KitchenPage({ user }: Props) {
     : 'Bếp xác nhận ngay để ca trưởng biết đơn đã được tiếp nhận.'
   const kitchenHistoryRequests = useMemo(() => {
     const keyword = kitchenHistorySearch.trim().toLowerCase()
-    return requests
+    return historyRequests
       .filter((request) => {
         if (kitchenHistoryStatus !== 'all' && request.status !== kitchenHistoryStatus) return false
         if (kitchenHistoryDeliveryDate && request.requestedDeliveryDate !== kitchenHistoryDeliveryDate) return false
@@ -159,7 +182,7 @@ export function KitchenPage({ user }: Props) {
       })
       .slice()
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-  }, [kitchenHistoryDeliveryDate, kitchenHistoryDeliveryPeriod, kitchenHistorySearch, kitchenHistoryStatus, requests])
+  }, [kitchenHistoryDeliveryDate, kitchenHistoryDeliveryPeriod, kitchenHistorySearch, kitchenHistoryStatus, historyRequests])
   const successFeedbacks: string[] = [
     tx.kitchenBellFeedback,
     tx.kitchenAcceptedFeedback,
@@ -175,7 +198,7 @@ export function KitchenPage({ user }: Props) {
           <span className="eyebrow dark">{isManager ? 'QUẢN LÝ ĐẶT BẾP' : tx.kitchenEyebrow}</span>
           <h1>{isManager ? 'Toàn bộ đơn đặt bếp' : tx.kitchenHeading}</h1>
           <p>{isManager
-            ? `Theo dõi và xử lý đơn từ ${branchIds.length} chi nhánh. Tổng ${requests.length} đơn · ${pending.length} chờ xử lý.`
+            ? `Theo dõi và xử lý đơn từ ${branchIds.length} chi nhánh. ${requests.length} đơn đang xử lý · ${pending.length} chờ xác nhận.`
             : tx.kitchenHint}</p>
         </div>
       </header>
@@ -192,7 +215,7 @@ export function KitchenPage({ user }: Props) {
       <section className="kitchen-stats">
         <article className={pending.length ? 'hot' : ''}><small>{tx.kitchenPending}</small><strong>{pending.length}</strong></article>
         <article><small>{tx.kitchenWorking}</small><strong>{acknowledged.length}</strong></article>
-        <article><small>{tx.kitchenDone}</small><strong>{fulfilled.length}</strong></article>
+        {historyOpen && <article><small>{tx.kitchenDone}</small><strong>{fulfilled.length}</strong></article>}
       </section>
 
       <section className="kitchen-columns">
@@ -218,23 +241,28 @@ export function KitchenPage({ user }: Props) {
           onNext={(request) => void changeStatus(request, 'fulfilled')}
           onCancel={(request) => void changeStatus(request, 'cancelled')}
         />
-        <KitchenColumn
+        {historyOpen && <KitchenColumn
           title={tx.kitchenCompleted}
           emptyText={tx.kitchenNoDone}
           requests={fulfilled}
           busyId={busyId}
           savingLabel={tx.kitchenSaving}
-        />
-        <KitchenColumn
+        />}
+        {historyOpen && <KitchenColumn
           title={cancelledTitle}
           emptyText={cancelledEmpty}
           requests={cancelled}
           busyId={busyId}
           savingLabel={tx.kitchenSaving}
-        />
+        />}
       </section>
 
       <section className="kitchen-history-section">
+        <button type="button" className="mini-button ghost" aria-expanded={historyOpen}
+          onClick={() => setHistoryOpen((open) => !open)}>
+          {historyOpen ? 'Đóng lịch sử' : 'Mở lịch sử đơn đặt bếp'}
+        </button>
+        {historyOpen && <>
         <div className="kitchen-history-head">
           <div>
             <span className="eyebrow dark">TRA CỨU ĐƠN ĐẶT HÀNG</span>
@@ -295,8 +323,9 @@ export function KitchenPage({ user }: Props) {
               <span className={`kitchen-history-status ${request.status}`}>{kitchenStatusLabel(request.status)}</span>
             </article>
           ))}
-          {!kitchenHistoryRequests.length && <p className="empty-copy">Không có đơn phù hợp bộ lọc.</p>}
+          {!kitchenHistoryRequests.length && <p className="empty-copy">{historyLoading ? tx.kitchenLoading : 'Không có đơn phù hợp bộ lọc.'}</p>}
         </div>
+        </>}
       </section>
     </div>
   )

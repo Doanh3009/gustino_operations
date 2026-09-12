@@ -36,6 +36,7 @@ import type {
 } from '../types'
 
 interface AttendanceFilters {
+  readContext?: AttendanceReadContext
   branchId?: string
   userId?: string
   from?: string
@@ -113,7 +114,37 @@ export function permittedBranchIds(user: AppUser) {
   return scopedIds.length ? scopedIds : branchIds()
 }
 
-async function activeBranchIdSet() {
+export interface AttendanceReadContext {
+  activeBranches?: Promise<Set<string>>
+  activeBranchesKey?: string
+}
+
+export function createAttendanceReadContext(): AttendanceReadContext {
+  return {}
+}
+
+const activeBranchReads = new Map<string, Promise<Set<string>>>()
+
+async function activeBranchIdSet(user: AppUser, context?: AttendanceReadContext) {
+  const key = JSON.stringify([user.id, user.role, user.branchId, user.branchIds, user.authToken])
+  if (context?.activeBranches && context.activeBranchesKey === key) return context.activeBranches
+  let read = activeBranchReads.get(key)
+  if (!read) {
+    read = readActiveBranchIds()
+    activeBranchReads.set(key, read)
+    const pending = read
+    void read.finally(() => {
+      if (activeBranchReads.get(key) === pending) activeBranchReads.delete(key)
+    }).catch(() => undefined)
+  }
+  if (context) {
+    context.activeBranches = read
+    context.activeBranchesKey = key
+  }
+  return read
+}
+
+async function readActiveBranchIds() {
   if (!supabase) return new Set(branchIds())
   const { data, error } = await supabase.from('branches').select('id').eq('active', true)
   if (error) {
@@ -127,9 +158,9 @@ function isActiveBranch(branchId: string | undefined, activeBranches: Set<string
   return Boolean(branchId && activeBranches.has(branchId))
 }
 
-export async function fetchWorkShifts(user: AppUser): Promise<WorkShift[]> {
+export async function fetchWorkShifts(user: AppUser, readContext?: AttendanceReadContext): Promise<WorkShift[]> {
   if (shouldUseAttendanceApi(user)) return attendanceApi(user, '/shifts')
-  const activeBranches = await activeBranchIdSet()
+  const activeBranches = await activeBranchIdSet(user, readContext)
   const { data, error } = await supabase!.from('shifts').select('*').eq('active', true).order('start_time')
   if (error) throw error
   return (data || []).filter((row) => isActiveBranch(row.branch_id, activeBranches)).map((row) => ({
@@ -145,10 +176,10 @@ export async function fetchWorkShifts(user: AppUser): Promise<WorkShift[]> {
   }))
 }
 
-export async function fetchEmployees(user: AppUser, options: { includeInactive?: boolean } = {}): Promise<EmployeeProfile[]> {
+export async function fetchEmployees(user: AppUser, options: { includeInactive?: boolean; readContext?: AttendanceReadContext } = {}): Promise<EmployeeProfile[]> {
   if (shouldUseAttendanceApi(user)) return attendanceApi(user, '/employees')
   const branches = permittedBranchIds(user)
-  const activeBranches = await activeBranchIdSet()
+  const activeBranches = await activeBranchIdSet(user, options.readContext)
   const client = supabase!
   let query = client.from('profiles').select('id, full_name, email, role, branch_id, active, employment_type, position_title, avatar_url, employment_status, employment_start_date, probation_end_date, employment_end_date, employment_note').order('full_name')
   if (!options.includeInactive) query = query.eq('active', true)
@@ -215,9 +246,9 @@ export async function updateEmployeeCrmDetails(
   }
 }
 
-export async function fetchSchedulePeople(user: AppUser): Promise<SchedulePerson[]> {
+export async function fetchSchedulePeople(user: AppUser, readContext = createAttendanceReadContext()): Promise<SchedulePerson[]> {
   if (!supabase) {
-    return (await fetchEmployees(user)).map((employee, index) => ({
+    return (await fetchEmployees(user, { readContext })).map((employee, index) => ({
       id: employee.id,
       profileId: employee.id,
       name: employee.name,
@@ -231,7 +262,7 @@ export async function fetchSchedulePeople(user: AppUser): Promise<SchedulePerson
   const { data, error } = await supabase.rpc('list_schedule_people')
   if (error) {
     console.warn('Falling back to profiles for schedule people:', error.message)
-    return (await fetchEmployees(user)).map((employee, index) => ({
+    return (await fetchEmployees(user, { readContext })).map((employee, index) => ({
       id: employee.id,
       profileId: employee.id,
       name: employee.name,
@@ -242,9 +273,9 @@ export async function fetchSchedulePeople(user: AppUser): Promise<SchedulePerson
       sortOrder: index,
     }))
   }
-  const activeProfileIds = new Set((await fetchEmployees(user).catch(() => [] as EmployeeProfile[])).map((employee) => employee.id))
+  const activeProfileIds = new Set((await fetchEmployees(user, { readContext }).catch(() => [] as EmployeeProfile[])).map((employee) => employee.id))
   const canTrustProfileFilter = (user.role === 'admin' || user.role === 'manager') && activeProfileIds.size > 0
-  const activeBranches = await activeBranchIdSet()
+  const activeBranches = await activeBranchIdSet(user, readContext)
   return (data || [])
     .map((row: any, index: number) => ({
     id: row.id,
@@ -591,7 +622,7 @@ export async function fetchShiftRegistrations(user: AppUser, filters: Attendance
   // Khi query đã khóa đúng chính user, mọi row đều đi nhánh "own" bên dưới;
   // không gọi thêm bảng branches ở mỗi event realtime.
   const onlyOwn = filters.userId === user.id
-  const activeBranches = onlyOwn ? new Set<string>() : await activeBranchIdSet()
+  const activeBranches = onlyOwn ? new Set<string>() : await activeBranchIdSet(user, filters.readContext)
   const rows: any[] = []
   for (let offset = 0; ; offset += ATTENDANCE_PAGE_SIZE) {
     let query = supabase!
@@ -1031,7 +1062,7 @@ export async function setScheduleRegistration(
 export async function fetchAttendanceRecords(user: AppUser, filters: AttendanceFilters = {}): Promise<AttendanceRecord[]> {
   if (shouldUseAttendanceApi(user)) return attendanceApi(user, `/records?${queryString(filters)}`)
   const onlyOwn = user.role === 'staff' || filters.userId === user.id
-  const activeBranches = onlyOwn ? new Set<string>() : await activeBranchIdSet()
+  const activeBranches = onlyOwn ? new Set<string>() : await activeBranchIdSet(user, filters.readContext)
   const rows: any[] = []
   for (let offset = 0; ; offset += ATTENDANCE_PAGE_SIZE) {
     let query = supabase!

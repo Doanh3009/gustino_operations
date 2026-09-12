@@ -59,6 +59,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
   const [clockNow, setClockNow] = useState(() => new Date())
   const orderProductRef = useRef<HTMLInputElement>(null)
   const todayKey = localDateKey(clockNow)
+  const sessionReportKey = bagSessions.map((session) => JSON.stringify(session)).sort().join('|')
   const todayItems = movements.filter((item) => item.shiftDate === todayKey)
   const currentBranchName = branchName(user.branchId)
   const stock = useMemo(() => calculateStock(movements), [movements])
@@ -98,11 +99,30 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
     void getOperationDay(user.branchId, todayKey, user).then(setOperationDay)
   }, [todayItems.length, todayKey, user.branchId])
   useEffect(() => {
-    void fetchReportSnapshots(user.branchId, user).then((snapshots) => {
-      const snapshot = snapshots.find((item) => item.reportDate === todayKey)
-      setReportedShiftIds(Object.keys(snapshot?.payload.shiftReports || {}))
-    }).catch(() => setReportedShiftIds([]))
-  }, [todayKey, user.id, user.branchId, bagSessions])
+    let active = true
+    const reloadSnapshot = () => {
+      void fetchReportSnapshots(user.branchId, user, { from: todayKey, to: todayKey }).then((snapshots) => {
+        if (!active) return
+        const snapshot = snapshots.find((item) => item.reportDate === todayKey)
+        setReportedShiftIds(Object.keys(snapshot?.payload.shiftReports || {}))
+      }).catch(() => { if (active) setReportedShiftIds([]) })
+    }
+    reloadSnapshot()
+    const reloadSoon = burstGuard(reloadSnapshot, 400)
+    const client = user.authToken ? null : supabase
+    const channel = client?.channel(uniqueChannelName(`today-reports:${user.branchId}:${todayKey}`))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'report_snapshots', filter: `branch_id=eq.${user.branchId}` }, reloadSoon)
+      .subscribe((status) => { if (status === 'SUBSCRIBED') reloadSoon() })
+    window.addEventListener('focus', reloadSoon)
+    window.addEventListener('online', reloadSoon)
+    return () => {
+      active = false
+      reloadSoon.cancel()
+      window.removeEventListener('focus', reloadSoon)
+      window.removeEventListener('online', reloadSoon)
+      if (client && channel) void client.removeChannel(channel)
+    }
+  }, [todayKey, user.id, user.branchId, user.authToken, sessionReportKey])
   useEffect(() => {
     void Promise.all([
       fetchBagShiftSessions(user, { branchId: user.branchId, date: todayKey }),
@@ -115,6 +135,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
     })
   }, [todayKey, user.id, user.branchId])
   useEffect(() => {
+    let realtimeConnected = false
     const reloadOperations = () => {
       void Promise.all([
         fetchBagShiftSessions(user, { branchId: user.branchId, date: todayKey }),
@@ -128,9 +149,10 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
     const reloadWhenVisible = () => {
       if (document.visibilityState === 'visible') reloadOperations()
     }
-    // Nhịp nền không chạy khi máy đang khoá/đang ở app khác: điện thoại ngoài
-    // quầy để mở trang này cả ca, cứ 8 giây gọi 2 truy vấn là tốn pin và mạng.
-    const timer = window.setInterval(reloadWhenVisible, 8000)
+    // Chỉ đối soát khi socket mất kết nối (LAN cũng không có socket).
+    const timer = window.setInterval(() => {
+      if (!realtimeConnected) reloadWhenVisible()
+    }, 60000)
     // Realtime bắn theo từng dòng nên phải gộp, nếu không mỗi hoá đơn là vài lượt tải lại.
     const reloadSoon = burstGuard(reloadOperations)
     window.addEventListener('focus', reloadOperations)
@@ -142,6 +164,7 @@ export function TodayPage({ user, movements, onNavigate, onOpenInventory }: Prop
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipts', filter: `branch_id=eq.${user.branchId}` }, reloadSoon)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sales_receipt_items' }, reloadSoon)
       .subscribe((status) => {
+        realtimeConnected = status === 'SUBSCRIBED'
         if (status === 'SUBSCRIBED') reloadOperations()
       })
     return () => {

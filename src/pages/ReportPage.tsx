@@ -5,14 +5,14 @@ import { PRODUCTS, productById as catalogProductById } from '../lib/constants'
 import { branchName as configuredBranchName } from '../lib/branches'
 import { calculateStock, ensureOperationDay, fetchReportSnapshots, finalizeDailyReport, getOperationDay, saveShiftReportSnapshot, stockAdjustmentDeltas } from '../lib/store'
 import { formatQuantity } from '../lib/inventoryEntry'
-import { fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
+import { createAttendanceReadContext, fetchAttendanceRecords, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { fetchBagAllocations, fetchBagShiftSessions, latestOwnedBagShiftSession, ownsBagShiftSession } from '../lib/shiftLedger'
 import { sessionScopeWindow, timestampInScopeWindow } from '../lib/shiftReportScope'
 import { clearHandoverReportRequest, readHandoverReportRequest, writeHandoverReportRequest, type HandoverReportRequest } from '../lib/handoverReportRequest'
 import { fetchSalesReceipts, type SalesReceipt } from '../lib/salesReceipts'
 import { supabase, uniqueChannelName } from '../lib/supabase'
 import { localDateKey } from '../lib/dates'
-import { canvasToBlob, shareOrDownloadBlob } from '../lib/browser'
+import { burstGuard, canvasToBlob, shareOrDownloadBlob } from '../lib/browser'
 import { sendZaloShiftReports, type ZaloReportKind } from '../lib/zaloReports'
 import { queueN8nReportImages, type N8nQueueResult, type N8nReportKind } from '../lib/n8nReports'
 import type { InventoryTab, Page } from '../components/AppShell'
@@ -259,11 +259,12 @@ const [shiftRegistrations, setShiftRegistrations] = useState<ShiftRegistration[]
   const businessDate = localDateKey(new Date(clockTick))
 
   async function loadReportLedger(): Promise<ReportLedgerData> {
+    const readContext = createAttendanceReadContext()
     const [sessions, allocations, registrations, records, receipts, snapshots] = await Promise.all([
       fetchBagShiftSessions(user, { branchId: user.branchId, date: businessDate }),
       fetchBagAllocations(user, { branchId: user.branchId, date: businessDate }),
-      fetchShiftRegistrations(user, { branchId: user.branchId, from: businessDate, to: businessDate }),
-      fetchAttendanceRecords(user, { branchId: user.branchId, from: businessDate, to: businessDate }),
+      fetchShiftRegistrations(user, { branchId: user.branchId, from: businessDate, to: businessDate, readContext }),
+      fetchAttendanceRecords(user, { branchId: user.branchId, from: businessDate, to: businessDate, readContext }),
       fetchSalesReceipts(user, { branchId: user.branchId, date: businessDate }),
       fetchReportSnapshots(user.branchId, user),
     ])
@@ -349,43 +350,57 @@ if (!client) {
         removeWindowListeners()
       }
     }
+    const reloadLedgerSoon = burstGuard(() => void refreshLedger().catch(() => null), 400)
+    const reloadDaySoon = burstGuard(() => void refreshFinalizationState().catch(() => null), 400)
     const channel = client.channel(uniqueChannelName(`report-ledger:${user.branchId}:${businessDate}`))
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'bag_shift_sessions',
         filter: `branch_id=eq.${user.branchId}`,
-      }, () => void refreshLedger().catch(() => null))
+      }, reloadLedgerSoon)
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'bag_allocations',
         filter: `branch_id=eq.${user.branchId}`,
-      }, () => void refreshLedger().catch(() => null))
+      }, reloadLedgerSoon)
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'sales_receipts',
         filter: `branch_id=eq.${user.branchId}`,
-      }, () => void refreshLedger().catch(() => null))
+      }, reloadLedgerSoon)
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'attendance_records',
         filter: `branch_id=eq.${user.branchId}`,
-      }, () => void refreshLedger().catch(() => null))
+      }, reloadLedgerSoon)
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'report_snapshots',
         filter: `branch_id=eq.${user.branchId}`,
-      }, () => void refreshLedger().catch(() => null))
+      }, (payload) => {
+        const row = (payload.new || {}) as Record<string, unknown>
+        if (payload.eventType === 'DELETE' || !['id', 'branch_id', 'report_date', 'payload', 'created_at'].every((field) => field in row)) return reloadLedgerSoon()
+        if (row.branch_id !== user.branchId || row.report_date !== businessDate) return
+        setReportSnapshot({
+          id: String(row.id), branchId: String(row.branch_id), reportDate: String(row.report_date),
+          payload: row.payload as ReportSnapshot['payload'], createdAt: String(row.created_at),
+        })
+      })
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
         table: 'operation_days',
         filter: `branch_id=eq.${user.branchId}`,
-      }, () => void refreshFinalizationState().catch(() => null))
+      }, (payload) => {
+        const row = (payload.new || {}) as Record<string, unknown>
+        if (payload.eventType === 'DELETE' || !['branch_id', 'business_date', 'status'].every((field) => field in row)) return reloadDaySoon()
+        if (row.branch_id === user.branchId && row.business_date === businessDate) setFinalized(row.status === 'closed')
+      })
       // SUBSCRIBED bắn cả lúc join lần đầu LẪN mỗi lần rejoin sau khi rớt mạng
       // → dùng làm tín hiệu refetch để không bỏ lỡ thay đổi trong lúc mất kết nối.
       .subscribe((status) => {
@@ -393,6 +408,8 @@ if (!client) {
       })
     return () => {
       removeWindowListeners()
+      reloadLedgerSoon.cancel()
+      reloadDaySoon.cancel()
       void client.removeChannel(channel)
     }
   }, [businessDate, user.branchId, user.id])

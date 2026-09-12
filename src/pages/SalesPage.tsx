@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { getSaleProducts, productById } from '../lib/constants'
 import { productSaleValues } from '../lib/commission'
-import { fetchAttendanceRecords, fetchEmployees, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
+import { createAttendanceReadContext, fetchAttendanceRecords, fetchEmployees, fetchShiftRegistrations, findAttendanceRecordForRegistration } from '../lib/attendance'
 import { burstGuard, createId } from '../lib/browser'
 import {
   deleteSalesReceipt,
@@ -93,11 +93,12 @@ export function SalesPage({ user, onNavigate }: { user: AppUser; onNavigate?: (p
   async function refresh(showLoading = false) {
     if (showLoading) setLoading(true)
     try {
+      const readContext = createAttendanceReadContext()
       const [nextReceipts, nextRegistrations, nextAttendanceRecords, nextStaff] = await Promise.all([
         fetchSalesReceipts(user, { branchId: user.branchId, date: selectedDate }),
-        fetchShiftRegistrations(user, { branchId: user.branchId, from: selectedDate, to: selectedDate }),
-        fetchAttendanceRecords(user, { branchId: user.branchId, userId: canManageSales ? undefined : user.id, from: selectedDate, to: selectedDate }),
-        canManageSales ? fetchEmployees(user) : Promise.resolve([] as EmployeeProfile[]),
+        fetchShiftRegistrations(user, { branchId: user.branchId, from: selectedDate, to: selectedDate, readContext }),
+        fetchAttendanceRecords(user, { branchId: user.branchId, userId: canManageSales ? undefined : user.id, from: selectedDate, to: selectedDate, readContext }),
+        canManageSales ? fetchEmployees(user, { readContext }) : Promise.resolve([] as EmployeeProfile[]),
       ])
       setReceipts(dedupeReceipts(nextReceipts))
       setRegistrations(nextRegistrations)

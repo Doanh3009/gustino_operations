@@ -62,3 +62,23 @@ Last updated: 2026-07-22
 The worktree already contained many modified and untracked application, migration, script, artifact, and data files before Testing Mode started. They are treated as user-owned and must not be reverted or overwritten.
 
 - 2026-09-12 local discovery: text messaging uses MessagesPage, lib/messages, employee_messages and four dedicated RPCs. Admin directory is all active non-Admins; other roles only see active Admins. Database owns sender identity and rejects employee-peer/broadcast mutation. Messaging is Supabase-only, with explicit unsupported LAN errors. New migration not applied; no production state claimed.
+
+
+## 2026-09-12 - Supabase egress review only
+
+- Source inventory completed; see SUPABASE_EGRESS_REVIEW_2026-09-12.md. User requested review before changes; no app/SQL/config/deploy edits.
+- Source-confirmed excess refresh: Admin per-event whole-section, Report per-event whole-ledger, Today new sessions array triggers full snapshot history. Attendance branches/employees reads fan out. No fixed 2-3-second cloud timer or proven infinite effect loop found.
+- Static review only; no runtime egress/regression/production tests claimed. Preserve full stock/revenue/payroll inputs.
+- Next: user reviews diff fragments, then implement approved minimal changes and run targeted regression/request-count and byte measurements in isolation.
+
+## 2026-09-12 - Egress regression evidence
+- Actual behavior harness SUPABASE_EGRESS_REFRESH_OK passed after handling absent/partial payloads safely. Report complete snapshots and operation-day payloads now update local state without follow-up reads; joined/DELETE/partial ledger events debounce400ms.
+- attendance-realtime-next-day produced identical nine failures on HEAD baseline; unrelated existing failure, not introduced. Legacy realtime-reminders requires literal8000 polling contrary to new authorized behavior; old test preserved and conflict documented in test-cases/MOD-20-supabase-egress-refresh.md.
+- No production bytes/UI/multi-device claim. Build in progress. Next final build and diff-check, then deliver savings estimates and limitations.
+
+
+## 2026-09-12 - Egress fixes final local handoff
+- All six authorized changes implemented. Final SUPABASE_EGRESS_REFRESH_OK and diff-check pass; TypeScript and elevated full production build pass (733 modules; PRODUCTION_SUPABASE_BUNDLE_OK index-AqLpUzXF.js). Six relevant existing regressions pass. Legacy continuous-polling contract conflicts with explicit request; attendance-next-day nine failures are identical against HEAD baseline. No test expectations overwritten.
+- Changed application files: TodayPage, KitchenPage, AdminPage, ReportPage, AttendancePage, SalesPage, lib/attendance, lib/supplyRequests. Added isolated behavior regression and MOD-20-supabase-egress-refresh.md case/estimate record; tracking updated throughout.
+- Expected savings are per-flow request/row estimates, not measured production egress. Kitchen history still loads permitted full scope only while opened (and realtime updates while open); LAN server contract unchanged and active filtering local. No Supabase/schema/deploy/data write occurred.
+- Next exact action: authorized frontend release, then signed-in two-device validation and request/byte before-after measurement including socket disconnect/rejoin, history close/open, scope changes, and stock/POS/report/attendance reliability. Existing separate timers outside the six requested targets remain for a later reviewed batch.
