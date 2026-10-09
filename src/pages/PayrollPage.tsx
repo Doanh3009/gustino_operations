@@ -179,8 +179,8 @@ export function PayrollPage({ user }: { user: AppUser }) {
         agreedSalary: value('agreedSalary'),
         dailyRate: value('dailyRate'),
         workdaySalary: value('workdaySalary'),
-        overtimeHours: selected.sources.overtimeHours ? selected.entry?.overtimeHours ?? null : value('overtimeHours'),
-        kpiBonus: selected.sources.kpiBonus ? selected.entry?.kpiBonus ?? null : value('kpiBonus'),
+        overtimeHours: value('overtimeHours'),
+        kpiBonus: value('kpiBonus'),
         netSalary: value('netSalary'),
         note: draft.note.trim(),
       }
@@ -269,15 +269,15 @@ export function PayrollPage({ user }: { user: AppUser }) {
         <p className="payslip-source-note">Dữ liệu có sẵn được lấy từ cấu hình lương, chấm công và KPI. Ô chưa có dữ liệu để Admin nhập sẽ được lưu riêng theo nhân viên và tháng.</p>
         <div className="payslip-supporting"><span>Ngày công trong kỳ <b>{formatNumber(selected.workDays)}</b></span><span>Tổng giờ công <b>{formatNumber(selected.totalHours)}</b></span></div>
         <div className="payslip-field-grid">
-          <MoneyInput label="Lương cơ bản" field="baseSalary" draft={draft} setDraft={setDraft} readOnly={selected.sources.baseSalary} />
-          <MoneyInput label="Phụ cấp trách nhiệm" field="responsibilityAllowance" draft={draft} setDraft={setDraft} readOnly={selected.sources.responsibilityAllowance} />
-          <MoneyInput label="Phụ cấp chuyên cần" field="attendanceAllowance" draft={draft} setDraft={setDraft} readOnly={selected.sources.attendanceAllowance} />
-          <MoneyInput label="Phụ cấp cơm và xăng xe" field="mealTransportAllowance" draft={draft} setDraft={setDraft} readOnly={selected.sources.mealTransportAllowance} />
+          <MoneyInput label="Lương cơ bản" field="baseSalary" draft={draft} setDraft={setDraft} fromSystem={selected.sources.baseSalary} />
+          <MoneyInput label="Phụ cấp trách nhiệm" field="responsibilityAllowance" draft={draft} setDraft={setDraft} fromSystem={selected.sources.responsibilityAllowance} />
+          <MoneyInput label="Phụ cấp chuyên cần" field="attendanceAllowance" draft={draft} setDraft={setDraft} fromSystem={selected.sources.attendanceAllowance} />
+          <MoneyInput label="Phụ cấp cơm và xăng xe" field="mealTransportAllowance" draft={draft} setDraft={setDraft} fromSystem={selected.sources.mealTransportAllowance} />
           <MoneyInput label="Lương thỏa thuận" field="agreedSalary" draft={draft} setDraft={setDraft} />
           <MoneyInput label="Lương 1 ngày công" field="dailyRate" draft={draft} setDraft={setDraft} />
           <MoneyInput label="Lương theo ngày công tính lương" field="workdaySalary" draft={draft} setDraft={setDraft} />
-          <label className="payslip-input">Số giờ làm thêm <span>{selected.sources.overtimeHours ? 'Từ chấm công' : 'Admin nhập'}</span><input type="number" min="0" step="0.01" readOnly={selected.sources.overtimeHours} value={draft.overtimeHours} onChange={(event) => setDraft((value) => ({ ...value, overtimeHours: cleanDecimal(event.target.value) }))} placeholder="Chưa có dữ liệu" /></label>
-          <MoneyInput label="Thưởng KPI" field="kpiBonus" draft={draft} setDraft={setDraft} readOnly={selected.sources.kpiBonus} />
+          <label className="payslip-input">Số giờ làm thêm <span>{selected.sources.overtimeHours ? 'Từ chấm công · Admin có thể sửa' : 'Admin nhập'}</span><input type="number" min="0" step="0.01" value={draft.overtimeHours} onChange={(event) => setDraft((value) => ({ ...value, overtimeHours: cleanDecimal(event.target.value) }))} placeholder="Chưa có dữ liệu" /></label>
+          <MoneyInput label="Thưởng KPI" field="kpiBonus" draft={draft} setDraft={setDraft} fromSystem={selected.sources.kpiBonus} />
           <MoneyInput label="Lương thực lãnh" field="netSalary" draft={draft} setDraft={setDraft} prominent />
           <label className="payslip-input payslip-note">Ghi chú<textarea value={draft.note} onChange={(event) => setDraft((value) => ({ ...value, note: event.target.value }))} placeholder="Ghi chú cho kỳ lương này" /></label>
         </div>
@@ -294,8 +294,8 @@ export function PayrollPage({ user }: { user: AppUser }) {
   </section>
 }
 
-function MoneyInput({ label, field, draft, setDraft, readOnly = false, prominent = false }: { label: string; field: MoneyField; draft: Draft; setDraft: Dispatch<SetStateAction<Draft>>; readOnly?: boolean; prominent?: boolean }) {
-  return <label className={`payslip-input${prominent ? ' prominent' : ''}`}>{label}<span>{readOnly ? 'Từ dữ liệu hệ thống' : 'Admin nhập'}</span><input inputMode="numeric" readOnly={readOnly} value={draft[field]} onChange={(event) => setDraft((value) => ({ ...value, [field]: cleanMoney(event.target.value) }))} placeholder="Chưa có dữ liệu" /></label>
+function MoneyInput({ label, field, draft, setDraft, fromSystem = false, prominent = false }: { label: string; field: MoneyField; draft: Draft; setDraft: Dispatch<SetStateAction<Draft>>; fromSystem?: boolean; prominent?: boolean }) {
+  return <label className={`payslip-input${prominent ? ' prominent' : ''}`}>{label}<span>{fromSystem ? 'Từ hệ thống · Admin có thể sửa' : 'Admin nhập'}</span><input inputMode="numeric" value={draft[field]} onChange={(event) => setDraft((value) => ({ ...value, [field]: cleanMoney(event.target.value) }))} placeholder="Chưa có dữ liệu" /></label>
 }
 
 function buildPayslipRow(employee: EmployeeProfile, entries: PayrollEntry[], configs: PayrollFixedConfig[], attendanceRows: ReturnType<typeof buildAttendanceReport>, kpiByEmployee: Record<string, number>) {

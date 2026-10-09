@@ -1,5 +1,12 @@
 # Session Handoff
 
+## 2026-10-09 — MOD-07 Admin payslip editing
+- Active request: Admin must be able to enter and edit payslip values.
+- Root cause/fix: removed `readOnly` from system-prefilled payslip inputs and changed overtime/KPI save mapping to use the Admin draft. Source values remain initial suggestions with an explicit editable label.
+- Changed files: `src/pages/PayrollPage.tsx`, `scripts/test-admin-payslip-editable.mjs`, and testing trackers.
+- Last verification: focused editable test, Admin contract, delivery/notification, revoke/delete/confirmation/viewed tests, `tsc --noEmit` and the full 733-module production build/bundle guard passed (`PayrollPage-Cew5bi88.js`; `index-CK96Q1jK.js`).
+- Next exact action: verify signed-in Admin edit/save/reopen visually when a browser session is available, then release only under deployment authorization. No deployment or database write authorized/performed.
+
 ## 2026-09-10 — BUG-141/142 local handoff
 
 - Active modules: MOD-06 attendance and MOD-07 KPI/commission.
@@ -983,3 +990,13 @@ Last updated: 2026-07-15
 - Confirmed current source already contains all four prior fixes: Admin400ms debounce; Report local full snapshot/day updates plus400ms joined/partial/DELETE ledger fallback; Today sorted session-content dependency and exact-day snapshot read; per-flow scoped AttendanceReadContext across Admin/Attendance/Sales/Report and nested schedule helpers. No application edits needed this turn.
 - Reran SUPABASE_EGRESS_REFRESH_OK, SHIFT_CLOSE_REPORT_REALTIME_OK, MANAGEMENT_DAILY_COMPETITION_REALTIME_OK and TODAY_SHIFT_OPEN_RECOVERY_OK: all pass. Previous full build passed; no code changed since that build.
 - Remaining joined/partial ledger reads intentionally preserve item/profile joins and aggregation correctness; full replacement with payload-only reconstruction is not necessary for requested minimum debounce. No production deploy performed; next review release file scope, build with production public Supabase env and guard, deploy existing Vercel project, validate two-device Realtime and response bytes.
+
+## 2026-09-13 - MOD-06 open attendance support triage
+- User reports exact single-open-session rejection from lib/attendance.ts. Source confirms backend constraint rejection; no account/branch/record evidence yet, so no production incident root cause or new confirmed bug claimed.
+- Current-day recovery uses Camera máy check-out then Check-out on the open attendance. Prior-day card intentionally has no manual employee checkout; existing auto-close-day cron handles scheduled-end closure, with Admin correction for unresolved attendance.
+- No application changes, tests, deployment or production data writes. Asked for employee/branch and visible old-shift state. Next: identify affected attendance and distinguish current-day open session from failed prior-day auto-close before any targeted repair.
+
+## 2026-09-13 - Minh Thien branch-transfer attendance triage
+- User identifies Minh Thiện, moved from Gold Coast to 23/10 immediately before check-in rejection. manage-employee update changes profiles/schedule_people branch but does not close or relocate historical attendance/registrations; existing one-open-per-user constraint remains across branches.
+- Live open row/date not read in this session; old Gold Coast open attendance is a hypothesis, not a confirmed database finding. Admin source supports all-branch employee attendance browse and audited manual checkout correction.
+- Next: Admin select all branches, Minh Thiện, locate missing checkout, preserve actual check-in and enter verified actual checkout with transfer-related reason. If no row found, obtain displayed attendance/history evidence before changing code/data. No application/schema/deployment/data changes.

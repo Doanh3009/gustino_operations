@@ -1,5 +1,10 @@
 # Bug Tracker
 
+## 2026-10-09 — Admin payslip fields locked (fixed locally)
+- **Evidence:** `PayrollPage.tsx` applied `readOnly` to salary configuration, attendance overtime and KPI-derived inputs. `saveDetail()` additionally replaced edited overtime/KPI values with prior entry/null values whenever a system source existed.
+- **Fix:** retain system-derived values as prefilled suggestions, remove the Admin input locks, label their origin, and persist the exact values shown in all editable fields. Existing formulas and source calculations remain unchanged until Admin explicitly saves an override.
+- **Verification:** `ADMIN_PAYSLIP_EDITABLE_OK`, existing Admin payslip/delivery/revoke/confirmation/viewed contracts, TypeScript and the full 733-module production build/bundle guard pass. Signed-in visual/save-readback verification remains pending; no production or database mutation occurred.
+
 ## 2026-09-08 — BUG-140 High: đã check-in nhưng lịch Ca trưởng bị nhận nhầm là lịch nhân viên
 
 - Status: **Fixed, pushed in `76c3e5b`, and deployed to Vercel; pending signed-in phone confirmation**.
