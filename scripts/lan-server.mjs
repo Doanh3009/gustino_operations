@@ -21,6 +21,12 @@ const port = Number(process.env.GUSTINO_API_PORT || 5177)
 const scrypt = promisify(scryptCallback)
 const N8N_WEBHOOK_TIMEOUT_MS = 20_000
 const N8N_ERROR_DETAIL_MAX_CHARS = 240
+let leaderboardPosterHandlerPromise
+
+function leaderboardPosterHandler() {
+  leaderboardPosterHandlerPromise ||= import('../api/n8n/leaderboard-poster.ts').then((module) => module.default)
+  return leaderboardPosterHandlerPromise
+}
 
 async function n8nWebhookError(webhookResponse, webhookToken) {
   let detail = ''
@@ -593,6 +599,25 @@ async function handleApi(request, response, url) {
 
   if (url.pathname === '/api/health') return json(response, 200, { ok: true, updatedAt: new Date().toISOString() })
   if (url.pathname === '/api/server-time' && request.method === 'GET') return json(response, 200, { now: new Date().toISOString() })
+  if (url.pathname === '/api/n8n/leaderboard-poster') {
+    try {
+      request.body = request.method === 'POST' ? await body(request) : undefined
+    } catch {
+      return json(response, 400, { error: 'Body không phải JSON hợp lệ.' })
+    }
+    const handler = await leaderboardPosterHandler()
+    const handlerResponse = {
+      setHeader(name, value) { response.setHeader(name, value); return handlerResponse },
+      status(statusCode) { response.statusCode = statusCode; return handlerResponse },
+      json(payload) {
+        response.setHeader('Content-Type', 'application/json; charset=utf-8')
+        response.end(JSON.stringify(payload))
+        return handlerResponse
+      },
+      send(payload) { response.end(payload); return handlerResponse },
+    }
+    return handler(request, handlerResponse)
+  }
   if (url.pathname === '/api/branches' && request.method === 'GET') {
     const user = actor(request)
     if (!user.id) return json(response, 401, { error: 'Chưa đăng nhập.' })
