@@ -22,10 +22,16 @@ const scrypt = promisify(scryptCallback)
 const N8N_WEBHOOK_TIMEOUT_MS = 20_000
 const N8N_ERROR_DETAIL_MAX_CHARS = 240
 let leaderboardPosterHandlerPromise
+let gustinoAnalystBuilderPromise
 
 function leaderboardPosterHandler() {
   leaderboardPosterHandlerPromise ||= import('../api/n8n/leaderboard-poster.ts').then((module) => module.default)
   return leaderboardPosterHandlerPromise
+}
+
+function gustinoAnalystBuilder() {
+  gustinoAnalystBuilderPromise ||= import('../api/gustino-analyst.ts').then((module) => module.buildCukcukAnalytics)
+  return gustinoAnalystBuilderPromise
 }
 
 async function n8nWebhookError(webhookResponse, webhookToken) {
@@ -596,6 +602,19 @@ async function handleApi(request, response, url) {
   const date = url.searchParams.get('date') || ''
   const from = url.searchParams.get('from') || ''
   const to = url.searchParams.get('to') || ''
+
+  if (url.pathname === '/api/gustino-analyst' && request.method === 'GET') {
+    const user = actor(request)
+    if (!user.authenticated) return json(response, 401, { error: 'Phiên đăng nhập không hợp lệ.' })
+    if (user.role !== 'admin') return json(response, 403, { error: 'Chỉ Admin được xem Gustino Analyst.' })
+    try {
+      const build = await gustinoAnalystBuilder()
+      const payload = await build({ from, to, branchId: url.searchParams.get('branchId') || '' })
+      return json(response, 200, payload)
+    } catch (error) {
+      return json(response, 502, { error: error instanceof Error ? error.message : 'Không thể tải dữ liệu CUKCUK.' })
+    }
+  }
 
   if (url.pathname === '/api/health') return json(response, 200, { ok: true, updatedAt: new Date().toISOString() })
   if (url.pathname === '/api/server-time' && request.method === 'GET') return json(response, 200, { now: new Date().toISOString() })

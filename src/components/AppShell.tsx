@@ -46,6 +46,7 @@ export type Page =
   | 'manager-requests'
   | 'admin-accounts'
   | 'control'
+  | 'gustino-analyst'
   | 'kitchen'
 
 export type InventoryTab = 'overview' | 'inbound' | 'processing_out' | 'count'
@@ -70,6 +71,7 @@ interface NavItem {
 
 const ADMIN_NAV: NavItem[] = [
   { id: 'management', section: 'overview', label: 'Tổng quan', icon: <IconDashboard />, canShow: () => true },
+  { id: 'gustino-analyst', label: 'Gustino Analyst', icon: <IconChart />, canShow: (user) => user.role === 'admin' },
   { id: 'management', section: 'revenue', label: 'Doanh thu', icon: <IconChart />, canShow: () => true },
   // Admin không đặt hàng — chỉ theo dõi/lọc/xuất đơn của các chi nhánh ở mục Đặt hàng
   // trong trang Quản trị, nên mục này trỏ vào đó thay vì trang đặt hàng của chi nhánh.
@@ -207,6 +209,7 @@ const EN_NAV_LABELS: Partial<Record<Page, { label: string; shortLabel?: string }
   'admin-accounts': { label: 'People', shortLabel: 'People' },
   control: { label: 'System Admin', shortLabel: 'Admin' },
   management: { label: 'Overview' },
+  'gustino-analyst': { label: 'Gustino Analyst' },
   today: { label: 'Today' },
   sales: { label: 'Sales' },
   'my-records': { label: 'History & reports', shortLabel: 'History' },
@@ -288,6 +291,11 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   }, [user.id, user.role, user.authToken])
 
   const unreadPayslips = payslipNotifications.filter((entry) => !entry.employeeViewedAt)
+  const orderedPayslipNotifications = [...payslipNotifications].sort((left, right) => {
+    const unreadPriority = Number(Boolean(left.employeeViewedAt)) - Number(Boolean(right.employeeViewedAt))
+    if (unreadPriority) return unreadPriority
+    return String(right.publishedAt || right.period).localeCompare(String(left.publishedAt || left.period))
+  })
   const payslipNotification = (
     <div className="payslip-notification">
       <button type="button" className="payslip-notification-button" aria-label={`Thông báo phiếu lương${unreadPayslips.length ? `, ${unreadPayslips.length} chưa xem` : ''}`} aria-expanded={payslipNotificationOpen} onClick={(event) => { event.stopPropagation(); setPayslipNotificationOpen((open) => !open) }}>
@@ -296,14 +304,14 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
       </button>
       {payslipNotificationOpen && <div className="payslip-notification-menu" onClick={(event) => event.stopPropagation()}>
         <header><strong>Thông báo</strong><small>{unreadPayslips.length} chưa xem</small></header>
-        {unreadPayslips.slice(0, 6).map((entry) => <button type="button" key={entry.id || entry.period} className="unread" onClick={() => {
+        {orderedPayslipNotifications.slice(0, 6).map((entry) => <button type="button" key={entry.id || entry.period} className={entry.employeeViewedAt ? 'viewed' : 'unread'} onClick={() => {
           try { sessionStorage.setItem('gustino:selected-payslip-period', entry.period) } catch { /* private mode */ }
           setPayslipNotificationOpen(false)
           onNavigate('my-payslips')
         }}>
-          <span aria-hidden="true">▤</span><span><strong>Bạn đã nhận được phiếu lương</strong><small>Phiếu lương tháng {entry.period.slice(5)}/{entry.period.slice(0, 4)} · Bấm để xem</small></span>
+          <span aria-hidden="true">▤</span><span><strong>Bạn đã nhận được phiếu lương</strong><small>Phiếu lương tháng {entry.period.slice(5)}/{entry.period.slice(0, 4)} · {entry.employeeViewedAt ? 'Đã xem' : 'Chưa xem'} · Bấm để mở</small></span>
         </button>)}
-        {!unreadPayslips.length && <p>Không có thông báo phiếu lương chưa xem.</p>}
+        {!orderedPayslipNotifications.length && <p>Chưa có thông báo phiếu lương.</p>}
       </div>}
     </div>
   )
@@ -462,7 +470,7 @@ export function AppShell({ user, page, currentSection, onNavigate, onLogout, chi
   useEffect(() => setReportReminderDismissed(false), [reportPending?.shiftId, reportPending?.sequence])
 
   return (
-    <div className={`app-shell${sidebarOpen ? ' mobile-sidebar-open' : ''}${canOpenAdminConsole(user.role) && (page === 'management' || page === 'control') ? ' management-workspace' : ''}${user.role === 'manager' ? ' legacy-manager-workspace' : ''}${page === 'sales' ? ' pos-workspace' : ''}`} onClick={() => { setMenuOpen(false); setSidebarOpen(false); setPayslipNotificationOpen(false) }}>
+    <div className={`app-shell${sidebarOpen ? ' mobile-sidebar-open' : ''}${canOpenAdminConsole(user.role) && (page === 'management' || page === 'control' || page === 'gustino-analyst') ? ' management-workspace' : ''}${user.role === 'manager' ? ' legacy-manager-workspace' : ''}${page === 'sales' ? ' pos-workspace' : ''}`} onClick={() => { setMenuOpen(false); setSidebarOpen(false); setPayslipNotificationOpen(false) }}>
       {/* ===== DESKTOP LEFT SIDEBAR ===== */}
       <aside className="app-sidebar" onClick={(event) => event.stopPropagation()}>
         {/* Brand */}

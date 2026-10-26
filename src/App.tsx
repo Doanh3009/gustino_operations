@@ -37,6 +37,7 @@ const MyTimesheetPage = lazyWithReload(() => import('./pages/MyTimesheetPage').t
 const PayrollPage = lazyWithReload(() => import('./pages/PayrollPage').then((module) => ({ default: module.PayrollPage })))
 const MyPayslipsPage = lazyWithReload(() => import('./pages/MyPayslipsPage').then((module) => ({ default: module.MyPayslipsPage })))
 const MessagesPage = lazyWithReload(() => import('./pages/MessagesPage').then((module) => ({ default: module.MessagesPage })))
+const GustinoAnalystPage = lazyWithReload(() => import('./pages/GustinoAnalystPage').then((module) => ({ default: module.GustinoAnalystPage })))
 
 function App() {
   const lang = useLang()
@@ -524,6 +525,7 @@ function App() {
         {page === 'manager-requests' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="requests" focused onNavigate={navigate} />}
         {page === 'admin-accounts' && canUseAdmin(user.role) && <ManagementPage user={user} initialSection="accounts" focused onNavigate={navigate} />}
         {page === 'control' && canUseAdmin(user.role) && <ControlCenterPage user={user} />}
+        {page === 'gustino-analyst' && user.role === 'admin' && <GustinoAnalystPage user={user} />}
         {page === 'kitchen' && canUseKitchen(user.role) && <KitchenPage user={user} />}
             <RouteLoadSettled />
           </Suspense>
@@ -596,6 +598,7 @@ function pageFromHash(): Page {
     'manager-requests',
     'admin-accounts',
     'control',
+    'gustino-analyst',
     'kitchen',
   ].includes(candidate)
     ? candidate as Page
@@ -656,6 +659,7 @@ function canAccessPage(user: AppUser, page: Page) {
   if (['manager-revenue', 'manager-business', 'manager-inventory'].includes(page)) return user.role === 'manager'
   if (page === 'admin-accounts') return canUseAdmin(user.role)
   if (page === 'control') return canUseAdmin(user.role)
+  if (page === 'gustino-analyst') return user.role === 'admin'
   if (page === 'kitchen') return canUseKitchen(user.role)
   return canUseOperations(user.role)
 }
